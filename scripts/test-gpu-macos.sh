@@ -10,3 +10,9 @@ clang++ -std=c++17 -Iinclude -I.deps/obs-studio-32.2.2-sources/libobs \
   -framework AppKit -Wl,-rpath,/Applications/OBS.app/Contents/Frameworks \
   -o build/vrst-gpu-tests
 build/vrst-gpu-tests plugin/data/stabilize.effect
+clang++ -std=c++17 -Iinclude -I.deps/obs-studio-32.2.2-sources/libobs \
+  -I.deps/obs-sdk/include -I"$VRST_SIMDE_DIR" tests/image_gpu_tests.mm build/libvrst_core.a \
+  /Applications/OBS.app/Contents/Frameworks/libobs.framework/Versions/A/libobs \
+  -framework AppKit -Wl,-rpath,/Applications/OBS.app/Contents/Frameworks \
+  -o build/vrst-image-gpu-tests
+build/vrst-image-gpu-tests plugin/data/image-stabilize.effect

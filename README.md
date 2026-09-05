@@ -1,16 +1,16 @@
 # HorizonLock VR
 
-A SteamVR tracking sender for the gaming PC and an OBS effect filter for the stream PC. Your existing capture card carries the video. A small UDP stream carries headset orientation; the filter warps the captured image toward a smoother viewing direction.
+An OBS effect filter that stabilizes a capture-card picture on your stream PC. Choose **SteamVR pose** with optional horizon leveling, or **Image-based microjitter** using the picture alone. The pose mode includes a lightweight tracking sender for the gaming PC.
 
 The filter appears as **VR Stabilizer** in OBS. Windows downloads include both components and complete source code.
 
 Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
 
-Version **0.1.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Designed for SBoys3 + SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image.
+Version **0.2.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender.
 
-SteamVR must be running and supplying headset tracking. Native Pimax OpenXR without SteamVR is not supported by this first sender. The OBS filter and UDP protocol are independent of the tracking API, so a future OpenXR provider can reuse them. Capturing the game's poses through an OpenXR API layer is a possible future implementation; it is not included in this release.
+For pose mode, SteamVR must be supplying headset tracking. Native Pimax OpenXR without SteamVR needs a future tracking provider; it is not included in this release. Image mode works independently of the runtime because it analyzes the captured video.
 
-The release DLL and EXE have been cross-compiled and their dependencies inspected. The source also builds with Visual Studio and passes all four test suites on GitHub's Windows runner, as well as Linux and local macOS. Actual OBS GPU rendering is tested on macOS. Live Windows 11 / Dream Air / Elgato / iRacing / LMU validation still needs your hardware. Manual delay estimates the image/pose relationship; it does not give exact capture-card frame synchronization. See the [verified Windows and Linux CI run](https://github.com/DSuzuki35/horizonlock-vr/actions/runs/33990785936).
+The release DLL and EXE are cross-built and their dependencies inspected. Five automated suites cover core math, image motion, sender math and real UDP integration; GitHub builds on Windows and Linux. Actual OBS GPU/module tests run on macOS, including full 4K image output and bounded 480×270 analysis. Live Windows 11 / Dream Air / Elgato / iRacing / LMU validation still needs your hardware. Synthetic results do not guarantee racing-footage quality. See [build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
 
 ## Install the downloaded ZIP
 
@@ -20,18 +20,18 @@ Extract the **entire ZIP** first. You can copy the same extracted folder to both
 
 1. Close OBS. Double-click `Install-OBS.cmd` and accept the Windows elevation prompt. The installer copies only this plugin into `%PROGRAMDATA%\obs-studio\plugins\vr-stabilizer`.
 2. Open OBS and select your Elgato/capture-card source. Open **Filters → Effect Filters → + → VR Stabilizer**.
-3. Enter the gaming PC's IPv4 address and leave port **42424** unless you changed it on the sender.
-4. Start with the defaults below. Click **Refresh diagnostics** to check the connection, clock sync, selected pose age, pose mode and correction limit.
+3. Choose **Stabilization algorithm**. For **SteamVR pose**, enter the gaming PC's IPv4 address and port **42424**. For **Image-based microjitter**, skip the gaming-PC sender setup below.
+4. Start with the defaults below. Click **Refresh diagnostics** to inspect pose alignment or image-feature confidence and the correction limit.
 5. Set the OBS canvas/output to your intended 16:9 resolution. With the source selected, use **Transform → Fit to screen** after changing input trim or output shape.
 
-**Gaming PC**
+**Gaming PC — pose mode only**
 
 1. Start SBoys3 / SteamVR and the game as usual.
 2. Double-click `Start-Tracking.cmd`. It starts `sender/vrst-sender.exe` and prints the PC's IPv4 addresses. Keep the console open while streaming.
 3. If Windows Firewall prompts for the sender, allow it on your private home network. The stream PC must be able to reach UDP 42424 on the gaming PC. Do not set up internet port forwarding.
 4. Continue sending your normal desktop mirror through the capture card. The sender does not capture or encode video.
 
-The plugin reads tracking independently of video transport. The Elgato model is not required for installation, but capture settings affect the delay you need. Close the sender console or press Ctrl+C to stop it.
+Pose mode reads tracking independently of video transport. The Elgato model is not required for installation, but capture settings affect the tracking delay you need. Close the sender console or press Ctrl+C to stop it. Updating from v0.1.0 keeps your saved settings; the default algorithm remains pose mode and horizon leveling starts off.
 
 For portable OBS, copy `obs-plugin/bin/64bit/vr-stabilizer.dll` to its `obs-plugins/64bit` directory and `obs-plugin/data/*` to `data/obs-plugins/vr-stabilizer/` instead of using the installer. `Uninstall-OBS.cmd` removes the normal installation while OBS is closed.
 
@@ -39,26 +39,52 @@ For portable OBS, copy `obs-plugin/bin/64bit/vr-stabilizer.dll` to its `obs-plug
 
 | Control | Meaning | Starting value |
 |---|---|---|
+| Stabilization algorithm | SteamVR pose or Image-based microjitter | SteamVR pose |
 | Horizontal / vertical FOV | Angular view of the incoming image after input trim | Enter/calibrate your captured view |
 | Use automatic full-eye FOV | Use the selected eye projection reported by SteamVR; only correct for a complete eye image | Off |
 | Tracking delay | Look back this many milliseconds from filter render time; includes capture-card and OBS buffering | 80 ms |
-| Smoothing | Strength of time-based quaternion smoothing; zero removes all motion correction | 40 |
+| Smoothing | Motion smoothing for the selected algorithm; zero disables smoothing, while pose horizon leveling remains independent | 40 |
+| Horizon leveling (pose) | Cancel sustained head roll while preserving look direction | 0% |
+| Maximum horizon correction (pose) | Limit how much roll leveling may remove | 45° |
+| Maximum image shift (image) | Limit correction per axis, relative to trimmed input | 1% |
+| Maximum image roll (image) | Limit small roll corrections | 0.5° |
+| Correct image roll (image) | Estimate rotation as well as translation | On |
+| Tracking region, four margins (image) | Select the stationary cockpit area used for analysis | Left/right 10%, top 50%, bottom 10% |
 | Stabilization crop | Reserve image margin to absorb head movement | 10% |
 | Framing zoom | Additional final crop/zoom | 0% |
 | Fill 16:9 | Center-crop the output to 16:9 without stretching | On |
 | Framing horizontal/vertical | Shift the final framing within available image margin | 0% |
 | Input trim, four edges | Remove black bars or window borders before interpreting the image's FOV | 0% |
-| Reset smoothing | Clear pose history without changing any controls | As needed |
+| Reset smoothing | Clear motion history without changing any controls | As needed |
 
-The delay slider **does not delay the video or audio**. It changes which older tracking pose is used for the currently rendered image. A Render Delay filter before VR Stabilizer, changes to capture buffering, or a different video source require recalibration. A delay applied after stabilization delays the already-corrected image and does not itself change the tracking offset. Put VR Stabilizer first among image-processing filters where practical.
+The **Tracking delay** slider in pose mode does not buffer video or audio. It changes which older tracking pose is used for the currently rendered image. Upstream video delays and capture buffering changes require recalibration. Image mode adds its own fixed one-OBS-frame video delay, described below. Put VR Stabilizer first among image-processing filters where practical.
 
 Crop values reduce the total span of each axis. For example, a 10% stabilization crop keeps 90% of the width and height before aspect framing, approximately 5% off each edge. Crops combine multiplicatively. Input trimming, stabilization crop, final zoom and aspect fill are combined into one GPU reprojection sample. More framing zoom also leaves more room for correction. Moving framing toward an edge reduces the available motion margin on that side.
 
 At a large/fast head turn the filter gradually limits correction to what fits inside the source. It follows the head when there is insufficient margin. It cannot reveal pixels the game did not render. On tracking loss it keeps the usual framing and bypasses rotation correction. Recenter jumps reset the smoother. Intentional slow turns remain visible.
 
-Diagnostics are refreshed when the properties open or when **Refresh diagnostics** is clicked. “Selected pose age” includes your requested tracking delay; it is not network latency. RTT is the network round trip. A correction limit below 100% means the crop margin constrained smoothing.
+Diagnostics are refreshed when the properties open or when **Refresh diagnostics** is clicked. In pose mode, “Selected pose age” includes tracking delay and RTT is the network round trip. Image mode reports feature confidence, inliers, analysis dimensions and processing time. A correction limit below 100% means the crop margin constrained the requested correction.
 
-## Calibrate with the car parked
+## Image-based microjitter
+
+1. Choose **Image-based microjitter**. FOV, network, tracking-delay and horizon controls are hidden because this mode does not use them.
+2. Remove borders using **Input trim**. Choose a **Tracking region** containing fixed cockpit structure, such as dashboard trim or a windshield pillar. The four margins refer to the trimmed image. Defaults select the lower part: 10–90% horizontally and 50–90% vertically.
+3. Exclude animated steering wheels, mirrors, overlays, other cars and moving track scenery. Leave a reasonably large, textured area. Very narrow or flat regions may have too few safe feature patches; diagnostics then show weak tracking and correction is bypassed.
+4. Start with smoothing 40, maximum shift 1%, maximum roll 0.5° and stabilization crop 10%. Compare against smoothing 0, then increase smoothing gradually. Increase correction limits only if visible jitter needs it.
+
+The algorithm tracks subpixel image features, rejects inconsistent matches and estimates small shifts/roll. It smooths that measured motion, caps the correction, and limits it again to available crop. Weak matches, scene changes and unavailable analysis produce normally framed video without an old correction. ROI, size, mode, trim and reset changes restart history.
+
+Full-resolution video remains on the GPU. A filtered grayscale copy, at most 480×270, is used for analysis. The measured correction is applied to that exact captured frame. This adds **one OBS video frame after warm-up: 16.7 ms at 60 fps**. Audio is not delayed automatically; account for this when aligning audio or other cameras. Missing/hidden frames restart the buffer. No gaming-PC clock or capture-card delay calibration is needed for image mode.
+
+This is a small 2D correction, not full perspective/depth reconstruction. Turning off game neck movement helps, but image analysis still cannot distinguish all head motion from car motion, lighting changes or parallax. It cannot recover missing frames, undo motion blur, or remove 90-to-60 cadence judder. Test with the car parked, then on a lap.
+
+## Horizon leveling for head tilt
+
+Choose **SteamVR pose**, connect the sender and calibrate FOV/delay as below. Increase **Horizon leveling** to remove the sustained roll caused by tilting your head into a corner. At 100%, the target view is upright relative to SteamVR tracking up, subject to the maximum-angle and crop limits. Yaw/pitch viewing direction is preserved; existing motion smoothing can still smooth those directions.
+
+Set smoothing 0 if you want only horizon leveling. Larger tilts require more crop; the filter reduces correction when it would expose missing pixels. Leveling fades near straight-up/down gaze where roll is ambiguous. It cancels headset roll, not unknown roll from the game's car camera or banking. The image mode is a separate algorithm; a coordinated hybrid is not included in v0.2.0.
+
+## Calibrate pose mode with the car parked
 
 1. **Choose the source and eye first.** The sender defaults to the left eye. If capturing the right eye, run `Start-Tracking.cmd --eye right`. Avoid a blended/stereo view; a single rotational camera model cannot accurately stabilize both eyes together.
 2. **Remove borders.** Use Input trim to isolate the actual eye image. Keep the capture resolution and mirror window size fixed afterward.
@@ -82,7 +108,7 @@ Using a known single-eye source solves projection uncertainty; it does **not** m
 
 ## What is stabilized
 
-Rotation: yaw, pitch and roll. It smooths headset motion, not the car's motion or the entire game's camera system. Positional movement, such as leaning sideways over the cockpit, produces depth-dependent parallax and is not corrected. Baked-in HUDs, motion blur, missing edge pixels and foveated rendering artifacts cannot be undone. 90-to-60 motion cadence can remain visible independently of head stabilization.
+Pose mode smooths headset yaw, pitch and roll, with optional sustained roll leveling. Image mode smooths estimated 2D translation and roll in the selected region. Neither reconstructs depth or corrects positional parallax across the whole cockpit. Baked-in HUDs, motion blur, missing edge pixels and foveated rendering artifacts cannot be undone. 90-to-60 motion cadence can remain visible independently of head stabilization.
 
 The sender prefers SteamVR compositor frame-history orientation when available and composes the selected eye's rotation. These packets use the local **time the helper first observed the frame**, not an assumed common epoch for SteamVR's internal timestamp. In live fallback it sends current headset orientation. Neither mode proves which pose produced an arbitrary HDMI frame. The plugin's clock sync aligns the two PCs; manual delay handles the remaining empirical video alignment.
 
@@ -136,6 +162,6 @@ cmake --build build-windows --parallel
 python3 scripts/package.py --openvr .deps/openvr-2.15.6
 ```
 
-`tests/gpu_tests.mm` additionally validates actual OBS OpenGL shader output against CPU projection on macOS. It requires an installed OBS app, the libobs headers and SIMDe headers. See `scripts/test-gpu-macos.sh`.
+`scripts/test-gpu-macos.sh` validates the pose and image shaders against CPU coordinates on macOS. `scripts/test-module-macos.sh` exercises the complete OBS filter, including frame pairing, repeated renders, resets, 4K output and a known synthetic jitter sequence. Both require an installed OBS app and SIMDe headers. The module test also requires `VRST_NATIVE_OBS_SOURCE_DIR` pointing to headers compatible with the installed OBS version; it does not bypass OBS's version gate. Synthetic tests establish implementation behavior, not live racing quality.
 
 License: GPL-2.0-or-later. Third-party runtime notices and licenses are included. These development binaries are unsigned.

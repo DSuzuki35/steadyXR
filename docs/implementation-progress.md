@@ -1,5 +1,7 @@
 # VR Stabilizer progress
 
+The initial sections record the v0.1.0 delivery. The v0.2.0 additions are recorded at the end.
+
 Design: docs/superpowers/specs/2026-09-05-vr-stabilizer-design.md
 Plan: docs/superpowers/plans/2026-09-05-vr-stabilizer.md
 
@@ -45,3 +47,15 @@ Plan: docs/superpowers/plans/2026-09-05-vr-stabilizer.md
 ## GitHub delivery
 
 The user subsequently requested a new private GitHub repository. **HorizonLock VR** was created at `https://github.com/DSuzuki35/horizonlock-vr`, verified private, and the source pushed to `main`. Both jobs in CI run `33990785936` passed. The Windows package is delivered as an experimental release. Live hardware calibration remains outside the available environment.
+
+## v0.2.0 — image microjitter and horizon leveling
+
+The user authorized both additions within a one-hour window starting about 21:08 UTC on 2026-09-05. Development uses the isolated `feat/image-microjitter` worktree. Design and plan: `docs/superpowers/specs/2026-09-05-image-microjitter-design.md` and `docs/superpowers/plans/2026-09-05-image-microjitter.md`.
+
+- Image mode estimates subpixel translation/roll from selected image features without tracking, FOV or clock calibration. Its two-slot GPU pipeline applies each correction to the exact analyzed frame, adding one OBS video frame. All crop/framing controls remain available.
+- Pose mode adds independent horizon strength and maximum correction. It removes sustained headset roll, preserves look direction and fades near vertical gaze. The existing crop limiter still applies. Game-car roll is not inferred from the headset.
+- 23 image checks and 28 core checks pass, including deliberate-pan following, jitter reduction, ROI isolation, brightness changes, scene cuts and leveling. ASan/UBSan checks pass. Independent review also ran 400,000 randomized horizon/warp checks and verified combined translation/roll sequences.
+- Review found and fixed an ROI-boundary sampling leak. A dedicated regression proves moving content outside a flat selected region cannot inject correction. Patch brightness offset is removed during optical flow to prevent lighting changes from becoming motion.
+- Eight new image GPU pixel cases have zero mismatches. Native OBS module tests verify exact one-frame pairing, one capture per tick, repeated renders, mode/size/trim/ROI/reset/visibility handling, full 3840×2160 output with at most 480×270 analysis, and synthetic jitter suppression. Local module checks use OBS 32.0-compatible headers for the installed 32.1.2 app; Windows release headers remain 32.2.2.
+- Synthetic end-to-end pixel temporal energy fell to about 0.1% of the smoothing-off test (approximately 96.8% RMS reduction). This is a controlled generated sequence, not a measured result from Dream Air/racing footage. Native estimator diagnostics were under 3 ms in tested cases.
+- Windows cross-compilation succeeds. Final independent delivery review, hosted CI and package verification are completed before publishing v0.2.0.

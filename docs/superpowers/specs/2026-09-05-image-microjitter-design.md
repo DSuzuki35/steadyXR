@@ -20,8 +20,6 @@ Track a user-selected rectangular region of the trimmed input, preferably statio
 - New controls: max translation percent, max roll degrees, roll enable, and four tracking-region margins. Smoothing is shared. Status reports confidence, tracked/inlier feature counts, processing time and one-frame video delay.
 - Existing pose mode and shader behavior remain unchanged. Preserve saved scenes; default remains pose mode.
 
-## Verification and release
-
 ## Added scope: pose-based horizon leveling
 
 The user authorized both additions now with a one-hour working window, starting about 21:08 UTC. Add a 0–100% horizon-level strength and 0–60 degree maximum roll correction to pose mode (defaults 0%, 45 degrees). Level the smoothed target's roll relative to SteamVR tracking up while preserving its forward/look direction, then compute the usual source-to-target inverse ray correction. This must work even with motion smoothing at zero. Fade leveling near vertical gaze where roll is geometrically ambiguous. Existing crop-aware limiting applies. It removes head tilt, not unknown game-car roll or track banking. Image mode hides these pose-only controls.

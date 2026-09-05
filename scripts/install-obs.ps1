@@ -10,7 +10,7 @@ try {
     $package = Split-Path -Parent $PSScriptRoot
     $source = Join-Path $package 'obs-plugin'
     $destination = Join-Path $env:ProgramData 'obs-studio\plugins\vr-stabilizer'
-    foreach ($relative in @('bin\64bit\vr-stabilizer.dll', 'data\stabilize.effect', 'data\locale\en-US.ini')) {
+    foreach ($relative in @('bin\64bit\vr-stabilizer.dll', 'data\stabilize.effect', 'data\image-stabilize.effect', 'data\locale\en-US.ini')) {
         if (-not (Test-Path -LiteralPath (Join-Path $source $relative) -PathType Leaf)) { throw "Package is incomplete: $relative. Extract the entire ZIP first." }
     }
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
