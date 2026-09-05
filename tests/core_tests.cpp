@@ -27,6 +27,60 @@ Pose pose(std::uint64_t seq, std::uint64_t ns, double yaw, std::uint32_t flags =
 }
 int main() {
     std::vector<std::pair<std::string, std::function<void()>>> cases{
+        {"horizon leveling removes a sustained head tilt",
+         [] {
+             auto source = axis_angle({0, 0, 1}, 25 * pi / 180);
+             auto corrected = multiply(source, horizon_correction(source, source, 100, 45));
+             near(angle_between(corrected, {}), 0);
+         }},
+        {"horizon leveling preserves yaw and pitch look direction",
+         [] {
+             auto target = multiply(multiply(axis_angle({0, 1, 0}, .7), axis_angle({1, 0, 0}, -.3)),
+                                    axis_angle({0, 0, 1}, .4));
+             auto corrected = multiply(target, horizon_correction(target, target, 100, 45));
+             auto before = rotate(target, {0, 0, -1}), after = rotate(corrected, {0, 0, -1});
+             near(before.x, after.x);
+             near(before.y, after.y);
+             near(before.z, after.z);
+             near(rotate(corrected, {1, 0, 0}).y, 0);
+         }},
+        {"horizon strength and maximum tilt correction are independent",
+         [] {
+             auto source = axis_angle({0, 0, 1}, 30 * pi / 180);
+             near(angle_between(multiply(source, horizon_correction(source, source, 50, 60)), {}),
+                  15 * pi / 180);
+             near(angle_between(multiply(source, horizon_correction(source, source, 100, 10)), {}),
+                  20 * pi / 180);
+         }},
+        {"horizon disabled preserves ordinary smoothing",
+         [] {
+             auto source = axis_angle({0, 1, 0}, .4), target = axis_angle({0, 1, 0}, .2);
+             near(angle_between(horizon_correction(source, target, 0), multiply(conjugate(source), target)),
+                  0);
+         }},
+        {"vertical gaze avoids undefined horizon roll",
+         [] {
+             auto source = multiply(axis_angle({1, 0, 0}, pi / 2), axis_angle({0, 0, 1}, .4));
+             auto correction = horizon_correction(source, source, 100, 45);
+             check(valid(correction), "vertical gaze nonfinite");
+             near(angle_between(correction, {}), 0);
+         }},
+        {"pose sampling supplies matching source and target for leveling",
+         [] {
+             PoseHistory h;
+             h.set_smoothing(0);
+             auto p = pose(1, 1000000000, 0);
+             p.orientation = axis_angle({0, 0, 1}, .3);
+             h.push(p);
+             auto r = h.sample(p.time_ns);
+             check(r.valid, "missing pose");
+             near(angle_between(r.source_orientation, p.orientation), 0);
+             near(angle_between(r.target_orientation, p.orientation), 0);
+             near(angle_between(multiply(r.source_orientation,
+                                         horizon_correction(r.source_orientation, r.target_orientation, 100)),
+                                {}),
+                  0);
+         }},
         {"quaternion rotates eye rays with correct handedness",
          [] {
              auto v = rotate(axis_angle({0, 1, 0}, pi / 2), {0, 0, -1});

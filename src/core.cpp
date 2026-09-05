@@ -65,6 +65,24 @@ Vec3 rotate(Quat q, Vec3 v) {
     auto r = multiply(multiply(q, {v.x, v.y, v.z, 0}), conjugate(q));
     return {r.x, r.y, r.z};
 }
+Quat horizon_correction(Quat source, Quat target, double strength, double max_degrees) {
+    if (!valid(source) || !valid(target))
+        return {};
+    source = normalized(source);
+    target = normalized(target);
+    const auto forward = rotate(target, {0, 0, -1});
+    const auto up = rotate(target, {0, 1, 0});
+    const auto right = rotate(target, {1, 0, 0});
+    // World-up projected into the eye's right/up plane gives its roll error.
+    // Roll becomes ambiguous when looking vertically; fade out near that pole.
+    const double horizontal = std::hypot(up.y, right.y);
+    const double fade = std::clamp((horizontal - .05) / .20, 0., 1.);
+    const double limit = safe(max_degrees, 45, 0, 60) * pi / 180;
+    const double roll =
+        std::clamp(std::atan2(right.y, up.y), -limit, limit) * safe(strength, 0, 0, 100) / 100 * fade;
+    target = normalized(multiply(axis_angle(forward, roll), target));
+    return normalized(multiply(conjugate(source), target));
+}
 double angle_between(Quat a, Quat b) {
     return 2 * std::acos(std::clamp(std::abs(dot(normalized(a), normalized(b))), 0., 1.));
 }
@@ -136,6 +154,8 @@ PoseResult PoseHistory::sample(std::uint64_t at) const {
         target = slerp(target, next->smooth, t);
     }
     out.valid = true;
+    out.source_orientation = source;
+    out.target_orientation = target;
     out.correction = smoothing_ <= 0 ? Quat{} : normalized(multiply(conjugate(source), target));
     out.projection = it->pose.projection;
     out.time_ns = it->pose.time_ns;

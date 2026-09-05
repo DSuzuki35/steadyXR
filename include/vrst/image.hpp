@@ -36,6 +36,7 @@ class ImageStabilizer {
     ImageStabilizer &operator=(const ImageStabilizer &) = delete;
     ImageResult process(const GrayImage &, std::uint64_t time_ns, const ImageSettings &);
     void reset();
+
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -47,6 +48,6 @@ struct ImageWarp {
     double correction_fraction{1};
 };
 // Cropping/framing uses Settings; FOV, automatic_fov and tracking delay are ignored.
-ImageWarp make_image_warp(std::uint32_t source_width, std::uint32_t source_height,
-                          const Settings &, const ImageResult &);
+ImageWarp make_image_warp(std::uint32_t source_width, std::uint32_t source_height, const Settings &,
+                          const ImageResult &);
 } // namespace vrst
