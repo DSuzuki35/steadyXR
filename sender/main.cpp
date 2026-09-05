@@ -273,7 +273,7 @@ class SteamVrSource {
                 compositor_ = vr::VRCompositor();
             float left = 0, right = 0, top = 0, bottom = 0;
             system_->GetProjectionRaw(eye_, &left, &right, &top, &bottom);
-            const vrst::Projection projection{left, right, -top, -bottom};
+            const auto projection = vrst::sender::projection_from_raw(left, right, top, bottom);
             const auto eye_rotation = rotation(system_->GetEyeToHeadTransform(eye_));
             metadata_valid_ = vrst::valid(projection) && eye_rotation.has_value();
             if (metadata_valid_) {

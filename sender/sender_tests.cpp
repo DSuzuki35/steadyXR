@@ -11,6 +11,10 @@ int main() {
             ++failed;
     };
     using namespace vrst::sender;
+    const auto asymmetric_projection = projection_from_raw(-1.2, .95, -1.11, .889);
+    check(asymmetric_projection.left == -1.2 && asymmetric_projection.right == .95 &&
+              asymmetric_projection.up == .889 && asymmetric_projection.down == -1.11,
+          "asymmetric OpenVR vertical extents preserve SDK bottom/top convention");
     const Rotation identity{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
     const Rotation rotate_x{{{1, 0, 0}, {0, -1, 0}, {0, 0, -1}}};
     const Rotation rotate_y{{{-1, 0, 0}, {0, 1, 0}, {0, 0, -1}}};

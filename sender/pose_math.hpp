@@ -5,6 +5,12 @@
 #include <optional>
 
 namespace vrst::sender {
+inline Projection projection_from_raw(double left, double right, double top, double bottom) {
+    // OpenVR names the -Y extent "top" and the +Y extent "bottom".
+    // Preserve their signed values while mapping to our canonical up/down fields.
+    return {left, right, bottom, top};
+}
+
 using Rotation = std::array<std::array<double, 3>, 3>;
 inline std::optional<Quat> rotation_quaternion(const Rotation &m) {
     // OpenVR poses should be rigid transforms. Reject bad tracking matrices rather
