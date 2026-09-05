@@ -40,4 +40,8 @@ Plan: docs/superpowers/plans/2026-09-05-vr-stabilizer.md
 - Final Windows cross-build succeeds with the OpenVR runtime staged beside the executable. Both project binaries are AMD64 and their packaged bytes match the build outputs.
 - ZIP CRC and all 66 SHA256 manifest entries pass verification.
 - The delivery reviewer closed all three P2 findings after focused re-review. No unresolved review blocker remains.
-- Delivered artifact: `dist/VR-Stabilizer-0.1.0-Windows-x64.zip`. The project remains on its local `feat/vr-stabilizer` branch; nothing was pushed or published.
+- Initial local artifact: `dist/VR-Stabilizer-0.1.0-Windows-x64.zip`, built on `feat/vr-stabilizer` before publication.
+
+## GitHub delivery
+
+The user subsequently requested a new private GitHub repository. The chosen name is **HorizonLock VR** (`horizonlock-vr`). Publish the source on `main`, verify GitHub's Windows build, and attach the Windows package to an experimental release. Live hardware calibration remains outside the available environment.

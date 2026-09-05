@@ -1,6 +1,8 @@
-# VR Stabilizer
+# HorizonLock VR
 
 A SteamVR tracking sender for the gaming PC and an OBS effect filter for the stream PC. Your existing capture card carries the video. A small UDP stream carries headset orientation; the filter warps the captured image toward a smoother viewing direction.
+
+The filter appears as **VR Stabilizer** in OBS. Windows downloads include both components and complete source code.
 
 Version **0.1.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Designed for SBoys3 + SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image.
 
