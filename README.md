@@ -10,7 +10,7 @@ Version **0.2.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**.
 
 For pose mode, SteamVR must be supplying headset tracking. Native Pimax OpenXR without SteamVR needs a future tracking provider; it is not included in this release. Image mode works independently of the runtime because it analyzes the captured video.
 
-The release DLL and EXE are cross-built and their dependencies inspected. Five automated suites cover core math, image motion, sender math and real UDP integration; GitHub builds on Windows and Linux. Actual OBS GPU/module tests run on macOS, including full 4K image output and bounded 480×270 analysis. Live Windows 11 / Dream Air / Elgato / iRacing / LMU validation still needs your hardware. Synthetic results do not guarantee racing-footage quality. See [build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
+The v0.2.0 Windows release uses Visual Studio binaries from GitHub's Windows build. Five automated suites cover core math, image motion, sender math and real UDP integration; GitHub also builds on Linux. Actual OBS GPU/module tests run on macOS with SDR sources, including full 4K image output and bounded 480×270 analysis. Live Windows 11 / Dream Air / Elgato / iRacing / LMU validation still needs your hardware. Synthetic results do not guarantee racing-footage quality. See [build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
 
 ## Install the downloaded ZIP
 
@@ -146,7 +146,7 @@ For Windows, install Visual Studio 2022's Desktop development with C++ workload,
 
 It downloads OBS 32.2.2 headers and runtime exports plus OpenVR 2.15.6, prepares an OBS import library, builds the DLL/EXE, runs the tests, and creates the ZIP in `dist/`. Visual Studio builds use the static C++ runtime by default so the sender needs no separate VC++ redistributable. The GitHub Actions workflow performs the same build when the repository is pushed; its Windows and Linux jobs have passed.
 
-The supplied binaries were cross-built with LLVM-MinGW 20260826. To reproduce from macOS, extract the toolchain from its [upstream release](https://github.com/mstorsjo/llvm-mingw/releases/tag/20260826), then:
+An alternative cross-build is also verified with LLVM-MinGW 20260826. To build from macOS, extract the toolchain from its [upstream release](https://github.com/mstorsjo/llvm-mingw/releases/tag/20260826), then:
 
 ```sh
 export VRST_LLVM_MINGW=/absolute/path/to/llvm-mingw-20260826-ucrt-macos-universal
