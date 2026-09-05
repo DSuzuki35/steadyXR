@@ -43,7 +43,7 @@ for item in (root / 'licenses').glob('*'):
     if item.is_file():
         copy(item, Path('licenses') / item.name)
 # Include corresponding project source so the binary package is self-contained.
-for name in ['CMakeLists.txt', 'LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md']:
+for name in ['CMakeLists.txt', '.clang-format', '.gitignore', 'LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md']:
     copy(root / name, Path('source') / name)
 for directory in ['include', 'src', 'plugin', 'sender', 'scripts', 'cmake', 'tests', 'docs', '.github', 'licenses']:
     for item in (root / directory).rglob('*'):

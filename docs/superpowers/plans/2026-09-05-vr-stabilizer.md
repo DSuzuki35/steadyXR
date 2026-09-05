@@ -25,9 +25,9 @@ Files: `include/vrst/core.hpp`, `src/core.cpp`, `include/vrst/protocol.hpp`, `sr
 
 Interfaces: public C++ structs and signatures in the headers; receiver supplies a `TrackingSnapshot` containing correction, projection and diagnostics without exposing sockets to OBS.
 
-- [ ] Write tests with literal rotation/projection expectations, 90/60 frame selection, timestamp alignment, malformed packets and tracking gaps; demonstrate missing behavior before implementation.
-- [ ] Implement and run portable core tests using `cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure`.
-- [ ] Implement a bounded UDP receiver and exercise real loopback sync/pose delivery.
+- [x] Write tests with literal rotation/projection expectations, 90/60 frame selection, timestamp alignment, malformed packets and tracking gaps; demonstrate missing behavior before implementation.
+- [x] Implement and run portable core tests using `cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure`.
+- [x] Implement a bounded UDP receiver and exercise real loopback sync/pose delivery.
 
 ### Task 2: OBS filter
 
@@ -35,10 +35,10 @@ Files: `plugin/obs_filter.cpp`, `plugin/data/stabilize.effect`, `plugin/data/loc
 
 Consumes: `vrst::Receiver`, `vrst::Settings`, `vrst::make_warp`, `vrst::Warp` from the shared headers. Produces the `vr-stabilizer` OBS filter.
 
-- [ ] Read the headers and implement all controls with stable names and clear descriptions.
-- [ ] Render source once via OBS's filter API and use the core's warp rays and quaternion in the GPU shader. Report output dimensions through filter callbacks.
-- [ ] Include connection/clock/tracking diagnostics and reset. Release sockets, threads and GPU resources on destruction.
-- [ ] Compile against real libobs and inspect shader/runtime behavior with the available local OBS installation.
+- [x] Read the headers and implement all controls with stable names and clear descriptions.
+- [x] Render source once via OBS's filter API and use the core's warp rays and quaternion in the GPU shader. Report output dimensions through filter callbacks.
+- [x] Include connection/clock/tracking diagnostics and reset. Release sockets, threads and GPU resources on destruction.
+- [x] Compile against real libobs and inspect shader/runtime behavior with the available local OBS installation.
 
 ### Task 3: Sender and delivery
 
@@ -46,7 +46,7 @@ Files: `sender/main.cpp`, `scripts/build-windows.ps1`, `scripts/install-obs.ps1`
 
 Consumes: core math, wire protocol and network wrapper. Produces `vrst-sender.exe` and installable plugin bundle.
 
-- [ ] Implement SteamVR background pose gathering and projection conversion with reconnect and validity handling. Expose live/frame mode and synthetic demo mode.
-- [ ] Cross-compile actual Windows binaries, inspect imports, package only needed files with dependency license notices and checksums.
-- [ ] Write setup, calibration, iRacing/SteamVR source guidance, and clear limitations. Document Windows builds and add CI.
-- [ ] Run final integration tests, independent code review, and package verification. Resolve important findings before delivery.
+- [x] Implement SteamVR background pose gathering and projection conversion with reconnect and validity handling. Expose live/frame mode and synthetic demo mode.
+- [x] Cross-compile actual Windows binaries, inspect imports, package only needed files with dependency license notices and checksums.
+- [x] Write setup, calibration, iRacing/SteamVR source guidance, and clear limitations. Document Windows builds and add CI.
+- [x] Run final integration tests, independent code review, and package verification. Resolve important findings before delivery.

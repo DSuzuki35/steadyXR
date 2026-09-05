@@ -43,6 +43,9 @@ if(VRST_BUILD_SENDER)
     target_compile_definitions(vrst-sender PRIVATE VRST_WITH_OPENVR=1)
     target_include_directories(vrst-sender SYSTEM PRIVATE "${VRST_OPENVR_DIR}/headers")
     target_link_libraries(vrst-sender PRIVATE "${VRST_OPENVR_DIR}/lib/win64/openvr_api.lib" ws2_32)
+    add_custom_command(TARGET vrst-sender POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${VRST_OPENVR_DIR}/bin/win64/openvr_api.dll" "$<TARGET_FILE_DIR:vrst-sender>/openvr_api.dll")
     install(FILES "${VRST_OPENVR_DIR}/bin/win64/openvr_api.dll" DESTINATION sender)
   endif()
   install(TARGETS vrst-sender RUNTIME DESTINATION sender)

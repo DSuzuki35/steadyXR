@@ -44,7 +44,7 @@ For portable OBS, copy `obs-plugin/bin/64bit/vr-stabilizer.dll` to its `obs-plug
 | Input trim, four edges | Remove black bars or window borders before interpreting the image's FOV | 0% |
 | Reset smoothing | Clear pose history without changing any controls | As needed |
 
-The delay slider **does not delay the video or audio**. It changes which older tracking pose is used for the currently rendered image. Any additional Render Delay filter, capture buffering, or different video source requires recalibration. Put VR Stabilizer first among image-processing filters where practical; avoid a separate delayed filter after it during calibration.
+The delay slider **does not delay the video or audio**. It changes which older tracking pose is used for the currently rendered image. A Render Delay filter before VR Stabilizer, changes to capture buffering, or a different video source require recalibration. A delay applied after stabilization delays the already-corrected image and does not itself change the tracking offset. Put VR Stabilizer first among image-processing filters where practical.
 
 Crop values reduce the total span of each axis. For example, a 10% stabilization crop keeps 90% of the width and height before aspect framing, approximately 5% off each edge. Crops combine multiplicatively. Input trimming, stabilization crop, final zoom and aspect fill are combined into one GPU reprojection sample. More framing zoom also leaves more room for correction. Moving framing toward an edge reduces the available motion margin on that side.
 
