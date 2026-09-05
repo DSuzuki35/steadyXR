@@ -1,5 +1,6 @@
 /build*/
 /.deps/
+/.deps
 /dist/
 /.superpowers/
 .DS_Store

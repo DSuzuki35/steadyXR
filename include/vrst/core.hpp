@@ -17,6 +17,9 @@ Quat conjugate(Quat q);
 Quat multiply(Quat a, Quat b);
 Quat slerp(Quat a, Quat b, double t);
 Quat axis_angle(Vec3 axis, double radians);
+// Removes target roll relative to tracking-space up, preserving its look direction.
+// Returns inverse sampling correction conjugate(source) * leveled_target.
+Quat horizon_correction(Quat source, Quat target, double strength_percent, double max_degrees = 45);
 Vec3 rotate(Quat q, Vec3 v);
 double angle_between(Quat a, Quat b);
 bool valid(Quat q);
@@ -38,6 +41,7 @@ struct Pose {
 struct PoseResult {
     bool valid{};
     Quat correction{}; // conjugate(source eye orientation) * smoothed eye orientation
+    Quat source_orientation{}, target_orientation{};
     Projection projection{};
     std::uint64_t time_ns{}, sequence{};
     std::uint32_t flags{};
@@ -67,6 +71,7 @@ struct Settings {
     double horizontal_fov{100}, vertical_fov{90};
     bool automatic_fov{false};
     double delay_ms{80}, smoothing{40}, stabilization_crop{10}, framing_zoom{0};
+    double horizon_level{0}, horizon_max_degrees{45};
     bool output_16_9{true};
     double framing_x{0}, framing_y{0}; // -100..100, within available framing margin
     double input_left{0}, input_right{0}, input_top{0}, input_bottom{0}; // percent per edge
