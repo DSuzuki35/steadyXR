@@ -5,3 +5,4 @@
 /.superpowers/
 .DS_Store
 *.user
+__pycache__/

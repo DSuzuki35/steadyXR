@@ -37,6 +37,6 @@ Consumes include/vrst/image.hpp. Image pipeline captures current source and rend
 Files: tests/gpu_tests.mm or dedicated image GPU/module tests, README.md, version/build/package files, docs/implementation-progress.md.
 
 - [x] Verify actual GPU output and image mode frame pairing/lifecycle.
-- [ ] Review estimator and plugin integration independently; resolve findings.
+- [x] Review estimator and plugin integration independently; resolve findings.
 - [ ] Run portable suites, Windows builds and Windows/Linux CI; verify package and imports.
 - [ ] Update guide and publish source and v0.2.0 in the existing private repository.
