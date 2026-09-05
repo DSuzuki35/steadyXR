@@ -105,5 +105,11 @@ finally:
     output = process.communicate(timeout=3)[0]
     for client in clients:
         client.close()
-    assert process.returncode == 0, output
-print("PASS signal shutdown")
+    # Windows terminate() uses TerminateProcess, which does not run signal handlers.
+    # communicate(timeout=3) verifies bounded cleanup; only POSIX tests graceful exit.
+    if sys.platform != "win32":
+        assert process.returncode == 0, output
+if sys.platform == "win32":
+    print("PASS bounded forced process cleanup on Windows; graceful shutdown not tested")
+else:
+    print("PASS graceful SIGTERM shutdown")
