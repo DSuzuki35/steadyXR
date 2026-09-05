@@ -60,18 +60,23 @@ int main() {
               std::abs(r.correction.angle - .012 * std::exp(-1. / 30)) < .0015,
           "roll estimate matches known synthetic rotation");
     tracker.reset();
-    double sum = 0;
+    double sum = 0, motion_sum = 0, previous_output = 0;
     unsigned tracked = 0;
     for (unsigned i = 0; i < 70; ++i) {
         double jitter = (i % 2 ? .7 : -.7);
         r = tracker.process(frame(jitter), step * (i + 1), s);
         if (i > 10) {
             sum += std::pow(jitter - r.correction.x, 2);
+            motion_sum += std::pow(jitter - r.correction.x - previous_output, 2);
             tracked += r.status == ImageStatus::tracking;
         }
+        previous_output = jitter - r.correction.x;
     }
-    check(tracked >= 55 && std::sqrt(sum / 59) < .25,
+    std::printf("jitter RMS %.4f; tracked %u/59\n", std::sqrt(sum / 59), tracked);
+    check(tracked >= 55 && std::sqrt(sum / 59) < .7 * .4,
           "alternating microjitter reduced by more than 60 percent");
+    check(std::sqrt(motion_sum / 59) < 1.4 * .2,
+          "frame-to-frame microjitter motion reduced by more than 80 percent");
     tracker.reset();
     s.max_shift_percent = 1;
     for (unsigned i = 0; i < 70; ++i)
@@ -112,6 +117,51 @@ int main() {
     r = tracker.process(mixed, step * 2, s);
     check(r.status == ImageStatus::tracking && std::abs(r.correction.x - 1.2 * std::exp(-1. / 30)) < .18,
           "selected cockpit region excludes independently moving scenery");
+    tracker.reset();
+    s = config();
+    s.region_left = s.region_right = 20;
+    s.region_top = 40;
+    s.region_bottom = 20;
+    bool isolated = true;
+    for (unsigned i = 0; i < 15; ++i) {
+        auto exterior = frame(i % 2 ? 2 : -2, 0, 0, 480, 270);
+        for (unsigned y = 108; y < 216; ++y)
+            for (unsigned x = 96; x < 384; ++x)
+                exterior.pixels[y * 480 + x] = .5f;
+        auto match = tracker.process(exterior, step * (i + 1), s);
+        isolated &= match.status != ImageStatus::tracking && match.correction.x == 0;
+    }
+    check(isolated, "all tracking patch pixels stay inside the selected region");
+    tracker.reset();
+    s = config();
+    tracker.process(frame(), step, s);
+    auto outliers = frame(1.2, -.7);
+    auto opposite = frame(-5, 3);
+    for (unsigned y = 0; y < H; ++y)
+        for (unsigned x = W * 3 / 4; x < W; ++x)
+            outliers.pixels[y * W + x] = opposite.pixels[y * W + x];
+    r = tracker.process(outliers, step * 2, s);
+    check(r.status == ImageStatus::tracking && std::abs(r.correction.x - 1.16) < .20,
+          "robust fit rejects a moving object covering a quarter of the image");
+    tracker.reset();
+    tracker.process(frame(), step, s);
+    auto brighter = frame();
+    for (auto &pixel : brighter.pixels)
+        pixel = std::min(1.f, pixel + .04f);
+    r = tracker.process(brighter, step * 2, s);
+    check(r.status != ImageStatus::tracking || std::hypot(r.correction.x, r.correction.y) < .10,
+          "brightness change cannot create a large false camera motion");
+    tracker.reset();
+    tracker.process(frame(), step, s);
+    auto cut = frame();
+    std::uint32_t noise = 125;
+    for (auto &pixel : cut.pixels) {
+        noise = noise * 1664525U + 1013904223U;
+        pixel = float(noise >> 16) / 65535.f;
+    }
+    r = tracker.process(cut, step * 2, s);
+    check(r.status != ImageStatus::tracking && r.correction.x == 0,
+          "unrelated scene cut cannot retain previous correction");
     auto bad = frame();
     bad.pixels[7] = std::numeric_limits<float>::quiet_NaN();
     r = tracker.process(bad, step * 3, s);

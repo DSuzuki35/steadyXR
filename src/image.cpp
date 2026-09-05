@@ -62,17 +62,20 @@ Pyramid pyramid(const GrayImage &f) {
     }
     return p;
 }
-std::vector<Point> features(const GrayImage &f, const ImageSettings &s) {
+struct Bounds {
+    int left, right, top, bottom;
+    bool contains(Point p) const {
+        return p.x >= left && p.x < right && p.y >= top && p.y < bottom;
+    }
+};
+std::vector<Point> features(const GrayImage &f, Bounds bounds) {
     struct Candidate {
         double score;
         Point p;
     };
     std::vector<Candidate> candidates;
-    const int w = int(f.width), h = int(f.height), margin = 14;
-    const int left = std::max(margin, int(w * s.region_left / 100)),
-              right = std::min(w - margin, int(w * (1 - s.region_right / 100)));
-    const int top = std::max(margin, int(h * s.region_top / 100)),
-              bottom = std::min(h - margin, int(h * (1 - s.region_bottom / 100)));
+    const int w = int(f.width);
+    const auto [left, right, top, bottom] = bounds;
     // One strong corner per cell provides spatial coverage without quadratic suppression.
     for (int cy = top; cy < bottom; cy += 16)
         for (int cx = left; cx < right; cx += 16) {
@@ -103,7 +106,9 @@ std::vector<Point> features(const GrayImage &f, const ImageSettings &s) {
         points.push_back(candidates[i].p);
     return points;
 }
-std::optional<Point> track(const Pyramid &a, const Pyramid &b, Point p) {
+std::optional<Point> track(const Pyramid &a, const Pyramid &b, Point p, Bounds bounds) {
+    if (!bounds.contains(p))
+        return std::nullopt;
     Point delta{};
     for (int level = int(a.size()) - 1; level >= 0; --level) {
         const auto &old = a[size_t(level)], &cur = b[size_t(level)];
@@ -120,21 +125,33 @@ std::optional<Point> track(const Pyramid &a, const Pyramid &b, Point p) {
         if (o.x < radius + 2 || o.y < radius + 2 || o.x >= old.width - radius - 2 ||
             o.y >= old.height - radius - 2)
             return std::nullopt;
-        double aa = 0, bb = 0, cc = 0;
+        double aa = 0, bb = 0, cc = 0, mean_x = 0, mean_y = 0;
         for (int y = -radius; y <= radius; ++y)
             for (int x = -radius; x <= radius; ++x, ++k) {
                 values[k] = sample(old, o.x + x, o.y + y);
                 gx[k] = (sample(old, o.x + x + 1, o.y + y) - sample(old, o.x + x - 1, o.y + y)) * .5f;
                 gy[k] = (sample(old, o.x + x, o.y + y + 1) - sample(old, o.x + x, o.y + y - 1)) * .5f;
-                aa += gx[k] * gx[k];
-                bb += gx[k] * gy[k];
-                cc += gy[k] * gy[k];
+                mean_x += gx[k];
+                mean_y += gy[k];
             }
+        // Eliminate a free patch-brightness offset from the least-squares system.
+        // A lighting change must not be interpreted as camera translation.
+        mean_x /= n;
+        mean_y /= n;
+        for (unsigned i = 0; i < n; ++i) {
+            gx[i] -= float(mean_x);
+            gy[i] -= float(mean_y);
+            aa += gx[i] * gx[i];
+            bb += gx[i] * gy[i];
+            cc += gy[i] * gy[i];
+        }
         double determinant = aa * cc - bb * bb;
         if (determinant < 1e-9)
             return std::nullopt;
         for (int iteration = 0; iteration < 12; ++iteration) {
             Point q{o.x + delta.x, o.y + delta.y};
+            if (!bounds.contains({q.x * scale, q.y * scale}))
+                return std::nullopt;
             if (q.x < radius + 1 || q.y < radius + 1 || q.x >= cur.width - radius - 2 ||
                 q.y >= cur.height - radius - 2)
                 return std::nullopt;
@@ -156,6 +173,8 @@ std::optional<Point> track(const Pyramid &a, const Pyramid &b, Point p) {
         }
     }
     Point q{p.x + delta.x, p.y + delta.y};
+    if (!bounds.contains(q))
+        return std::nullopt;
     if (q.x < 4 || q.y < 4 || q.x >= b[0].width - 5 || q.y >= b[0].height - 5)
         return std::nullopt;
     // Brightness mismatch helps reject occlusion, cuts and wrong repeated-pattern matches.
@@ -277,14 +296,21 @@ ImageResult ImageStabilizer::process(const GrayImage &f, std::uint64_t time, con
         state.correction = {};
         return done();
     }
-    auto points = features(state.previous[0], s);
+    // Keep the complete coarse patch inside the chosen region, including its
+    // gradient neighbors, bilinear extra sample and box-downsample footprint.
+    const int guard = 6 * (1 << (current.size() - 1));
+    Bounds bounds{int(std::ceil(f.width * s.region_left / 100)) + guard,
+                  int(std::floor(f.width * (1 - s.region_right / 100))) - guard,
+                  int(std::ceil(f.height * s.region_top / 100)) + guard,
+                  int(std::floor(f.height * (1 - s.region_bottom / 100))) - guard};
+    auto points = features(state.previous[0], bounds);
     std::vector<Match> matches;
     const Point center{(f.width - 1) * .5, (f.height - 1) * .5};
     for (auto p : points) {
-        auto q = track(state.previous, current, p);
+        auto q = track(state.previous, current, p, bounds);
         if (!q)
             continue;
-        auto back = track(current, state.previous, *q);
+        auto back = track(current, state.previous, *q, bounds);
         if (!back || distance(p, *back) > .5)
             continue;
         matches.push_back({{p.x - center.x, p.y - center.y}, {q->x - center.x, q->y - center.y}});
