@@ -1,0 +1,59 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float4 row_x;
+uniform float4 row_y;
+uniform float4 trim_uv;
+uniform float4 footprint;
+
+sampler_state linear_clamp {
+    Filter = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertData {
+    float4 pos : POSITION;
+    float2 uv : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v) {
+    v.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+    return v;
+}
+
+float4 PSWarp(VertData v) : TARGET {
+    float3 uv = float3(v.uv, 1.0);
+    return image.Sample(linear_clamp, float2(dot(row_x.xyz, uv), dot(row_y.xyz, uv)));
+}
+
+float4 PSAnalyze(VertData v) : TARGET {
+    float2 p = trim_uv.xy + v.uv * trim_uv.zw;
+    float2 d = footprint.xy;
+    // Four by four bilinear box samples across the footprint of one analysis
+    // pixel suppress aliasing when a 4K input is reduced to 480 by 270.
+    float3 c = image.Sample(linear_clamp, p + d * float2(-0.375, -0.375)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2(-0.125, -0.375)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2( 0.125, -0.375)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2( 0.375, -0.375)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2(-0.375, -0.125)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2(-0.125, -0.125)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2( 0.125, -0.125)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2( 0.375, -0.125)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2(-0.375,  0.125)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2(-0.125,  0.125)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2( 0.125,  0.125)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2( 0.375,  0.125)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2(-0.375,  0.375)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2(-0.125,  0.375)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2( 0.125,  0.375)).rgb;
+    c += image.Sample(linear_clamp, p + d * float2( 0.375,  0.375)).rgb;
+    float gray = dot(c / 16.0, float3(0.2126, 0.7152, 0.0722));
+    return float4(gray, gray, gray, 1.0);
+}
+
+technique Draw {
+    pass { vertex_shader = VSDefault(v); pixel_shader = PSWarp(v); }
+}
+technique Analyze {
+    pass { vertex_shader = VSDefault(v); pixel_shader = PSAnalyze(v); }
+}
