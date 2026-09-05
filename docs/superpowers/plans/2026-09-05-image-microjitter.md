@@ -39,4 +39,4 @@ Files: tests/gpu_tests.mm or dedicated image GPU/module tests, README.md, versio
 - [x] Verify actual GPU output and image mode frame pairing/lifecycle.
 - [x] Review estimator and plugin integration independently; resolve findings.
 - [x] Run portable suites, Windows builds and Windows/Linux CI; verify package and imports.
-- [ ] Update guide and publish source and v0.2.0 in the existing private repository.
+- [x] Update guide and publish source and v0.2.0 in the existing private repository.
