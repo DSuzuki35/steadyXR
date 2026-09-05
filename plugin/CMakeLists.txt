@@ -17,7 +17,9 @@ if(APPLE)
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${CMAKE_CURRENT_SOURCE_DIR}/data"
       "$<TARGET_BUNDLE_DIR:vr-stabilizer>/Contents/Resources")
-  install(TARGETS vr-stabilizer BUNDLE DESTINATION obs-plugins)
+  install(TARGETS vr-stabilizer
+    BUNDLE DESTINATION obs-plugins
+    LIBRARY DESTINATION obs-plugins)
 else()
   install(TARGETS vr-stabilizer
     RUNTIME DESTINATION obs-plugins/64bit
