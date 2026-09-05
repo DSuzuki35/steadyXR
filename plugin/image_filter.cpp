@@ -116,6 +116,10 @@ bool ImageFilter::capture(Slot &slot, obs_source_t *source, const vrst::Settings
     gs_texrender_reset(slot.full);
     if (!gs_texrender_begin_with_color_space(slot.full, width_, height_, GS_CS_SRGB))
         return false;
+    // Match obs_source_process_filter_begin: sources such as Color Source
+    // inherit this state and emit straight alpha. Store premultiplied RGB for
+    // the later ONE / INVSRCALPHA draw of the captured texture.
+    gs_blend_function_separate(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA, GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
     vec4 clear_color;
     vec4_zero(&clear_color);
     gs_clear(GS_CLEAR_COLOR, &clear_color, 0, 0);
@@ -129,6 +133,7 @@ bool ImageFilter::capture(Slot &slot, obs_source_t *source, const vrst::Settings
     slot.captured = true;
     slot.time = obs_get_video_frame_time();
 
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
     gs_texrender_reset(slot.small);
     if (!gs_texrender_begin(slot.small, small_width_, small_height_))
         return true; // Full video remains usable when analysis allocation fails.

@@ -10,7 +10,7 @@
 
 namespace {
 std::atomic<unsigned> draws{0}, source_width{640}, source_height{480};
-std::atomic<float> red{0.2f};
+std::atomic<float> red{0.2f}, alpha{1.f};
 int failures{};
 std::atomic<bool> textured{false};
 std::atomic<float> shift{0};
@@ -39,7 +39,8 @@ unsigned height(void *) {
 void render(void *, gs_effect_t *) {
     auto *effect = obs_get_base_effect(OBS_EFFECT_SOLID);
     vec4 color;
-    vec4_set(&color, red.load(), 0.4f, 0.8f, 1);
+    // Like OBS Color Source, emit straight alpha and inherit the caller's blend state.
+    vec4_set(&color, red.load(), 0.4f, 0.8f, alpha.load());
     gs_effect_set_vec4(gs_effect_get_param_by_name(effect, "color"), &color);
     while (gs_effect_loop(effect, "Solid"))
         gs_draw_sprite(nullptr, 0, source_width.load(), source_height.load());
@@ -75,7 +76,7 @@ void render(void *, gs_effect_t *) {
 struct Capture {
     obs_source_t *source;
     unsigned draws{}, width{}, height{}, bad{};
-    unsigned red[2]{};
+    unsigned red[2]{}, alpha[2]{};
     bool good{true};
     std::vector<uint8_t> patch;
 };
@@ -106,6 +107,7 @@ void capture(void *data) {
         uint32_t stride{};
         if (gs_stagesurface_map(stage, &pixels, &stride)) {
             c.red[repeat] = pixels[(c.height / 2) * stride + (c.width / 2) * 4];
+            c.alpha[repeat] = pixels[(c.height / 2) * stride + (c.width / 2) * 4 + 3];
             for (unsigned y = 0; y < c.height; ++y)
                 for (unsigned x = 0; x < c.width; ++x) {
                     const auto *p = pixels + y * stride + x * 4;
@@ -125,14 +127,17 @@ void capture(void *data) {
     c.draws = draws.load() - before;
     obs_leave_graphics();
 }
-Capture frame(obs_source_t *source, float value) {
+Capture frame(obs_source_t *source, float value, bool opaque = true) {
     red.store(value);
     Capture c{source};
     obs_queue_task(OBS_TASK_GRAPHICS, capture, &c, true);
     std::printf("Frame red %.2f: output %u/%u, draws %u, size %ux%u, uncovered %u\n", value, c.red[0],
                 c.red[1], c.draws, c.width, c.height, c.bad);
-    check(c.good && !c.bad, "image output is opaque and covers every output pixel");
-    check(c.red[0] == c.red[1] && c.draws <= 1,
+    if (opaque)
+        check(c.good && !c.bad, "image output is opaque and covers every output pixel");
+    else
+        check(c.good, "semitransparent output can be read back");
+    check(c.red[0] == c.red[1] && c.alpha[0] == c.alpha[1] && c.draws <= 1,
           "repeat render reuses frame and captures source at most once per video tick");
     return c;
 }
@@ -305,6 +310,33 @@ int main(int argc, char **argv) {
         diagnostics = obs_property_description(obs_properties_get(props, "diagnostics"));
         check(lost.red[0] == first.red[0] && std::strstr(diagnostics, "normal framing"),
               "loss of image texture falls back to uncorrected framing on its matching frame");
+        source_width = 640;
+        source_height = 480;
+        alpha = .5f;
+        obs_data_set_int(settings, "mode", 0);
+        obs_source_update(filter, settings);
+        auto changed_at = obs_get_video_frame_time();
+        while (obs_get_video_frame_time() == changed_at)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const auto transparent_pose = frame(source, .4f, false);
+        obs_data_set_int(settings, "mode", 1);
+        obs_source_update(filter, settings);
+        changed_at = obs_get_video_frame_time();
+        while (obs_get_video_frame_time() == changed_at)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const auto transparent_image = frame(source, .4f, false);
+        const auto transparent_delayed = frame(source, .4f, false);
+        std::printf("Half-alpha red/alpha: pose %u/%u, image %u/%u, delayed %u/%u\n", transparent_pose.red[0],
+                    transparent_pose.alpha[0], transparent_image.red[0], transparent_image.alpha[0],
+                    transparent_delayed.red[0], transparent_delayed.alpha[0]);
+        check(std::abs(int(transparent_pose.red[0]) - 51) <= 1 &&
+                  std::abs(int(transparent_pose.alpha[0]) - 128) <= 1 &&
+                  transparent_image.red[0] == transparent_pose.red[0] &&
+                  transparent_image.alpha[0] == transparent_pose.alpha[0] &&
+                  transparent_delayed.red[0] == transparent_pose.red[0] &&
+                  transparent_delayed.alpha[0] == transparent_pose.alpha[0],
+              "straight-alpha source is premultiplied once in image warm-up and delayed output, matching "
+              "pose mode");
         obs_properties_destroy(props);
         obs_data_release(settings);
         obs_source_dec_showing(source);
