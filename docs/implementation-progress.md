@@ -29,7 +29,7 @@ Plan: docs/superpowers/plans/2026-09-05-vr-stabilizer.md
 
 ## Practical limits
 
-- Windows binaries have not been executed on Windows locally, and hosted CI has not run. The Windows integration test uses bounded force termination for cleanup; graceful Windows console shutdown still requires a Windows check.
+- Hosted CI subsequently built with Visual Studio and executed all four test suites successfully on Windows Server 2022, including the actual sender UDP integration. Linux CI also passed. Live Windows 11 and OBS plugin execution on Windows remain unverified. The Windows integration test uses bounded force termination for cleanup; graceful Windows console shutdown still requires a console check.
 - Live SBoys3/Dream Air/Elgato/iRacing/LMU validation and empirical delay/FOV calibration require the user's two PCs. No claim of exact HDMI frame/pose identity is made.
 - Stabilization corrects rotation only. Unknown game mirror cropping, missing pixels and 90-to-60 video cadence remain constraints.
 
@@ -44,4 +44,4 @@ Plan: docs/superpowers/plans/2026-09-05-vr-stabilizer.md
 
 ## GitHub delivery
 
-The user subsequently requested a new private GitHub repository. The chosen name is **HorizonLock VR** (`horizonlock-vr`). Publish the source on `main`, verify GitHub's Windows build, and attach the Windows package to an experimental release. Live hardware calibration remains outside the available environment.
+The user subsequently requested a new private GitHub repository. **HorizonLock VR** was created at `https://github.com/DSuzuki35/horizonlock-vr`, verified private, and the source pushed to `main`. Both jobs in CI run `33990785936` passed. The Windows package is delivered as an experimental release. Live hardware calibration remains outside the available environment.

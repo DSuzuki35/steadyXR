@@ -4,9 +4,13 @@ A SteamVR tracking sender for the gaming PC and an OBS effect filter for the str
 
 The filter appears as **VR Stabilizer** in OBS. Windows downloads include both components and complete source code.
 
+Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
+
 Version **0.1.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Designed for SBoys3 + SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image.
 
-The Windows DLL and EXE have been cross-compiled and their dependencies inspected. Portable math, actual UDP integration, and OBS GPU rendering are tested. Live Dream Air / Elgato / iRacing / LMU validation still needs your hardware. Manual delay estimates the image/pose relationship; it does not give exact capture-card frame synchronization.
+SteamVR must be running and supplying headset tracking. Native Pimax OpenXR without SteamVR is not supported by this first sender. The OBS filter and UDP protocol are independent of the tracking API, so a future OpenXR provider can reuse them. Capturing the game's poses through an OpenXR API layer is a possible future implementation; it is not included in this release.
+
+The release DLL and EXE have been cross-compiled and their dependencies inspected. The source also builds with Visual Studio and passes all four test suites on GitHub's Windows runner, as well as Linux and local macOS. Actual OBS GPU rendering is tested on macOS. Live Windows 11 / Dream Air / Elgato / iRacing / LMU validation still needs your hardware. Manual delay estimates the image/pose relationship; it does not give exact capture-card frame synchronization. See the [verified Windows and Linux CI run](https://github.com/DSuzuki35/horizonlock-vr/actions/runs/33990785936).
 
 ## Install the downloaded ZIP
 
@@ -114,7 +118,7 @@ For Windows, install Visual Studio 2022's Desktop development with C++ workload,
 ./scripts/build-windows.ps1
 ```
 
-It downloads OBS 32.2.2 headers and runtime exports plus OpenVR 2.15.6, prepares an OBS import library, builds the DLL/EXE, runs the tests, and creates the ZIP in `dist/`. The GitHub Actions workflow performs the same build when the repository is pushed; no hosted CI execution is implied by including the workflow.
+It downloads OBS 32.2.2 headers and runtime exports plus OpenVR 2.15.6, prepares an OBS import library, builds the DLL/EXE, runs the tests, and creates the ZIP in `dist/`. Visual Studio builds use the static C++ runtime by default so the sender needs no separate VC++ redistributable. The GitHub Actions workflow performs the same build when the repository is pushed; its Windows and Linux jobs have passed.
 
 The supplied binaries were cross-built with LLVM-MinGW 20260826. To reproduce from macOS, extract the toolchain from its [upstream release](https://github.com/mstorsjo/llvm-mingw/releases/tag/20260826), then:
 
