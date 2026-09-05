@@ -6,8 +6,12 @@
 
 namespace vrst {
 constexpr double pi = 3.14159265358979323846;
-struct Vec3 { double x{}, y{}, z{}; };
-struct Quat { double x{}, y{}, z{}, w{1}; };
+struct Vec3 {
+    double x{}, y{}, z{};
+};
+struct Quat {
+    double x{}, y{}, z{}, w{1};
+};
 Quat normalized(Quat q);
 Quat conjugate(Quat q);
 Quat multiply(Quat a, Quat b);
@@ -39,15 +43,21 @@ struct PoseResult {
     std::uint32_t flags{};
 };
 class PoseHistory {
-public:
-    bool push(const Pose& pose);
+  public:
+    bool push(const Pose &pose);
     void clear();
     void set_smoothing(double percent);
     PoseResult sample(std::uint64_t time_ns) const;
-    std::size_t size() const { return entries_.size(); }
+    std::size_t size() const {
+        return entries_.size();
+    }
     std::uint64_t latest_time() const;
-private:
-    struct Entry { Pose pose; Quat smooth; };
+
+  private:
+    struct Entry {
+        Pose pose;
+        Quat smooth;
+    };
     std::deque<Entry> entries_;
     double smoothing_{40};
     void recompute();
@@ -68,22 +78,30 @@ struct Warp {
     std::uint32_t width{}, height{};
     double correction_fraction{1};
 };
-Warp make_warp(std::uint32_t width, std::uint32_t height, const Settings& settings,
-               Quat correction = {}, std::optional<Projection> automatic = std::nullopt);
+Warp make_warp(std::uint32_t width, std::uint32_t height, const Settings &settings, Quat correction = {},
+               std::optional<Projection> automatic = std::nullopt);
 // Maps final output normalized coordinates to coordinates in the original input.
-std::array<double,2> map_uv(const Warp& warp, double u, double v);
-bool corners_inside(const Warp& warp);
+std::array<double, 2> map_uv(const Warp &warp, double u, double v);
+bool corners_inside(const Warp &warp);
 
 // Four timestamps: client sent, server received, server sent, client received.
 class ClockSync {
-public:
+  public:
     bool observe(std::uint64_t t1, std::uint64_t t2, std::uint64_t t3, std::uint64_t t4);
-    bool ready() const { return !samples_.empty(); }
+    bool ready() const {
+        return !samples_.empty();
+    }
     double offset_ns() const; // server minus client
     double rtt_ms() const;
-    void clear() { samples_.clear(); }
-private:
-    struct Sample { double offset, rtt; std::uint64_t at; };
+    void clear() {
+        samples_.clear();
+    }
+
+  private:
+    struct Sample {
+        double offset, rtt;
+        std::uint64_t at;
+    };
     std::deque<Sample> samples_;
 };
 std::uint64_t monotonic_ns();

@@ -12,15 +12,16 @@ struct TrackingSnapshot {
     std::string status;
 };
 class Receiver {
-public:
+  public:
     Receiver();
     ~Receiver();
-    Receiver(const Receiver&) = delete;
-    Receiver& operator=(const Receiver&) = delete;
-    void configure(const std::string& host, std::uint16_t port);
+    Receiver(const Receiver &) = delete;
+    Receiver &operator=(const Receiver &) = delete;
+    void configure(const std::string &host, std::uint16_t port);
     TrackingSnapshot snapshot(double delay_ms, double smoothing);
     void reset();
-private:
+
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

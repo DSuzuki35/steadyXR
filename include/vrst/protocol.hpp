@@ -13,6 +13,6 @@ struct Message {
     std::uint64_t nonce{}, client_send{}, server_receive{}, server_send{}, session{};
     Pose pose{};
 };
-std::vector<std::uint8_t> encode(const Message& message);
-std::optional<Message> decode(const std::uint8_t* data, std::size_t length);
+std::vector<std::uint8_t> encode(const Message &message);
+std::optional<Message> decode(const std::uint8_t *data, std::size_t length);
 } // namespace vrst::wire
