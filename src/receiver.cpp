@@ -142,6 +142,11 @@ void Receiver::reset() {
     impl_->history.clear();
 }
 TrackingSnapshot Receiver::snapshot(double delay_ms, double smoothing) {
+    MotionSettings settings;
+    settings.amount = smoothing;
+    return snapshot(delay_ms, settings);
+}
+TrackingSnapshot Receiver::snapshot(double delay_ms, const MotionSettings &smoothing) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     auto now = monotonic_ns();
     TrackingSnapshot s;
@@ -159,6 +164,9 @@ TrackingSnapshot Receiver::snapshot(double delay_ms, double smoothing) {
         s.pose = impl_->history.sample(static_cast<std::uint64_t>(target));
     auto pose_time = s.pose.valid ? s.pose.time_ns : impl_->history.latest_time();
     s.pose_age_ms = pose_time ? (remote_now - static_cast<double>(pose_time)) * 1e-6 : 0;
+    const double local_pose_time = static_cast<double>(s.pose.time_ns) - impl_->clock.offset_ns();
+    if (s.pose.valid && local_pose_time > 0 && local_pose_time < static_cast<double>(UINT64_MAX))
+        s.local_pose_time_ns = static_cast<std::uint64_t>(local_pose_time);
     if (!impl_->error.empty())
         s.status = impl_->error;
     else if (!s.clock_ready)

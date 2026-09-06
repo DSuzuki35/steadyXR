@@ -65,6 +65,14 @@ int main() {
             std::cerr << "FAIL 80ms lookback used current tracking\n";
             ++failures;
         }
+        const auto local_now = vrst::monotonic_ns();
+        if (!s.local_pose_time_ns || s.local_pose_time_ns > local_now ||
+            local_now - s.local_pose_time_ns < 65000000ULL ||
+            local_now - s.local_pose_time_ns > 200000000ULL) {
+            std::cerr << "FAIL selected pose timestamp did not map back to local monotonic clock\n";
+            ++failures;
+        } else
+            std::cout << "PASS mapped pose timestamp accounts for remote clock offset and delay\n";
         emit = false;
         std::this_thread::sleep_for(std::chrono::milliseconds(350));
         if (client.snapshot(80, 50).pose.valid) {

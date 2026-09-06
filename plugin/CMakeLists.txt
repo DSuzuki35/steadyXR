@@ -1,4 +1,4 @@
-add_library(vr-stabilizer MODULE obs_filter.cpp image_filter.cpp)
+add_library(vr-stabilizer MODULE obs_filter.cpp image_filter.cpp presets.cpp calibration_session.cpp)
 target_compile_features(vr-stabilizer PRIVATE cxx_std_17)
 target_link_libraries(vr-stabilizer PRIVATE vrst_receiver vrst_core OBS::libobs)
 set_target_properties(vr-stabilizer PROPERTIES PREFIX "" OUTPUT_NAME "vr-stabilizer")

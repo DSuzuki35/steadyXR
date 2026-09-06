@@ -1,6 +1,9 @@
 #include <obs-module.h>
 
+#include "calibration_session.hpp"
 #include "image_filter.hpp"
+#include "presets.hpp"
+#include "vrst/advanced.hpp"
 #include "vrst/core.hpp"
 #include "vrst/protocol.hpp"
 #include "vrst/receiver.hpp"
@@ -25,7 +28,11 @@ namespace {
 struct Configuration {
     vrst::Settings warp;
     vrst::ImageSettings image;
-    bool image_mode{};
+    bool image_mode{}, comparison{};
+    int mode{};
+    vrst::MotionSettings motion;
+    vrst::CropSettings crop;
+    std::string signature, image_signature;
     std::uint64_t image_revision{};
     std::string host;
     std::uint16_t port{vrst::wire::default_port};
@@ -37,10 +44,13 @@ struct Filter {
 
     obs_source_t *const source;
     vrst::Receiver receiver;
+    vrst_plugin::CalibrationSession calibration;
+    obs_hotkey_id hotkeys[3]{OBS_INVALID_HOTKEY_ID, OBS_INVALID_HOTKEY_ID, OBS_INVALID_HOTKEY_ID};
     std::mutex configuration_mutex;
     Configuration configuration;
     std::atomic<std::uint64_t> dimensions{0};
     std::atomic<double> applied_correction{1};
+    std::atomic<double> effective_crop{10};
     std::atomic<bool> using_automatic_fov{false};
     std::atomic<bool> reset_image{false};
     std::mutex image_diagnostics_mutex;
@@ -48,7 +58,13 @@ struct Filter {
 
     // Owned by the graphics thread after create; UI callbacks never read these.
     ImageFilter image;
-    bool image_active{};
+    bool image_active{}, calibration_active{};
+    vrst::CropController crop_controller;
+    std::uint64_t rendered_configuration_revision{};
+    obs_source_t *calibration_target{};
+    unsigned calibration_width{}, calibration_height{};
+    obs_source_t *crop_target{};
+    unsigned crop_width{}, crop_height{};
     gs_effect_t *effect{};
     gs_eparam_t *input_projection{};
     gs_eparam_t *output_projection{};
@@ -82,7 +98,11 @@ void update(void *data, obs_data_t *settings) {
     if (!filter)
         return;
     Configuration next;
-    next.image_mode = obs_data_get_int(settings, "mode") == 1;
+    next.mode = int(std::clamp<std::int64_t>(obs_data_get_int(settings, "mode"), 0, 2));
+    next.image_mode = next.mode == 1;
+    next.comparison = obs_data_get_bool(settings, "comparison");
+    next.signature = vrst_plugin::tuning_signature(settings);
+    next.image_signature = vrst_plugin::pipeline_signature(settings);
     next.host = obs_data_get_string(settings, "gaming_pc");
     const auto first = next.host.find_first_not_of(" \t\r\n");
     next.host = first == std::string::npos
@@ -98,6 +118,17 @@ void update(void *data, obs_data_t *settings) {
     s.smoothing = number(settings, "smoothing", 40, 0, 100);
     s.horizon_level = number(settings, "horizon_level", 0, 0, 100);
     s.horizon_max_degrees = number(settings, "horizon_max_degrees", 45, 0, 60);
+    next.motion.amount = s.smoothing;
+    next.motion.separate_axes = obs_data_get_bool(settings, "separate_axes");
+    next.motion.yaw = number(settings, "smoothing_yaw", 40, 0, 100);
+    next.motion.pitch = number(settings, "smoothing_pitch", 40, 0, 100);
+    next.motion.roll = number(settings, "smoothing_roll", 40, 0, 100);
+    next.motion.turn_follow = number(settings, "turn_follow", 0, 0, 100);
+    next.motion.turn_speed = number(settings, "turn_speed", 90, 10, 360);
+    next.crop.enabled = obs_data_get_bool(settings, "auto_crop");
+    next.crop.max_extra = number(settings, "auto_crop_extra", 10, 0, 20);
+    next.crop.speed = number(settings, "auto_crop_speed", 3, 0.1, 10);
+    next.image.motion = next.motion;
     next.image.smoothing = s.smoothing;
     next.image.max_shift_percent = number(settings, "image_max_shift", 1, 0, 5);
     next.image.max_roll_degrees = number(settings, "image_max_roll", 0.5, 0, 5);
@@ -125,15 +156,12 @@ void update(void *data, obs_data_t *settings) {
                               next.image_mode != filter->configuration.image_mode;
     next.peer_revision = filter->configuration.peer_revision + (peer_changed ? 1 : 0);
     const auto &old = filter->configuration;
-    const bool image_changed =
-        next.image_mode != old.image_mode || s.input_left != old.warp.input_left ||
-        s.input_right != old.warp.input_right || s.input_top != old.warp.input_top ||
-        s.input_bottom != old.warp.input_bottom || next.image.region_left != old.image.region_left ||
-        next.image.region_right != old.image.region_right || next.image.region_top != old.image.region_top ||
-        next.image.region_bottom != old.image.region_bottom;
+    const bool image_changed = next.image_signature != old.image_signature;
     next.image_revision = old.image_revision + (image_changed ? 1 : 0);
+    const bool canceled = next.signature != old.signature &&
+                          filter->calibration.invalidate("Settings changed. Start a new calibration.");
     filter->configuration = next;
-    if (peer_changed)
+    if (peer_changed || canceled)
         filter->receiver.configure(next.image_mode ? "" : next.host, next.port);
 }
 
@@ -145,6 +173,9 @@ void destroy(void *data) {
     auto *filter = static_cast<Filter *>(data);
     if (!filter)
         return;
+    for (auto id : filter->hotkeys)
+        if (id != OBS_INVALID_HOTKEY_ID)
+            obs_hotkey_unregister(id);
     signal_handler_disconnect(obs_source_get_signal_handler(filter->source), "enable", enabled_changed,
                               filter);
     obs_enter_graphics();
@@ -153,6 +184,10 @@ void destroy(void *data) {
     obs_leave_graphics();
     delete filter; // Receiver destructor stops and joins its worker and closes the socket.
 }
+
+void compare_hotkey(void *, obs_hotkey_id, obs_hotkey_t *, bool);
+void reset_hotkey(void *, obs_hotkey_id, obs_hotkey_t *, bool);
+void preset_hotkey(void *, obs_hotkey_id, obs_hotkey_t *, bool);
 
 void *create(obs_data_t *settings, obs_source_t *source) {
     std::unique_ptr<Filter> filter;
@@ -187,6 +222,12 @@ void *create(obs_data_t *settings, obs_source_t *source) {
         update(filter.get(), settings);
         signal_handler_connect(obs_source_get_signal_handler(source), "enable", enabled_changed,
                                filter.get());
+        filter->hotkeys[0] = obs_hotkey_register_source(source, "vrst_compare", text("Compare.Hotkey"),
+                                                        compare_hotkey, filter.get());
+        filter->hotkeys[1] = obs_hotkey_register_source(source, "vrst_reset", text("ResetSmoothing"),
+                                                        reset_hotkey, filter.get());
+        filter->hotkeys[2] = obs_hotkey_register_source(source, "vrst_next_preset", text("Preset.Next"),
+                                                        preset_hotkey, filter.get());
         return filter.release();
     } catch (const std::exception &error) {
         blog(LOG_ERROR, "[vr-stabilizer] Cannot create filter: %s", error.what());
@@ -197,6 +238,16 @@ void *create(obs_data_t *settings, obs_source_t *source) {
 
 void defaults(obs_data_t *settings) {
     obs_data_set_default_int(settings, "mode", 0);
+    obs_data_set_default_bool(settings, "comparison", false);
+    obs_data_set_default_bool(settings, "separate_axes", false);
+    for (const char *key : {"smoothing_yaw", "smoothing_pitch", "smoothing_roll"})
+        obs_data_set_default_double(settings, key, 40);
+    obs_data_set_default_double(settings, "turn_follow", 0);
+    obs_data_set_default_double(settings, "turn_speed", 90);
+    obs_data_set_default_bool(settings, "auto_crop", false);
+    obs_data_set_default_double(settings, "auto_crop_extra", 10);
+    obs_data_set_default_double(settings, "auto_crop_speed", 3);
+    obs_data_set_default_string(settings, "preset_name", "iRacing");
     obs_data_set_default_double(settings, "horizon_level", 0);
     obs_data_set_default_double(settings, "horizon_max_degrees", 45);
     obs_data_set_default_double(settings, "image_max_shift", 1);
@@ -244,7 +295,10 @@ std::string html_escape(const std::string &value) {
     return result;
 }
 
+void refresh_calibration(obs_properties_t *, Filter *);
+
 void refresh_diagnostics(obs_properties_t *properties, Filter *filter) {
+    refresh_calibration(properties, filter);
     auto *property = obs_properties_get(properties, "diagnostics");
     if (!property)
         return;
@@ -254,7 +308,7 @@ void refresh_diagnostics(obs_properties_t *properties, Filter *filter) {
         return;
     }
     const auto configuration = filter->settings();
-    if (configuration.image_mode) {
+    if (configuration.mode != 0) {
         vrst::ImageResult result;
         {
             std::lock_guard<std::mutex> lock(filter->image_diagnostics_mutex);
@@ -279,23 +333,29 @@ void refresh_diagnostics(obs_properties_t *properties, Filter *filter) {
         }
         const auto size = filter->dimensions.load(std::memory_order_relaxed);
         std::ostringstream message;
-        message << std::fixed << std::setprecision(1) << "<b>" << text("Mode.Image") << "</b><br/>"
-                << text(status) << "<br/>" << text("Image.Confidence") << ": " << result.confidence * 100
-                << "% | " << text("Image.Inliers") << ": " << result.inliers << " / " << result.tracked
-                << "<br/>" << text("Image.Processing") << ": " << result.processing_ms << " ms | "
-                << result.width << " x " << result.height << "<br/>" << text("Image.Delay") << "<br/>"
+        message << std::fixed << std::setprecision(1) << "<b>"
+                << text(configuration.mode == 2 ? "Mode.Hybrid" : "Mode.Image") << "</b><br/>" << text(status)
+                << "<br/>" << text("Image.Confidence") << ": " << result.confidence * 100 << "% | "
+                << text("Image.Inliers") << ": " << result.inliers << " / " << result.tracked << "<br/>"
+                << text("Image.Processing") << ": " << result.processing_ms << " ms | " << result.width
+                << " x " << result.height << "<br/>" << text("Image.Delay") << "<br/>"
                 << text("Status.Output") << ": " << (size >> 32) << " x " << (size & 0xffffffffu) << " | "
                 << text("Status.Correction") << ": "
                 << filter->applied_correction.load(std::memory_order_relaxed) * 100 << '%' << "<br/>"
                 << text("Status.RefreshHint");
+        message << "<br/>" << text("AutoCrop.Effective") << ": " << filter->effective_crop.load() << "%";
+        if (configuration.mode == 2)
+            message
+                << "<br/>"
+                << html_escape(
+                       filter->receiver.snapshot(configuration.warp.delay_ms, configuration.motion).status);
         obs_property_set_description(property, message.str().c_str());
         obs_property_text_set_info_type(property, result.status == vrst::ImageStatus::tracking
                                                       ? OBS_TEXT_INFO_NORMAL
                                                       : OBS_TEXT_INFO_WARNING);
         return;
     }
-    const auto snapshot =
-        filter->receiver.snapshot(configuration.warp.delay_ms, configuration.warp.smoothing);
+    const auto snapshot = filter->receiver.snapshot(configuration.warp.delay_ms, configuration.motion);
     std::ostringstream message;
     message << std::fixed << std::setprecision(1) << "<b>" << text("Status.Connection") << ":</b> "
             << html_escape(snapshot.status) << "<br/>";
@@ -327,6 +387,7 @@ void refresh_diagnostics(obs_properties_t *properties, Filter *filter) {
                             ? "Status.AutoFOV"
                             : "Status.ManualFallback");
     message << "<br/>" << text("Status.RefreshHint");
+    message << "<br/>" << text("AutoCrop.Effective") << ": " << filter->effective_crop.load() << "%";
     obs_property_set_description(property, message.str().c_str());
     obs_property_text_set_info_type(property,
                                     snapshot.pose.valid ? OBS_TEXT_INFO_NORMAL : OBS_TEXT_INFO_WARNING);
@@ -347,14 +408,152 @@ bool reset_clicked(obs_properties_t *properties, obs_property_t *, void *data) {
     return true;
 }
 
+void refresh_calibration(obs_properties_t *props, Filter *filter) {
+    auto *info = obs_properties_get(props, "calibration_status");
+    if (!info)
+        return;
+    const auto state = filter ? filter->calibration.state() : vrst_plugin::CalibrationState{};
+    std::ostringstream message;
+    message << html_escape(state.message) << "<br/>" << std::fixed << std::setprecision(1) << state.seconds
+            << " s | " << state.poses << " poses | " << state.motions << " image observations";
+    if (state.result.valid)
+        message << "<br/>Delay: " << state.result.delay_ms
+                << " ms | Effective FOV: " << state.result.horizontal_fov << "° × "
+                << state.result.vertical_fov << "° | Confidence: " << state.result.confidence * 100 << "%";
+    message << "<br/>" << text("Calibration.Description");
+    obs_property_set_description(info, message.str().c_str());
+    obs_property_set_enabled(obs_properties_get(props, "calibration_start"), filter && !state.active);
+    obs_property_set_enabled(obs_properties_get(props, "calibration_finish"),
+                             filter && (state.active || state.poses || state.motions));
+    obs_property_set_enabled(obs_properties_get(props, "calibration_apply"),
+                             filter && state.result.valid && !state.active);
+}
+
+void refresh_presets(obs_properties_t *props, obs_data_t *settings) {
+    auto *list = obs_properties_get(props, "preset_name");
+    if (!list)
+        return;
+    obs_property_list_clear(list);
+    for (const auto &name : vrst_plugin::preset_names(settings))
+        obs_property_list_add_string(list, name.c_str(), name.c_str());
+}
+
+bool preset_clicked(obs_properties_t *props, obs_property_t *property, void *data) {
+    auto *filter = static_cast<Filter *>(data);
+    if (!filter)
+        return false;
+    auto *settings = obs_source_get_settings(filter->source);
+    const std::string name = obs_data_get_string(settings, "preset_name");
+    const std::string action = obs_property_name(property);
+    bool ok = false;
+    if (action == "preset_save")
+        ok = vrst_plugin::save_preset(settings, name);
+    if (action == "preset_load")
+        ok = vrst_plugin::load_preset(settings, name);
+    if (action == "preset_delete")
+        ok = vrst_plugin::delete_preset(settings, name);
+    if (ok) {
+        update(filter, settings);
+        obs_source_update(filter->source, settings);
+        refresh_presets(props, settings);
+        obs_properties_apply_settings(props, settings);
+    }
+    obs_property_set_description(obs_properties_get(props, "preset_status"),
+                                 text(ok ? "Preset.Success" : "Preset.Failed"));
+    obs_data_release(settings);
+    refresh_calibration(props, filter);
+    return true;
+}
+
+bool calibration_clicked(obs_properties_t *props, obs_property_t *property, void *data) {
+    auto *filter = static_cast<Filter *>(data);
+    if (!filter)
+        return false;
+    const std::string action = obs_property_name(property);
+    auto *settings = obs_source_get_settings(filter->source);
+    update(filter, settings);
+    const auto configuration = filter->settings();
+    if (action == "calibration_start") {
+        filter->calibration.start(vrst::monotonic_ns());
+        filter->receiver.configure(configuration.host, configuration.port);
+        filter->reset_image.store(true);
+    } else if (action == "calibration_finish") {
+        filter->calibration.finish();
+        filter->receiver.configure(configuration.image_mode ? "" : configuration.host, configuration.port);
+        filter->reset_image.store(true);
+    } else if (action == "calibration_apply") {
+        const auto result = filter->calibration.state().result;
+        if (result.valid && !filter->calibration.active()) {
+            obs_data_set_double(settings, "delay_ms", result.delay_ms);
+            obs_data_set_double(settings, "horizontal_fov", result.horizontal_fov);
+            obs_data_set_double(settings, "vertical_fov", result.vertical_fov);
+            obs_data_set_bool(settings, "automatic_fov", false);
+            update(filter, settings);
+            obs_source_update(filter->source, settings);
+            obs_properties_apply_settings(props, settings);
+        }
+    }
+    obs_data_release(settings);
+    refresh_calibration(props, filter);
+    return true;
+}
+
+void compare_hotkey(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+    if (!pressed)
+        return;
+    auto *filter = static_cast<Filter *>(data);
+    auto *settings = obs_source_get_settings(filter->source);
+    obs_data_set_bool(settings, "comparison", !obs_data_get_bool(settings, "comparison"));
+    obs_source_update(filter->source, settings);
+    obs_data_release(settings);
+    obs_source_update_properties(filter->source);
+}
+void reset_hotkey(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+    if (!pressed)
+        return;
+    auto *filter = static_cast<Filter *>(data);
+    filter->receiver.reset();
+    filter->reset_image.store(true);
+    filter->calibration.invalidate("Smoothing reset. Start a new calibration.");
+}
+void preset_hotkey(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+    if (!pressed)
+        return;
+    auto *filter = static_cast<Filter *>(data);
+    auto *settings = obs_source_get_settings(filter->source);
+    const auto names = vrst_plugin::preset_names(settings);
+    if (!names.empty()) {
+        const std::string current = obs_data_get_string(settings, "preset_name");
+        auto it = std::upper_bound(names.begin(), names.end(), current);
+        if (it == names.end())
+            it = names.begin();
+        if (vrst_plugin::load_preset(settings, *it))
+            obs_source_update(filter->source, settings);
+        obs_source_update_properties(filter->source);
+    }
+    obs_data_release(settings);
+}
+
+bool advanced_changed(obs_properties_t *props, obs_property_t *, obs_data_t *settings) {
+    for (const char *key : {"smoothing_yaw", "smoothing_pitch", "smoothing_roll"})
+        obs_property_set_visible(obs_properties_get(props, key),
+                                 obs_data_get_bool(settings, "separate_axes"));
+    obs_property_set_enabled(obs_properties_get(props, "smoothing"),
+                             !obs_data_get_bool(settings, "separate_axes"));
+    for (const char *key : {"auto_crop_extra", "auto_crop_speed"})
+        obs_property_set_visible(obs_properties_get(props, key), obs_data_get_bool(settings, "auto_crop"));
+    return true;
+}
+
 bool mode_changed(obs_properties_t *properties, obs_property_t *, obs_data_t *settings) {
-    const bool image = obs_data_get_int(settings, "mode") == 1;
+    const auto mode = obs_data_get_int(settings, "mode");
+    const bool image = mode == 1;
     for (const char *key : {"gaming_pc", "port", "automatic_fov", "horizontal_fov", "vertical_fov",
                             "delay_ms", "horizon_level", "horizon_max_degrees"})
         obs_property_set_visible(obs_properties_get(properties, key), !image);
     for (const char *key : {"image_max_shift", "image_max_roll", "image_track_roll", "region_left",
                             "region_right", "region_top", "region_bottom"})
-        obs_property_set_visible(obs_properties_get(properties, key), image);
+        obs_property_set_visible(obs_properties_get(properties, key), mode != 0);
     return true;
 }
 
@@ -378,6 +577,7 @@ obs_properties_t *properties(void *data) {
     auto *p = obs_properties_add_list(props, "mode", text("Mode"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
     obs_property_list_add_int(p, text("Mode.Pose"), 0);
     obs_property_list_add_int(p, text("Mode.Image"), 1);
+    obs_property_list_add_int(p, text("Mode.Hybrid"), 2);
     obs_property_set_modified_callback(p, mode_changed);
     p = obs_properties_add_text(props, "gaming_pc", text("GamingPC"), OBS_TEXT_DEFAULT);
     obs_property_set_long_description(p, text("GamingPC.Description"));
@@ -389,7 +589,16 @@ obs_properties_t *properties(void *data) {
     slider(props, "horizontal_fov", "HorizontalFOV", 10, 170, 0.1, "°", "ManualFOV.Description");
     slider(props, "vertical_fov", "VerticalFOV", 10, 170, 0.1, "°", "ManualFOV.Description");
     slider(props, "delay_ms", "Delay", 0, 1000, 1, " ms", "Delay.Description");
+    p = obs_properties_add_bool(props, "comparison", text("Compare"));
+    obs_property_set_long_description(p, text("Compare.Description"));
     slider(props, "smoothing", "Smoothing", 0, 100, 1, "%", "Smoothing.Description");
+    p = obs_properties_add_bool(props, "separate_axes", text("Axes"));
+    obs_property_set_modified_callback(p, advanced_changed);
+    slider(props, "smoothing_yaw", "Axes.Yaw", 0, 100, 1, "%", "Axes.Description");
+    slider(props, "smoothing_pitch", "Axes.Pitch", 0, 100, 1, "%", "Axes.Description");
+    slider(props, "smoothing_roll", "Axes.Roll", 0, 100, 1, "%", "Axes.Description");
+    slider(props, "turn_follow", "TurnFollow", 0, 100, 1, "%", "TurnFollow.Description");
+    slider(props, "turn_speed", "TurnSpeed", 10, 360, 1, "°/s", "TurnSpeed.Description");
     slider(props, "horizon_level", "HorizonLevel", 0, 100, 1, "%", "HorizonLevel.Description");
     slider(props, "horizon_max_degrees", "HorizonMax", 0, 60, 1, "°", "HorizonMax.Description");
     slider(props, "image_max_shift", "Image.MaxShift", 0, 5, 0.1, "%", "Image.MaxShift.Description");
@@ -402,6 +611,10 @@ obs_properties_t *properties(void *data) {
     slider(props, "region_bottom", "Image.RegionBottom", 0, 90, 1, "%", "Image.Region.Description");
     slider(props, "stabilization_crop", "StabilizationCrop", 0, 40, 0.1, "%",
            "StabilizationCrop.Description");
+    p = obs_properties_add_bool(props, "auto_crop", text("AutoCrop"));
+    obs_property_set_modified_callback(p, advanced_changed);
+    slider(props, "auto_crop_extra", "AutoCrop.Extra", 0, 20, 0.1, "%", "AutoCrop.Description");
+    slider(props, "auto_crop_speed", "AutoCrop.Speed", 0.1, 10, 0.1, "%/s", "AutoCrop.Description");
     slider(props, "framing_zoom", "FramingZoom", 0, 40, 0.1, "%", "FramingZoom.Description");
     p = obs_properties_add_bool(props, "output_16_9", text("Output16x9"));
     obs_property_set_long_description(p, text("Output16x9.Description"));
@@ -411,12 +624,28 @@ obs_properties_t *properties(void *data) {
     slider(props, "input_right", "InputRight", 0, 45, 0.1, "%", "InputTrim.Description");
     slider(props, "input_top", "InputTop", 0, 45, 0.1, "%", "InputTrim.Description");
     slider(props, "input_bottom", "InputBottom", 0, 45, 0.1, "%", "InputTrim.Description");
+    p = obs_properties_add_list(props, "preset_name", text("Preset.Name"), OBS_COMBO_TYPE_EDITABLE,
+                                OBS_COMBO_FORMAT_STRING);
+    obs_property_set_long_description(p, text("Preset.Description"));
+    obs_properties_add_button2(props, "preset_save", text("Preset.Save"), preset_clicked, data);
+    obs_properties_add_button2(props, "preset_load", text("Preset.Load"), preset_clicked, data);
+    obs_properties_add_button2(props, "preset_delete", text("Preset.Delete"), preset_clicked, data);
+    obs_properties_add_text(props, "preset_status", "", OBS_TEXT_INFO);
+    obs_properties_add_button2(props, "calibration_start", text("Calibration.Start"), calibration_clicked,
+                               data);
+    obs_properties_add_button2(props, "calibration_finish", text("Calibration.Finish"), calibration_clicked,
+                               data);
+    obs_properties_add_button2(props, "calibration_apply", text("Calibration.Apply"), calibration_clicked,
+                               data);
+    obs_properties_add_text(props, "calibration_status", "", OBS_TEXT_INFO);
     obs_properties_add_text(props, "diagnostics", "", OBS_TEXT_INFO);
     obs_properties_add_button2(props, "refresh_diagnostics", text("RefreshDiagnostics"), refresh_clicked,
                                data);
     p = obs_properties_add_button2(props, "reset_smoothing", text("ResetSmoothing"), reset_clicked, data);
     obs_property_set_long_description(p, text("ResetSmoothing.Description"));
     auto *settings = data ? obs_source_get_settings(static_cast<Filter *>(data)->source) : obs_data_create();
+    refresh_presets(props, settings);
+    advanced_changed(props, nullptr, settings);
     mode_changed(props, nullptr, settings);
     automatic_changed(props, nullptr, settings);
     obs_data_release(settings);
@@ -428,11 +657,27 @@ void tick(void *data, float) {
     auto *filter = static_cast<Filter *>(data);
     const auto configuration = filter->settings();
     filter->image.tick();
-    const bool image_active = configuration.image_mode && obs_source_enabled(filter->source);
+    bool calibrating = filter->calibration.active();
+    if (calibrating) {
+        vrst::MotionSettings raw;
+        raw.amount = 0;
+        filter->calibration.pose(filter->receiver.snapshot(0, raw), vrst::monotonic_ns());
+        calibrating = filter->calibration.active();
+    }
+    if (calibrating != filter->calibration_active) {
+        filter->reset_image.store(true);
+        filter->calibration_target = nullptr;
+        if (!calibrating)
+            filter->receiver.configure(configuration.image_mode ? "" : configuration.host,
+                                       configuration.port);
+    }
+    filter->calibration_active = calibrating;
+    const bool image_active = (configuration.mode != 0 || calibrating) && obs_source_enabled(filter->source);
     if ((!image_active && filter->image_active) ||
         filter->reset_image.exchange(false, std::memory_order_relaxed)) {
         obs_enter_graphics();
         filter->image.clear();
+        filter->crop_controller.reset();
         obs_leave_graphics();
         std::lock_guard<std::mutex> lock(filter->image_diagnostics_mutex);
         filter->image_diagnostics = {};
@@ -440,6 +685,7 @@ void tick(void *data, float) {
     filter->image_active = image_active;
     auto *target = obs_filter_get_target(filter->source);
     if (!target) {
+        filter->calibration.invalidate("Capture source unavailable. Start a new calibration.");
         filter->reset_image.store(true, std::memory_order_relaxed);
         filter->dimensions.store(0, std::memory_order_relaxed);
         return;
@@ -447,11 +693,12 @@ void tick(void *data, float) {
     const auto source_width = obs_source_get_base_width(target);
     const auto source_height = obs_source_get_base_height(target);
     if (!source_width || !source_height) {
+        filter->calibration.invalidate("Capture size unavailable. Start a new calibration.");
         filter->reset_image.store(true, std::memory_order_relaxed);
         filter->dimensions.store(0, std::memory_order_relaxed);
         return;
     }
-    if (configuration.image_mode)
+    if (configuration.mode != 0 || calibrating)
         filter->set_dimensions(vrst::make_image_warp(source_width, source_height, configuration.warp, {}));
     else
         filter->set_dimensions(vrst::make_warp(source_width, source_height, configuration.warp));
@@ -473,17 +720,67 @@ void render(void *data, gs_effect_t *) {
     }
     const auto width = obs_source_get_base_width(target);
     const auto height = obs_source_get_base_height(target);
+    if (filter->crop_target != target || filter->crop_width != width || filter->crop_height != height) {
+        filter->crop_controller.reset();
+        filter->crop_target = target;
+        filter->crop_width = width;
+        filter->crop_height = height;
+    }
     if (!width || !height) {
         filter->dimensions.store(0, std::memory_order_relaxed);
         obs_source_skip_video_filter(filter->source);
         return;
     }
     const auto configuration = filter->settings();
-    if (configuration.image_mode) {
+    bool calibrating = filter->calibration.active();
+    if (calibrating) {
+        if (filter->calibration_target &&
+            (filter->calibration_target != target || width != filter->calibration_width ||
+             height != filter->calibration_height)) {
+            filter->calibration.invalidate("Capture source or size changed. Start a new calibration.");
+            filter->reset_image.store(true);
+            calibrating = false;
+        }
+        filter->calibration_target = target;
+        filter->calibration_width = width;
+        filter->calibration_height = height;
+    }
+    if (configuration.image_revision != filter->rendered_configuration_revision) {
+        filter->crop_controller.reset();
+        filter->rendered_configuration_revision = configuration.image_revision;
+    }
+    if (configuration.mode != 0 || calibrating) {
+        auto image_settings = configuration.image;
+        ImageRenderOptions options;
+        options.hybrid = configuration.mode == 2 && !calibrating;
+        options.comparison = configuration.comparison || calibrating;
+        options.crop = configuration.crop;
+        if (calibrating) {
+            image_settings.smoothing = 0;
+            image_settings.motion = {};
+            image_settings.motion.amount = 0;
+            options.crop.enabled = false;
+        }
+        if (options.hybrid) {
+            const auto snapshot =
+                filter->receiver.snapshot(configuration.warp.delay_ms, configuration.motion);
+            options.pose = snapshot.pose;
+            if (configuration.peer_revision != filter->rendered_peer_revision) {
+                filter->last_projection.reset();
+                filter->rendered_peer_revision = configuration.peer_revision;
+            }
+            if (snapshot.pose.valid)
+                filter->last_projection = snapshot.pose.projection;
+            if (configuration.warp.automatic_fov)
+                options.automatic = filter->last_projection;
+        }
         try {
-            if (filter->image.render(filter->source, width, height, configuration.warp, configuration.image,
-                                     configuration.image_revision)) {
+            if (filter->image.render(filter->source, width, height, configuration.warp, image_settings,
+                                     configuration.image_revision, options)) {
                 filter->set_dimensions(filter->image.warp());
+                filter->effective_crop.store(filter->image.effective_crop());
+                if (calibrating)
+                    filter->calibration.image(filter->image.result(), filter->image.capture_time_ns());
                 filter->applied_correction.store(filter->image.warp().correction_fraction,
                                                  std::memory_order_relaxed);
                 std::lock_guard<std::mutex> lock(filter->image_diagnostics_mutex);
@@ -504,8 +801,7 @@ void render(void *data, gs_effect_t *) {
             obs_source_skip_video_filter(filter->source);
         return;
     }
-    const auto snapshot =
-        filter->receiver.snapshot(configuration.warp.delay_ms, configuration.warp.smoothing);
+    const auto snapshot = filter->receiver.snapshot(configuration.warp.delay_ms, configuration.motion);
     if (configuration.peer_revision != filter->rendered_peer_revision) {
         filter->last_projection.reset();
         filter->rendered_peer_revision = configuration.peer_revision;
@@ -513,14 +809,23 @@ void render(void *data, gs_effect_t *) {
     if (snapshot.pose.valid && vrst::valid(snapshot.pose.projection))
         filter->last_projection = snapshot.pose.projection;
     const auto automatic = configuration.warp.automatic_fov ? filter->last_projection : std::nullopt;
-    const auto warp =
-        vrst::make_warp(width, height, configuration.warp,
-                        snapshot.pose.valid ? vrst::horizon_correction(snapshot.pose.source_orientation,
-                                                                       snapshot.pose.target_orientation,
-                                                                       configuration.warp.horizon_level,
-                                                                       configuration.warp.horizon_max_degrees)
-                                            : vrst::Quat{},
-                        automatic);
+    const auto correction =
+        snapshot.pose.valid
+            ? vrst::horizon_correction(snapshot.pose.source_orientation, snapshot.pose.target_orientation,
+                                       configuration.warp.horizon_level,
+                                       configuration.warp.horizon_max_degrees)
+            : vrst::Quat{};
+    auto warp_settings = configuration.warp;
+    const double required = configuration.crop.enabled
+                                ? vrst::required_pose_crop(width, height, warp_settings, correction,
+                                                           automatic, configuration.crop.max_extra)
+                                : warp_settings.stabilization_crop;
+    warp_settings.stabilization_crop = filter->crop_controller.update(
+        required, warp_settings.stabilization_crop, configuration.crop, obs_get_video_frame_time());
+    filter->effective_crop.store(warp_settings.stabilization_crop);
+    auto warp = vrst::make_warp(width, height, warp_settings, correction, automatic);
+    if (configuration.comparison)
+        warp.correction = {};
     filter->set_dimensions(warp);
     filter->applied_correction.store(warp.correction_fraction, std::memory_order_relaxed);
     filter->using_automatic_fov.store(automatic.has_value(), std::memory_order_relaxed);

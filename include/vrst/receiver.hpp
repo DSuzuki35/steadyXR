@@ -9,6 +9,7 @@ struct TrackingSnapshot {
     bool connected{}, clock_ready{};
     double rtt_ms{}, pose_age_ms{};
     std::uint64_t received{}, rejected{};
+    std::uint64_t local_pose_time_ns{}; // selected raw pose stamp mapped into receiver's monotonic clock
     std::string status;
 };
 class Receiver {
@@ -19,6 +20,7 @@ class Receiver {
     Receiver &operator=(const Receiver &) = delete;
     void configure(const std::string &host, std::uint16_t port);
     TrackingSnapshot snapshot(double delay_ms, double smoothing);
+    TrackingSnapshot snapshot(double delay_ms, const MotionSettings &smoothing);
     void reset();
 
   private:

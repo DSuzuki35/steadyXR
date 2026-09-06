@@ -17,3 +17,18 @@ clang++ -std=c++17 -Wno-deprecated-declarations -Iinclude \
   -o build-plugin-native/vrst-image-module-tests
 build-plugin-native/vrst-image-module-tests \
   build-plugin-native/plugin/vr-stabilizer.plugin/Contents/MacOS/vr-stabilizer plugin/data
+
+clang++ -std=c++17 -Wno-deprecated-declarations -Iinclude \
+  -I"$VRST_NATIVE_OBS_SOURCE_DIR/libobs" -I"$vrst_generated" -I"$VRST_SIMDE_DIR" \
+  tests/streamer_module_tests.mm \
+  /Applications/OBS.app/Contents/Frameworks/libobs.framework/Versions/A/libobs \
+  -framework AppKit -Wl,-rpath,/Applications/OBS.app/Contents/Frameworks \
+  -o build-plugin-native/vrst-streamer-module-tests
+build-plugin-native/vrst-streamer-module-tests \
+  build-plugin-native/plugin/vr-stabilizer.plugin/Contents/MacOS/vr-stabilizer plugin/data
+clang++ -std=c++17 -Iplugin \
+  -I"$VRST_NATIVE_OBS_SOURCE_DIR/libobs" -I"$vrst_generated" -I"$VRST_SIMDE_DIR" \
+  tests/presets_tests.cpp plugin/presets.cpp \
+  /Applications/OBS.app/Contents/Frameworks/libobs.framework/Versions/A/libobs \
+  -Wl,-rpath,/Applications/OBS.app/Contents/Frameworks -o build-plugin-native/vrst-presets-tests
+build-plugin-native/vrst-presets-tests
