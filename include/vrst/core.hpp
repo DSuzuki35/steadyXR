@@ -46,11 +46,18 @@ struct PoseResult {
     std::uint64_t time_ns{}, sequence{};
     std::uint32_t flags{};
 };
+struct MotionSettings {
+    double amount{40};
+    bool separate_axes{};
+    double yaw{40}, pitch{40}, roll{40};
+    double turn_follow{}, turn_speed{90}; // percent, degrees/second at full follow
+};
 class PoseHistory {
   public:
     bool push(const Pose &pose);
     void clear();
     void set_smoothing(double percent);
+    void set_smoothing(const MotionSettings &);
     PoseResult sample(std::uint64_t time_ns) const;
     std::size_t size() const {
         return entries_.size();
@@ -61,9 +68,11 @@ class PoseHistory {
     struct Entry {
         Pose pose;
         Quat smooth;
+        Vec3 follow_velocity{}, follow_speed{};
     };
     std::deque<Entry> entries_;
     double smoothing_{40};
+    MotionSettings motion_{};
     void recompute();
 };
 

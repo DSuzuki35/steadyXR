@@ -11,6 +11,7 @@ struct GrayImage {
 };
 struct ImageSettings {
     double smoothing{40};
+    MotionSettings motion{}; // Common amount is taken from smoothing above.
     double max_shift_percent{1.0}, max_roll_degrees{0.5};
     bool track_roll{true};
     // Margins as percentages of the trimmed analysis image. Together < 100 per axis.
@@ -25,6 +26,8 @@ enum class ImageStatus { warming, tracking, weak, scene_change, invalid };
 struct ImageResult {
     ImageStatus status{ImageStatus::warming};
     ImageTransform correction{};
+    ImageTransform motion{}; // Measured previous-to-current transform, only when tracking.
+    std::uint64_t time_ns{}, previous_time_ns{};
     double confidence{}, processing_ms{};
     unsigned tracked{}, inliers{}, width{}, height{};
 };

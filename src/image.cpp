@@ -18,6 +18,12 @@ double finite(double x, double fallback, double lo, double hi) {
 }
 ImageSettings sanitize(ImageSettings s) {
     s.smoothing = finite(s.smoothing, 40, 0, 100);
+    s.motion.amount = s.smoothing;
+    s.motion.yaw = finite(s.motion.yaw, 40, 0, 100);
+    s.motion.pitch = finite(s.motion.pitch, 40, 0, 100);
+    s.motion.roll = finite(s.motion.roll, 40, 0, 100);
+    s.motion.turn_follow = finite(s.motion.turn_follow, 0, 0, 100);
+    s.motion.turn_speed = finite(s.motion.turn_speed, 90, 1, 360);
     s.max_shift_percent = finite(s.max_shift_percent, 1, 0, 5);
     s.max_roll_degrees = finite(s.max_roll_degrees, .5, 0, 5);
     s.region_left = finite(s.region_left, 10, 0, 90);
@@ -27,11 +33,29 @@ ImageSettings sanitize(ImageSettings s) {
     return s;
 }
 bool same(const ImageSettings &a, const ImageSettings &b) {
-    return a.smoothing == b.smoothing && a.max_shift_percent == b.max_shift_percent &&
-           a.max_roll_degrees == b.max_roll_degrees && a.track_roll == b.track_roll &&
+    return a.smoothing == b.smoothing && a.motion.separate_axes == b.motion.separate_axes &&
+           a.motion.yaw == b.motion.yaw && a.motion.pitch == b.motion.pitch &&
+           a.motion.roll == b.motion.roll &&
+           a.motion.turn_follow == b.motion.turn_follow && a.motion.turn_speed == b.motion.turn_speed &&
+           a.max_shift_percent == b.max_shift_percent && a.max_roll_degrees == b.max_roll_degrees && a.track_roll == b.track_roll &&
            a.region_left == b.region_left && a.region_right == b.region_right &&
            a.region_top == b.region_top && a.region_bottom == b.region_bottom;
 }
+// Image translation is converted to an approximate angular speed using a 90-degree
+// analysis field. Turn speed is a response control, not a calibrated FOV estimate.
+double image_retention(double amount, double velocity, double &signed_speed, double &speed,
+                       double dt, const MotionSettings &s) {
+    velocity = std::clamp(velocity, -4 * s.turn_speed, 4 * s.turn_speed);
+    const double blend = 1 - std::exp(-dt / .2);
+    signed_speed += blend * (velocity - signed_speed);
+    speed += blend * (std::abs(velocity) - speed);
+    const double coherence = speed > 1e-9 ? std::abs(signed_speed) / speed : 0;
+    const double follow = s.turn_follow / 100 * std::clamp(std::abs(signed_speed) / s.turn_speed, 0., 1.) *
+                          std::clamp((coherence - .35) / .65, 0., 1.);
+    const double strength = amount / 100, tau = .02 + .48 * strength * strength;
+    return amount <= 0 ? 0 : std::exp(-dt * (1 + 12 * follow) / tau);
+}
+
 bool good(const GrayImage &f) {
     return f.width >= 32 && f.height >= 32 && f.width <= 1024 && f.height <= 1024 &&
            f.pixels.size() == size_t(f.width) * f.height &&
@@ -258,6 +282,7 @@ struct ImageStabilizer::Impl {
     ImageSettings settings;
     ImageResult last;
     ImageTransform correction;
+    ImageTransform follow_velocity, follow_speed;
     std::uint64_t timestamp{};
 };
 ImageStabilizer::ImageStabilizer() : impl_(new Impl) {}
@@ -272,6 +297,7 @@ ImageResult ImageStabilizer::process(const GrayImage &f, std::uint64_t time, con
     ImageResult result;
     result.width = f.width;
     result.height = f.height;
+    result.time_ns = time;
     auto done = [&]() {
         result.processing_ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -294,8 +320,10 @@ ImageResult ImageStabilizer::process(const GrayImage &f, std::uint64_t time, con
         state.timestamp = time;
         state.settings = s;
         state.correction = {};
+        state.follow_velocity = state.follow_speed = {};
         return done();
     }
+    result.previous_time_ns = state.timestamp;
     // Keep the complete coarse patch inside the chosen region, including its
     // gradient neighbors, bilinear extra sample and box-downsample footprint.
     const int guard = 6 * (1 << (current.size() - 1));
@@ -330,21 +358,37 @@ ImageResult ImageStabilizer::process(const GrayImage &f, std::uint64_t time, con
             std::hypot(motion.x, motion.y) < std::min(f.width, f.height) * .10 &&
             std::abs(motion.angle) < 8 * pi / 180) {
             result.status = ImageStatus::tracking;
+            result.motion = motion;
             double strength = s.smoothing / 100, tau = .02 + .48 * strength * strength;
             double retention = s.smoothing <= 0 ? 0 : std::exp(-double(time - state.timestamp) * 1e-9 / tau);
+            double horizontal = retention, vertical = retention, roll = retention;
+            if (s.motion.separate_axes || s.motion.turn_follow > 0) {
+                const double dt = double(time - state.timestamp) * 1e-9;
+                horizontal = image_retention(
+                    s.motion.separate_axes ? s.motion.yaw : s.smoothing, motion.x / f.width * 90 / dt,
+                    state.follow_velocity.x, state.follow_speed.x, dt, s.motion);
+                vertical = image_retention(
+                    s.motion.separate_axes ? s.motion.pitch : s.smoothing, motion.y / f.height * 90 / dt,
+                    state.follow_velocity.y, state.follow_speed.y, dt, s.motion);
+                roll = image_retention(
+                    s.motion.separate_axes ? s.motion.roll : s.smoothing, motion.angle * 180 / pi / dt,
+                    state.follow_velocity.angle, state.follow_speed.angle, dt, s.motion);
+            }
             auto correction = compose(motion, state.correction);
-            correction.x = std::clamp(correction.x * retention, -double(f.width) * s.max_shift_percent / 100,
+            correction.x = std::clamp(correction.x * horizontal, -double(f.width) * s.max_shift_percent / 100,
                                       f.width * s.max_shift_percent / 100);
-            correction.y = std::clamp(correction.y * retention, -double(f.height) * s.max_shift_percent / 100,
+            correction.y = std::clamp(correction.y * vertical, -double(f.height) * s.max_shift_percent / 100,
                                       f.height * s.max_shift_percent / 100);
             correction.angle = s.track_roll
-                                   ? std::clamp(correction.angle * retention, -s.max_roll_degrees * pi / 180,
+                                   ? std::clamp(correction.angle * roll, -s.max_roll_degrees * pi / 180,
                                                 s.max_roll_degrees * pi / 180)
                                    : 0;
             result.correction = correction;
         } else if (support < .2 || std::hypot(motion.x, motion.y) >= std::min(f.width, f.height) * .10)
             result.status = ImageStatus::scene_change;
     }
+    if (result.status != ImageStatus::tracking)
+        state.follow_velocity = state.follow_speed = {};
     state.correction = result.correction;
     state.previous = std::move(current);
     state.timestamp = time;
