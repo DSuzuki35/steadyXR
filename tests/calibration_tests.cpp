@@ -40,7 +40,7 @@ Recording recording(double delay_ms = 83, double hfov = 103, double vfov = 79,
                     unsigned pose_rate = 250, unsigned video_rate = 60) {
     Recording out;
     constexpr std::uint64_t epoch = 5000000000ULL;
-    const auto timestamp = [](double seconds) {
+    const auto timestamp = [epoch](double seconds) {
         return epoch + static_cast<std::uint64_t>(std::llround(seconds * 1e9));
     };
     for (unsigned i = 0; i <= duration * pose_rate; ++i) {
