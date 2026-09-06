@@ -27,10 +27,10 @@ double required_image_crop(unsigned, unsigned, const Settings &, const ImageResu
 ```
 Add ImageSettings.motion; its amount comes from existing ImageSettings.smoothing. Add ImageResult.motion (measured previous-to-current image transform), time_ns and previous_time_ns; populate measured motion only on tracking status.
 
-- [ ] Write failing independent-axis, turn-follow, crop rate/clamp/idle/invalid/reset tests; run against stubs.
-- [ ] Implement quaternion local-axis smoothing with exact legacy path when advanced controls off. Expose measured image motion before smoothing and implement image-axis/follow behavior.
-- [ ] Implement crop requirement search and rate controller; prove zero-extra/disabled identity and all corners safe after limiting.
-- [ ] Run advanced, core and image tests and sanitizers; commit owned files and report.
+- [x] Write failing independent-axis, turn-follow, crop rate/clamp/idle/invalid/reset tests; run against stubs.
+- [x] Implement quaternion local-axis smoothing with exact legacy path when advanced controls off. Expose measured image motion before smoothing and implement image-axis/follow behavior.
+- [x] Implement crop requirement search and rate controller; prove zero-extra/disabled identity and all corners safe after limiting.
+- [x] Run advanced, core and image tests and sanitizers; commit owned files and report.
 
 ## Task 2: Calibration solver
 
@@ -43,10 +43,10 @@ struct CalibrationMotion { std::uint64_t previous_time_ns{}, time_ns{}; double x
 struct CalibrationResult { bool valid{}; double delay_ms{}, horizontal_fov{}, vertical_fov{}, confidence{}; unsigned samples{}; std::string reason; };
 CalibrationResult calibrate(const std::vector<CalibrationPose>&, const std::vector<CalibrationMotion>&);
 ```
-- [ ] Create irregular yaw/pitch synthetic trajectories and normalized projected shifts delayed by 83 ms; assert recovery within 3 ms and 5 degrees.
-- [ ] Add rejection tests for static, one-axis, noise, wrong direction, gaps, ambiguous periodic motion and invalid samples; run failing stubs.
-- [ ] Implement bounded coarse/fine delay search with quaternion interpolation, positive gain fit, support/quality/excitation gates and clear reasons.
-- [ ] Run focused tests/sanitizers and record accuracy/runtime, then commit owned files.
+- [x] Create irregular yaw/pitch synthetic trajectories and normalized projected shifts delayed by 83 ms; assert recovery within 3 ms and 5 degrees.
+- [x] Add rejection tests for static, one-axis, noise, wrong direction, gaps, ambiguous periodic motion and invalid samples; run failing stubs.
+- [x] Implement bounded full-resolution 1 ms delay search with quaternion interpolation, positive gain fit, support/quality/excitation gates and clear reasons.
+- [x] Run focused tests/sanitizers and record accuracy/runtime, then commit owned files.
 
 ## Task 3: GPU pipeline
 
@@ -61,23 +61,23 @@ std::uint64_t ImageFilter::capture_time_ns() const; // currently displayed slot'
 ```
 Keep existing callers valid. Save each slot's pose warp at capture; estimate residual on safe pose-warped pixels and compose final GPU transforms. Split stabilization crop multiplicatively. Comparison zeroes both corrections at draw only; output crop follows stabilized control path. Expose effective crop diagnostics if useful. Preserve legacy pure-image path.
 
-- [ ] Extend actual OBS/GPU tests with known pose/image movements, two differently colored frames, matched comparison and a nonidentity hybrid transform; watch failure.
-- [ ] Implement paired hybrid analysis/draw, comparison, bounded automatic crop and transition resets.
-- [ ] Verify repeated renders, alpha, 4K output, no pose double correction and exact one-frame pairing; commit owned files.
+- [x] Extend actual OBS/GPU tests with known pose/image movements, two differently colored frames, matched comparison and a nonidentity hybrid transform; watch failure.
+- [x] Implement paired hybrid analysis/draw, comparison, bounded automatic crop and transition resets.
+- [x] Verify repeated renders, alpha, 4K output, no pose double correction and exact one-frame pairing; commit owned files.
 
 ## Task 4: Controls, receiver, presets and calibration integration (root)
 
 Own plugin/obs_filter.cpp, plugin/presets.hpp/.cpp, plugin/data/locale/en-US.ini, include/vrst/receiver.hpp, src/receiver.cpp, CMake files, tests/streamer_module_tests.mm.
 
-- [ ] Add Receiver snapshot overload accepting MotionSettings; expose mapped local_pose_time_ns in TrackingSnapshot and use existing raw orientation/time for calibration observations.
-- [ ] Add mode 2; pass matched pose and auto-crop settings into ImageFilter. Add axis/follow controls and matched comparison checkbox/hotkeys without estimator reset.
-- [ ] Implement named preset save/load/delete plus cycle hotkey, persist only explicit tuning keys and avoid copying nested preset storage or network address.
-- [ ] Build start/finish/apply calibration UI with bounded collection, raw buffered video, deduplicated pose and image times, solver result/error display and stale-result invalidation.
-- [ ] Exercise real OBS callbacks, preset round trip, A/B timing and calibration apply safeguards with native module tests; run full portable and GPU suites.
+- [x] Add Receiver snapshot overload accepting MotionSettings; expose mapped local_pose_time_ns in TrackingSnapshot and use existing raw orientation/time for calibration observations.
+- [x] Add mode 2; pass matched pose and auto-crop settings into ImageFilter. Add axis/follow controls and matched comparison checkbox/hotkeys without estimator reset.
+- [x] Implement named preset save/load/delete plus cycle hotkey, persist only explicit tuning keys and avoid copying nested preset storage or network address.
+- [x] Build start/finish/apply calibration UI with bounded collection, raw buffered video, deduplicated pose and image times, solver result/error display and stale-result invalidation.
+- [x] Exercise real OBS callbacks, preset round trip, A/B timing and calibration apply safeguards with native module tests; run full portable and GPU suites.
 
 ## Task 5: Review and release
 
-- [ ] Independent focused reviews of motion/solver and complete GPU/OBS integration; fix important findings and re-review.
-- [ ] Update README, version, calibration guide and release notes to describe final behavior and limits.
-- [ ] Cross-build and native Windows/Linux CI, verify ZIP CRC/SHA256/source and binary imports.
-- [ ] Publish private v0.3.0 release with source/binaries, verify uploaded digest and record completion.
+- [x] Independent focused reviews of motion/solver and complete GPU/OBS integration; fix important findings and re-review.
+- [x] Update README, version, calibration guide and release notes to describe final behavior and limits.
+- [x] Cross-build and native Windows/Linux CI, verify ZIP CRC/SHA256/source and binary imports.
+- [x] Publish private v0.3.0 release with source/binaries, verify uploaded digest and record completion.
