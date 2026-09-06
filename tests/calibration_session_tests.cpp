@@ -10,6 +10,11 @@ int main() {
     vrst_plugin::CalibrationSession session;
     const std::uint64_t epoch = 5000000000ULL;
     session.start(epoch);
+    vrst::ImageResult old_cut;
+    old_cut.status = vrst::ImageStatus::scene_change;
+    old_cut.time_ns = 100;
+    session.image(old_cut, epoch - 1);
+    check(session.active(), "buffered scene cut from before Start cannot cancel a new calibration");
     vrst::TrackingSnapshot pose;
     pose.pose.valid = true;
     pose.pose.flags = vrst::TrackingValid;
