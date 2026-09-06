@@ -91,7 +91,7 @@ CalibrationResult failure(const std::string &reason, unsigned samples = 0) {
 CalibrationResult calibrate(const std::vector<CalibrationPose> &input_poses,
                             const std::vector<CalibrationMotion> &input_motions) {
     // Check sizes before scanning or copying caller-owned data. The common
-    // overlap below and fixed 101 + 21 search evaluations bound computation.
+    // overlap below and fixed 1001 search evaluations bound computation.
     if (input_poses.size() > 10000 || input_motions.size() > 4000)
         return failure("Recording exceeds calibration limits; collect at most 30 seconds.");
     if (input_poses.size() < 2 || input_motions.size() < min_samples)
@@ -151,23 +151,22 @@ CalibrationResult calibrate(const std::vector<CalibrationPose> &input_poses,
     if (motions.back().time_ns - motions.front().previous_time_ns < 2000000000ULL)
         return failure("Recording is too short; collect several seconds of varied head movement.", samples);
 
-    std::array<Fit, 101> coarse;
+    std::array<double, 1001> scores;
     Fit best;
-    for (unsigned i = 0; i < coarse.size(); ++i) {
-        coarse[i] = fit_delay(poses, motions, i * 10.);
-        if (coarse[i].score < best.score)
-            best = coarse[i];
+    // Resolve every candidate at the same precision. Refining only the winner
+    // made equally good periodic aliases between coarse samples look worse,
+    // producing confident but arbitrary delays. The complete 1 ms grid also
+    // avoids depending on the width of a coarse local minimum.
+    for (unsigned delay = 0; delay < scores.size(); ++delay) {
+        const auto fit = fit_delay(poses, motions, delay);
+        scores[delay] = fit.score;
+        if (fit.score < best.score)
+            best = fit;
     }
     if (!std::isfinite(best.score))
         return failure("Insufficient matching movement on both axes or reversed image direction; repeat "
                        "varied left/right and up/down turns.",
                        samples);
-    const double low = std::max(0., best.delay - 10), high = std::min(1000., best.delay + 10);
-    for (double delay = low; delay <= high; delay += 1) {
-        const auto fit = fit_delay(poses, motions, delay);
-        if (fit.score < best.score)
-            best = fit;
-    }
     const double cx = best.x.correlation(), cy = best.y.correlation();
     if (cx < .9 || cy < .9 || best.x.error() > .2 || best.y.error() > .2)
         return failure("Image and headset motion do not correlate reliably; park the car and use small "
@@ -181,9 +180,9 @@ CalibrationResult calibrate(const std::vector<CalibrationPose> &input_poses,
             samples);
 
     double alternative = 1;
-    for (const auto &fit : coarse)
-        if (std::abs(fit.delay - best.delay) >= 50)
-            alternative = std::min(alternative, fit.score);
+    for (unsigned delay = 0; delay < scores.size(); ++delay)
+        if (std::abs(delay - best.delay) >= 50)
+            alternative = std::min(alternative, scores[delay]);
     const double separation = alternative - best.score;
     if (separation < std::max(.01, best.score * .25))
         return failure("Delay is ambiguous; vary the speed and timing of left/right and up/down movements.",

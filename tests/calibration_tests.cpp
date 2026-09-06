@@ -217,6 +217,27 @@ int main() {
                  return Angles{.1 * std::sin(2 * pi * t / .4), .08 * std::cos(2 * pi * t / .4)};
              }));
          }},
+        {"rejects fast periodic aliases between coarse delay samples",
+         [] {
+             for (const double period : {.04, .05, .06, .08, .1, .2, .4, .8}) {
+                 const auto d = recording(83, 103, 79, [period](double t) {
+                     return Angles{.003 * std::sin(2 * pi * t / period),
+                                   .003 * std::cos(2 * pi * t / period)};
+                 });
+                 const auto r = solve(d);
+                 check(!r.valid, "accepted periodic delay aliases with period " + std::to_string(period) +
+                                     ", delay " + std::to_string(r.delay_ms));
+                 check(!r.reason.empty(), "ambiguous periodic delay must include a rejection reason");
+             }
+         }},
+        {"rejects periodic aliases midway between coarse delay samples",
+         [] {
+             for (const double period : {.15, .2, .25, .3, .4}) {
+                 rejected(recording(85, 103, 79, [period](double t) {
+                     return Angles{.03 * std::sin(2 * pi * t / period), .03 * std::cos(2 * pi * t / period)};
+                 }));
+             }
+         }},
         {"rejects constant turn with unidentifiable delay",
          [] { rejected(recording(83, 103, 79, [](double t) { return Angles{.06 * t, .04 * t}; })); }},
         {"rejects nonfinite invalid and unordered observations",
