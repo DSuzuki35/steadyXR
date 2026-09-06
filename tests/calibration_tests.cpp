@@ -35,12 +35,13 @@ Angles varied(double t) {
 // Independent fixture: project the previous camera's central world ray through
 // the current yaw/pitch rotation matrix and a known pinhole camera. No solver or
 // core quaternion helpers are used to calculate the observed image shifts.
-Recording recording(double delay_ms = 83, double hfov = 103, double vfov = 79,
-                    const std::function<Angles(double)> &trajectory = varied, double duration = 12,
-                    unsigned pose_rate = 250, unsigned video_rate = 60) {
+Recording recording(
+    double delay_ms = 83, double hfov = 103, double vfov = 79,
+    const std::function<Angles(double)> &trajectory = varied, double duration = 12, unsigned pose_rate = 250,
+    unsigned video_rate = 60, const std::function<double(double)> &render_time = [](double t) { return t; }) {
     Recording out;
     constexpr std::uint64_t epoch = 5000000000ULL;
-    const auto timestamp = [epoch](double seconds) {
+    const auto timestamp = [](double seconds) {
         return epoch + static_cast<std::uint64_t>(std::llround(seconds * 1e9));
     };
     for (unsigned i = 0; i <= duration * pose_rate; ++i) {
@@ -54,8 +55,8 @@ Recording recording(double delay_ms = 83, double hfov = 103, double vfov = 79,
          i <= (duration - .5) * video_rate; ++i) {
         const double previous = static_cast<double>(i - 1) / video_rate,
                      current = static_cast<double>(i) / video_rate;
-        const auto a = trajectory(previous - delay_ms / 1000.);
-        const auto b = trajectory(current - delay_ms / 1000.);
+        const auto a = trajectory(render_time(previous - delay_ms / 1000.));
+        const auto b = trajectory(render_time(current - delay_ms / 1000.));
         const double world_x = -std::sin(a.yaw) * std::cos(a.pitch);
         const double world_y = std::sin(a.pitch);
         const double world_z = -std::cos(a.yaw) * std::cos(a.pitch);
@@ -108,6 +109,42 @@ int main() {
                  d.motions[i].y += .00008 * std::sin(13.87 * i);
              }
              recovered(d, 327.5, 110, 82);
+         }},
+        {"recovers sample-held 90 Hz rendering captured at 60 Hz",
+         [] {
+             // The render clock is centered around the known effective delay:
+             // alternating render ages are +/- 1/360 s. OBS sees
+             // alternating one/two-render-frame motion, not continuous poses.
+             const auto d = recording(83, 103, 79, varied, 12, 60, 60, [](double t) {
+                 return std::floor((t + .083) * 90 + .1) / 90 - .083 + 1. / 360;
+             });
+             recovered(d, 83, 103, 79);
+         }},
+        {"recovers repeated video frames and accumulated catch-up motion",
+         [] {
+             // A 30 Hz rendered mirror observed by 60 Hz capture produces
+             // alternating zero/catch-up displacement with +/- 1/120 s ages.
+             const auto d = recording(83, 103, 79, varied, 12, 60, 60, [](double t) {
+                 return std::floor((t + .083) * 30 + .1) / 30 - .083 + 1. / 120;
+             });
+             recovered(d, 83, 103, 79);
+         }},
+        {"recovers real cadence with capture timestamp jitter and image measurement noise",
+         [] {
+             auto d = recording(83, 103, 79, varied, 12, 60, 60, [](double t) {
+                 return std::floor((t + .083) * 90 + .1) / 90 - .083 + 1. / 360;
+             });
+             const auto jitter = [](std::size_t i) {
+                 return static_cast<std::int64_t>(
+                     std::llround(6e6 * std::sin(2.21 * i) + 2e6 * std::sin(.71 * i)));
+             };
+             for (std::size_t i = 0; i < d.motions.size(); ++i) {
+                 d.motions[i].previous_time_ns += jitter(i);
+                 d.motions[i].time_ns += jitter(i + 1);
+                 d.motions[i].x += .0006 * std::sin(29.73 * i);
+                 d.motions[i].y += .0006 * std::sin(13.87 * i);
+             }
+             recovered(d, 83, 103, 79);
          }},
         {"recovers left/right followed by up/down with some weak observations",
          [] {
@@ -173,6 +210,22 @@ int main() {
                  d.motions[i].y = .005 * std::sin(37.39 * i);
              }
              rejected(d);
+         }},
+        {"rejected fit reports which axis fails and the actual observation rates",
+         [] {
+             auto d = recording();
+             for (std::size_t i = 0; i < d.motions.size(); ++i)
+                 d.motions[i].y = .005 * std::sin(37.39 * i);
+             const auto r = solve(d);
+             check(!r.valid, "one unrelated axis cannot produce an applicable suggestion");
+             check(r.horizontal_correlation > .98 && std::abs(r.vertical_correlation) < .2,
+                   "diagnostics must distinguish matching horizontal motion from unrelated vertical motion");
+             near(r.pose_rate, 250, .1);
+             near(r.image_rate, 60, .1);
+             check(r.reason.find("horizontal") != std::string::npos &&
+                       r.reason.find("vertical") != std::string::npos &&
+                       r.reason.find("Hz") != std::string::npos,
+                   "retry message must expose axis matches and collection rates");
          }},
         {"rejects reversed image direction on either axis",
          [] {

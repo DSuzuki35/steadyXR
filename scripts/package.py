@@ -10,7 +10,7 @@ root = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
-p.add_argument('--version', default='0.3.0')
+p.add_argument('--version', default='0.3.1')
 a = p.parse_args()
 stage = root / 'dist' / f'VR-Stabilizer-{a.version}-Windows-x64'
 if stage.exists():
@@ -36,6 +36,11 @@ copy(a.openvr / 'bin/win64/openvr_api.dll', 'sender/openvr_api.dll')
 for item in (root / 'plugin/data').rglob('*'):
     if item.is_file():
         copy(item, Path('obs-plugin/data') / item.relative_to(root / 'plugin/data'))
+# Drop-in layout for users who installed manually into their OBS directory.
+copy(output(Path('plugin/vr-stabilizer.dll')), 'obs-install/obs-plugins/64bit/vr-stabilizer.dll')
+for item in (root / 'plugin/data').rglob('*'):
+    if item.is_file():
+        copy(item, Path('obs-install/data/obs-plugins/vr-stabilizer') / item.relative_to(root / 'plugin/data'))
 for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1']:
     copy(root / name, name)
 copy(a.openvr / 'LICENSE', 'licenses/OpenVR-LICENSE.txt')

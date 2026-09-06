@@ -65,7 +65,7 @@ int main() {
         return vrst::multiply(vrst::axis_angle({0, 1, 0}, y), vrst::axis_angle({1, 0, 0}, p));
     };
     const double dt = 1. / 60;
-    auto collect = [&](bool scene_cut = false) {
+    auto collect = [&](bool scene_cut = false, bool repeated_frames = false) {
         session.start(epoch);
         session.source(1, 640, 480);
         for (unsigned i = 0; i < 900; ++i) {
@@ -77,7 +77,12 @@ int main() {
             r.time_ns = 100000000000ULL + std::uint64_t(i) * 16666667;
             r.previous_time_ns = i ? r.time_ns - 16666667 : 0;
             r.status = i ? vrst::ImageStatus::tracking : vrst::ImageStatus::warming;
-            auto a = angles((i ? i - 1 : 0) * dt - .083), b = angles(i * dt - .083);
+            const auto rendered = [&](unsigned frame) {
+                // A 30 Hz mirror reaches this 60 Hz collector with alternating
+                // +/- half-capture-frame age around the 83 ms effective delay.
+                return repeated_frames ? (frame / 2) / 30. + 1. / 120 - .083 : frame * dt - .083;
+            };
+            auto a = angles(rendered(i ? i - 1 : 0)), b = angles(rendered(i));
             r.motion.x = (b.first - a.first) / (2 * std::tan(103 * vrst::pi / 360)) * r.width;
             r.motion.y = (b.second - a.second) / (2 * std::tan(79 * vrst::pi / 360)) * r.height;
             session.image(r, time);
@@ -97,6 +102,10 @@ int main() {
     check(result.valid && std::abs(result.delay_ms - 83) <= 3 && std::abs(result.horizontal_fov - 103) < 5 &&
               std::abs(result.vertical_fov - 79) < 5,
           "capture-time collection recovers known delay and FOV across distinct OBS clock epoch");
+    const auto repeated = collect(false, true);
+    check(repeated.valid && std::abs(repeated.delay_ms - 83) <= 3 &&
+              std::abs(repeated.horizontal_fov - 103) < 5 && std::abs(repeated.vertical_fov - 79) < 5,
+          "session recovers repeated captured frames using their genuine zero and catch-up motion");
     session.invalidate("settings changed");
     check(!session.state().result.valid, "previous valid suggestion is invalidated after settings change");
     session.finish();

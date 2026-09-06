@@ -25,6 +25,7 @@ struct ImageTransform {
 enum class ImageStatus { warming, tracking, weak, scene_change, invalid };
 struct ImageResult {
     ImageStatus status{ImageStatus::warming};
+    // Weak tracking may carry a bounded fade-out; it is not a motion measurement.
     ImageTransform correction{};
     ImageTransform motion{}; // Measured previous-to-current transform, only when tracking.
     std::uint64_t time_ns{}, previous_time_ns{};

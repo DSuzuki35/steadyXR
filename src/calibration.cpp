@@ -2,7 +2,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 
 namespace vrst {
 namespace {
@@ -13,7 +15,8 @@ constexpr unsigned min_samples = 90;
 
 struct AxisFit {
     double weight{}, a{}, b{}, aa{}, bb{}, ab{}, speed_squared{}, travel{};
-    void add(double predicted, double observed, double confidence, double dt) {
+    void add(double predicted, double observed, double confidence, double dt, double fraction) {
+        confidence *= fraction;
         weight += confidence;
         a += confidence * predicted;
         b += confidence * observed;
@@ -21,7 +24,7 @@ struct AxisFit {
         bb += confidence * observed * observed;
         ab += confidence * predicted * observed;
         speed_squared += confidence * (predicted / dt) * (predicted / dt);
-        travel += std::abs(predicted);
+        travel += fraction * std::abs(predicted);
     }
     bool excited() const {
         return weight > 0 && speed_squared / weight >= .04 * .04 && travel >= .15 &&
@@ -42,6 +45,7 @@ struct AxisFit {
 struct Fit {
     double delay{}, score{std::numeric_limits<double>::infinity()};
     AxisFit x, y;
+    double windows{};
 };
 
 Quat orientation_at(const std::vector<CalibrationPose> &poses, std::uint64_t at) {
@@ -62,7 +66,13 @@ Fit fit_delay(const std::vector<CalibrationPose> &poses, const std::vector<Calib
     Fit fit;
     fit.delay = delay_ms;
     const auto delay_ns = static_cast<std::uint64_t>(std::llround(delay_ms * 1e6));
-    for (const auto &m : motions) {
+    double predicted_x = 0, predicted_y = 0, observed_x = 0, observed_y = 0;
+    double confidence = 0, duration = 0;
+    std::vector<std::array<double, 2>> predictions;
+    predictions.reserve(motions.size());
+    std::size_t begin = 0;
+    for (std::size_t index = 0; index < motions.size(); ++index) {
+        const auto &m = motions[index];
         const auto previous = orientation_at(poses, m.previous_time_ns - delay_ns);
         const auto current = orientation_at(poses, m.time_ns - delay_ns);
         // A stationary point on the previous central ray, expressed in the
@@ -72,8 +82,36 @@ Fit fit_delay(const std::vector<CalibrationPose> &poses, const std::vector<Calib
         if (ray.z >= -.9)
             return fit;
         const double dt = static_cast<double>(m.time_ns - m.previous_time_ns) * 1e-9;
-        fit.x.add(ray.x / -ray.z, m.x, m.confidence, dt);
-        fit.y.add(-ray.y / -ray.z, m.y, m.confidence, dt);
+        predictions.push_back({ray.x / -ray.z, -ray.y / -ray.z});
+        predicted_x += ray.x / -ray.z;
+        predicted_y += -ray.y / -ray.z;
+        observed_x += m.x;
+        observed_y += m.y;
+        confidence += m.confidence;
+        duration += dt;
+        // Render, capture and analysis clocks need not run at the same rate.
+        // A repeated frame contributes zero followed by catch-up displacement;
+        // comparing each to a continuous pose derivative destroys correlation.
+        // Sum both signals over short windows. Advance by one observation so
+        // the window boundaries cannot lock to only one phase of a repeated-
+        // frame pattern and bias the delay. Downweight overlapping evidence.
+        // Keep each original pose interval so omitted weak observations do not create
+        // invented motion across their gaps or overcount supporting evidence.
+        while (begin < index && m.time_ns - motions[begin + 1].previous_time_ns >= 60000000ULL) {
+            predicted_x -= predictions[begin][0];
+            predicted_y -= predictions[begin][1];
+            observed_x -= motions[begin].x;
+            observed_y -= motions[begin].y;
+            confidence -= motions[begin].confidence;
+            duration -= (motions[begin].time_ns - motions[begin].previous_time_ns) * 1e-9;
+            ++begin;
+        }
+        if (m.time_ns - motions[begin].previous_time_ns >= 60000000ULL) {
+            const double count = static_cast<double>(index - begin + 1);
+            fit.x.add(predicted_x, observed_x, confidence / count, duration, 1 / count);
+            fit.y.add(predicted_y, observed_y, confidence / count, duration, 1 / count);
+            fit.windows += 1 / count;
+        }
     }
     if (fit.x.excited() && fit.y.excited() && fit.x.gain() > 0 && fit.y.gain() > 0)
         fit.score = (fit.x.error() + fit.y.error()) / 2;
@@ -168,16 +206,31 @@ CalibrationResult calibrate(const std::vector<CalibrationPose> &input_poses,
                        "varied left/right and up/down turns.",
                        samples);
     const double cx = best.x.correlation(), cy = best.y.correlation();
+    const auto diagnosed = [&](CalibrationResult out) {
+        out.horizontal_correlation = cx;
+        out.vertical_correlation = cy;
+        out.pose_rate = (poses.size() - 1) * 1e9 / (poses.back().time_ns - poses.front().time_ns);
+        out.image_rate = input_motions.size() * 1e9 /
+                         (input_motions.back().time_ns - input_motions.front().previous_time_ns);
+        std::ostringstream detail;
+        detail << std::fixed << std::setprecision(0) << " Match: horizontal " << cx * 100 << "%, vertical "
+               << cy * 100 << "%; fit error " << best.x.error() * 100 << "%/" << best.y.error() * 100
+               << "%. Collected video " << std::setprecision(1) << out.image_rate << " Hz, headset poses "
+               << out.pose_rate << " Hz.";
+        out.reason += detail.str();
+        return out;
+    };
     if (cx < .9 || cy < .9 || best.x.error() > .2 || best.y.error() > .2)
-        return failure("Image and headset motion do not correlate reliably; park the car and use small "
-                       "varied head movements.",
-                       samples);
+        return diagnosed(
+            failure("Image and headset motion do not correlate reliably; park the car and use small "
+                    "varied head movements.",
+                    samples));
     const double hfov = 2 * std::atan(.5 / best.x.gain()) * 180 / pi;
     const double vfov = 2 * std::atan(.5 / best.y.gain()) * 180 / pi;
     if (hfov < 10 || hfov > 170 || vfov < 10 || vfov > 170)
-        return failure(
-            "Estimated mirror FOV is outside the supported range; check the captured view and retry.",
-            samples);
+        return diagnosed(
+            failure("Estimated mirror FOV is outside the supported range; check the captured view and retry.",
+                    samples));
 
     double alternative = 1;
     for (unsigned delay = 0; delay < scores.size(); ++delay)
@@ -185,21 +238,21 @@ CalibrationResult calibrate(const std::vector<CalibrationPose> &input_poses,
             alternative = std::min(alternative, scores[delay]);
     const double separation = alternative - best.score;
     if (separation < std::max(.01, best.score * .25))
-        return failure("Delay is ambiguous; vary the speed and timing of left/right and up/down movements.",
-                       samples);
+        return diagnosed(failure(
+            "Delay is ambiguous; vary the speed and timing of left/right and up/down movements.", samples));
 
     CalibrationResult out;
     out.valid = true;
     out.delay_ms = best.delay;
     out.horizontal_fov = hfov;
     out.vertical_fov = vfov;
-    const double texture = best.x.weight / samples;
+    const double texture = best.x.weight / best.windows;
     const double uniqueness = std::clamp(separation / .08, 0., 1.);
     out.confidence = std::clamp(
         std::sqrt(cx * cy) * texture * std::min(1., samples / 180.) * (.7 + .3 * uniqueness), 0., 1.);
     out.samples = samples;
     out.reason =
         "Suggested delay and approximate effective mirror FOV; this does not measure headset optics.";
-    return out;
+    return diagnosed(out);
 }
 } // namespace vrst

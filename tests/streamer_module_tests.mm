@@ -1,4 +1,6 @@
+#ifdef __APPLE__
 #import <AppKit/AppKit.h>
+#endif
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -7,15 +9,32 @@
 #include <string>
 #include <thread>
 int main(int argc, char **argv) {
-    @autoreleasepool {
+#ifdef __APPLE__
+    @autoreleasepool
+#endif
+    {
+#ifdef _WIN32
+        if (argc != 5)
+            return 2;
+        const std::string obs_root = argv[3];
+        const std::string graphics_module = obs_root + "/bin/64bit/libobs-d3d11.dll";
+        if (!obs_startup("en-US", argv[4], nullptr))
+            return 2;
+        obs_add_data_path((obs_root + "/data/libobs/").c_str());
+#else
         if (argc != 3)
             return 2;
         [NSApplication sharedApplication];
         if (!obs_startup("en-US", "/tmp/vrst-streamer-module-test", nullptr))
             return 2;
         obs_add_data_path("/Applications/OBS.app/Contents/Frameworks/libobs.framework/Versions/A/Resources");
+#endif
         obs_video_info v{};
+#ifdef _WIN32
+        v.graphics_module = graphics_module.c_str();
+#else
         v.graphics_module = "/Applications/OBS.app/Contents/Frameworks/libobs-opengl.dylib";
+#endif
         v.base_width = v.output_width = 640;
         v.base_height = v.output_height = 480;
         v.fps_num = 60;

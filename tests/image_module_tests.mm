@@ -1,10 +1,13 @@
+#ifdef __APPLE__
 #import <AppKit/AppKit.h>
+#endif
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <obs-module.h>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -78,10 +81,12 @@ struct Capture {
     unsigned draws{}, width{}, height{}, bad{};
     unsigned red[2]{}, alpha[2]{};
     bool good{true};
+    double elapsed_ms{};
     std::vector<uint8_t> patch;
 };
 void capture(void *data) {
     auto &c = *static_cast<Capture *>(data);
+    const auto started = std::chrono::steady_clock::now();
     obs_enter_graphics();
     c.width = obs_source_get_width(c.source);
     c.height = obs_source_get_height(c.source);
@@ -126,13 +131,15 @@ void capture(void *data) {
     }
     c.draws = draws.load() - before;
     obs_leave_graphics();
+    c.elapsed_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
 Capture frame(obs_source_t *source, float value, bool opaque = true) {
     red.store(value);
     Capture c{source};
     obs_queue_task(OBS_TASK_GRAPHICS, capture, &c, true);
-    std::printf("Frame red %.2f: output %u/%u, draws %u, size %ux%u, uncovered %u\n", value, c.red[0],
-                c.red[1], c.draws, c.width, c.height, c.bad);
+    std::printf("Frame red %.2f: output %u/%u, draws %u, size %ux%u, uncovered %u, readback %.1f ms\n", value,
+                c.red[0], c.red[1], c.draws, c.width, c.height, c.bad, c.elapsed_ms);
     if (opaque)
         check(c.good && !c.bad, "image output is opaque and covers every output pixel");
     else
@@ -144,15 +151,34 @@ Capture frame(obs_source_t *source, float value, bool opaque = true) {
 } // namespace
 
 int main(int argc, char **argv) {
-    @autoreleasepool {
+#ifdef __APPLE__
+    @autoreleasepool
+#endif
+    {
+#ifdef _WIN32
+        // Arguments supplied by test-module-windows.ps1. Keep test state away
+        // from the user's OBS configuration and load the installed D3D11 backend.
+        if (argc != 5)
+            return 2;
+        const std::string obs_root = argv[3];
+        const std::string graphics_module = obs_root + "/bin/64bit/libobs-d3d11.dll";
+        if (!obs_startup("en-US", argv[4], nullptr))
+            return 2;
+        obs_add_data_path((obs_root + "/data/libobs/").c_str());
+#else
         if (argc != 3)
             return 2;
         [NSApplication sharedApplication];
         if (!obs_startup("en-US", "/tmp/vrst-image-module-test", nullptr))
             return 2;
         obs_add_data_path("/Applications/OBS.app/Contents/Frameworks/libobs.framework/Versions/A/Resources");
+#endif
         obs_video_info video{};
+#ifdef _WIN32
+        video.graphics_module = graphics_module.c_str();
+#else
         video.graphics_module = "/Applications/OBS.app/Contents/Frameworks/libobs-opengl.dylib";
+#endif
         video.base_width = video.output_width = 640;
         video.base_height = video.output_height = 480;
         video.fps_num = 60;
@@ -292,6 +318,13 @@ int main(int argc, char **argv) {
         std::printf("Final image diagnostics: %s\n", diagnostics);
         check(std::strstr(diagnostics, "Tracking image features") && std::strstr(diagnostics, "360 x 270"),
               "GPU downsample and stage feed confident tracking at preserved analysis aspect ratio");
+        // This functional check reads every 4K output pixel twice per sample.
+        // That test-only readback can exceed 16.7 ms and intentionally trigger
+        // the skipped-render reset. Give it a 33.3 ms period; the buffering,
+        // repeated-render, jitter and skipped-tick checks above stay at 60 fps.
+        video.fps_num = 30;
+        check(obs_reset_video(&video) == OBS_VIDEO_SUCCESS,
+              "4K full-pixel readback verification uses a controlled 30 fps test clock");
         source_width = 3840;
         source_height = 2160;
         frame(source, .2f);
@@ -308,8 +341,12 @@ int main(int argc, char **argv) {
         const auto lost = frame(source, .2f);
         obs_property_button_clicked(obs_properties_get(props, "refresh_diagnostics"), filter);
         diagnostics = obs_property_description(obs_properties_get(props, "diagnostics"));
-        check(lost.red[0] == first.red[0] && std::strstr(diagnostics, "normal framing"),
-              "loss of image texture falls back to uncorrected framing on its matching frame");
+        std::printf("Texture-loss diagnostics: %s\n", diagnostics);
+        check(lost.red[0] == first.red[0] && (std::strstr(diagnostics, "gently releasing correction") ||
+                                              std::strstr(diagnostics, "Scene changed")),
+              "texture loss reports weak features or a scene cut and displays its matching video frame");
+        video.fps_num = 60;
+        check(obs_reset_video(&video) == OBS_VIDEO_SUCCESS, "alpha and mode checks resume at 60 fps");
         source_width = 640;
         source_height = 480;
         alpha = .5f;

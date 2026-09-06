@@ -29,6 +29,12 @@ GrayImage frame(double dx = 0, double dy = 0, double angle = 0, unsigned w = W, 
         }
     return f;
 }
+GrayImage lighting_frame(double dx, double contrast, double offset = 0) {
+    auto f = frame(dx);
+    for (auto &pixel : f.pixels)
+        pixel = float(.5 + (pixel - .5) * contrast + offset);
+    return f;
+}
 ImageSettings config() {
     ImageSettings s;
     s.smoothing = 100;
@@ -151,6 +157,63 @@ int main() {
     r = tracker.process(brighter, step * 2, s);
     check(r.status != ImageStatus::tracking || std::hypot(r.correction.x, r.correction.y) < .10,
           "brightness change cannot create a large false camera motion");
+    tracker.reset();
+    tracker.process(lighting_frame(0, .8), step, s);
+    r = tracker.process(lighting_frame(1.2, .8, .10), step * 2, s);
+    check(r.status == ImageStatus::tracking && std::abs(r.motion.x - 1.2) < .15,
+          "uniform exposure change preserves a genuine subpixel motion match");
+
+    tracker.reset();
+    for (unsigned i = 0; i < 12; ++i)
+        r = tracker.process(lighting_frame(i * .5, .8), step * (i + 1), s);
+    const auto before_loss = r;
+    check(before_loss.status == ImageStatus::tracking && before_loss.correction.x > 3,
+          "recovery fixture accumulates a visible correction before losing texture");
+    r = tracker.process(lighting_frame(5.5, .025), step * 13, s);
+    check(r.status == ImageStatus::weak && r.correction.x > before_loss.correction.x * .65 &&
+              r.correction.x < before_loss.correction.x && r.motion.x == 0,
+          "brief texture loss releases correction gently without inventing measured motion");
+    Settings recovery_framing;
+    recovery_framing.output_16_9 = false;
+    recovery_framing.stabilization_crop = 20;
+    const auto recovery_warp = make_image_warp(W, H, recovery_framing, r);
+    check(recovery_warp.row_x[0] * .5 + recovery_warp.row_x[1] * .5 + recovery_warp.row_x[2] > .505,
+          "weak-tracking release reaches the rendered warp instead of snapping to identity");
+    double last_correction = r.correction.x;
+    bool smooth_release = true;
+    for (unsigned i = 14; i <= 25; ++i) {
+        r = tracker.process(lighting_frame(5.5, .025), step * i, s);
+        smooth_release &= r.status == ImageStatus::weak && r.correction.x >= 0 &&
+                          r.correction.x <= last_correction + 1e-9 &&
+                          last_correction - r.correction.x < before_loss.correction.x * .25;
+        last_correction = r.correction.x;
+    }
+    check(smooth_release && r.correction.x == 0,
+          "sustained weak tracking releases monotonically to zero within 200 ms");
+    tracker.process(lighting_frame(5.5, .8), step * 26, s);
+    r = tracker.process(lighting_frame(6.1, .8), step * 27, s);
+    check(r.status == ImageStatus::tracking && r.motion.x > .4 && r.correction.x < .3,
+          "reacquisition ramps correction in while preserving raw calibration motion");
+    for (unsigned i = 28; i <= 40; ++i)
+        r = tracker.process(lighting_frame(6.1 + .6 * (i - 27), .8), step * i, s);
+    check(r.status == ImageStatus::tracking && r.correction.x > 2,
+          "reacquisition restores useful stabilization after the short transition");
+    auto unrelated = frame();
+    std::uint32_t recovery_noise = 91827;
+    for (auto &pixel : unrelated.pixels) {
+        recovery_noise = recovery_noise * 1664525U + 1013904223U;
+        pixel = float(recovery_noise >> 16) / 65535.f;
+    }
+    r = tracker.process(unrelated, step * 41, s);
+    check(r.status == ImageStatus::scene_change && r.correction.x == 0 && r.correction.y == 0,
+          "an unrelated scene clears accumulated correction immediately");
+    tracker.reset();
+    for (unsigned i = 0; i < 12; ++i)
+        r = tracker.process(lighting_frame(i * .5, .8), step * (i + 1), s);
+    const double before_turn = r.correction.x;
+    r = tracker.process(lighting_frame(15.5, .5), step * 13, s);
+    check(r.status == ImageStatus::weak && r.correction.x > before_turn * .65,
+          "motion with a contrast drop stays a weak match rather than a false scene cut");
     tracker.reset();
     tracker.process(frame(), step, s);
     auto cut = frame();

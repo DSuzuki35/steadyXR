@@ -9,8 +9,7 @@ double finite(double x, double fallback, double lo, double hi) {
 double base_crop(const Settings &s) {
     return finite(s.stabilization_crop, 10, 0, 40);
 }
-template <class Fits>
-double required_crop(const Settings &s, double extra, Fits fits) {
+template <class Fits> double required_crop(const Settings &s, double extra, Fits fits) {
     const double base = base_crop(s);
     const double ceiling = std::min(40., base + finite(extra, 10, 0, 40));
     if (ceiling == base || fits(base))
@@ -65,8 +64,9 @@ double required_pose_crop(unsigned width, unsigned height, const Settings &s, Qu
 }
 double required_image_crop(unsigned width, unsigned height, const Settings &s, const ImageResult &r,
                            double extra) {
-    if (!width || !height || r.status != ImageStatus::tracking || !r.width || !r.height ||
-        !std::isfinite(r.correction.x) || !std::isfinite(r.correction.y) || !std::isfinite(r.correction.angle))
+    if (!width || !height || (r.status != ImageStatus::tracking && r.status != ImageStatus::weak) ||
+        !r.width || !r.height || !std::isfinite(r.correction.x) || !std::isfinite(r.correction.y) ||
+        !std::isfinite(r.correction.angle))
         return base_crop(s);
     return required_crop(s, extra, [&](double crop) {
         auto candidate = s;

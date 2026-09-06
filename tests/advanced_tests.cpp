@@ -206,6 +206,10 @@ void crop_tests() {
     ImageResult r; r.status = ImageStatus::tracking; r.width = 320; r.height = 180; r.correction.x = 16;
     const double image_need = required_image_crop(1920, 1080, framing, r, 20);
     check(near(image_need, 10, 1e-5), "image crop requirement fits known five-percent translation");
+    r.status = ImageStatus::weak;
+    check(near(required_image_crop(1920, 1080, framing, r, 20), image_need),
+          "automatic crop reserves the correction still rendered during weak tracking");
+    r.status = ImageStatus::tracking;
     const auto q = axis_angle({0, 1, 0}, 5 * pi / 180);
     framing.horizontal_fov = framing.vertical_fov = 90;
     const double pose_need = required_pose_crop(1920, 1080, framing, q, {}, 30);

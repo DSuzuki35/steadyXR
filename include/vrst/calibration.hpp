@@ -17,6 +17,9 @@ struct CalibrationResult {
     double delay_ms{}, horizontal_fov{}, vertical_fov{}, confidence{};
     unsigned samples{};
     std::string reason;
+    // Match diagnostics remain available when a fitted recording is rejected.
+    // Rates describe collected observations, not the hardware display rate.
+    double horizontal_correlation{}, vertical_correlation{}, pose_rate{}, image_rate{};
 };
 // Fits capture time minus delay (0..1000 ms). Positive head yaw/pitch produce
 // positive content x/y. FOV is an effective captured-mirror approximation.

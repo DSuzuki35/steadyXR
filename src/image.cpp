@@ -35,16 +35,16 @@ ImageSettings sanitize(ImageSettings s) {
 bool same(const ImageSettings &a, const ImageSettings &b) {
     return a.smoothing == b.smoothing && a.motion.separate_axes == b.motion.separate_axes &&
            a.motion.yaw == b.motion.yaw && a.motion.pitch == b.motion.pitch &&
-           a.motion.roll == b.motion.roll &&
-           a.motion.turn_follow == b.motion.turn_follow && a.motion.turn_speed == b.motion.turn_speed &&
-           a.max_shift_percent == b.max_shift_percent && a.max_roll_degrees == b.max_roll_degrees && a.track_roll == b.track_roll &&
+           a.motion.roll == b.motion.roll && a.motion.turn_follow == b.motion.turn_follow &&
+           a.motion.turn_speed == b.motion.turn_speed && a.max_shift_percent == b.max_shift_percent &&
+           a.max_roll_degrees == b.max_roll_degrees && a.track_roll == b.track_roll &&
            a.region_left == b.region_left && a.region_right == b.region_right &&
            a.region_top == b.region_top && a.region_bottom == b.region_bottom;
 }
 // Image translation is converted to an approximate angular speed using a 90-degree
 // analysis field. Turn speed is a response control, not a calibrated FOV estimate.
-double image_retention(double amount, double velocity, double &signed_speed, double &speed,
-                       double dt, const MotionSettings &s) {
+double image_retention(double amount, double velocity, double &signed_speed, double &speed, double dt,
+                       const MotionSettings &s) {
     velocity = std::clamp(velocity, -4 * s.turn_speed, 4 * s.turn_speed);
     const double blend = 1 - std::exp(-dt / .2);
     signed_speed += blend * (velocity - signed_speed);
@@ -92,6 +92,66 @@ struct Bounds {
         return p.x >= left && p.x < right && p.y >= top && p.y < bottom;
     }
 };
+// A low feature count alone is not a cut: shadows, blur and a temporarily
+// featureless cockpit should release the old correction rather than jump.
+// Compare only the selected region, with exposure/contrast removed.
+bool scene_discontinuity(const GrayImage &a, const GrayImage &b, Bounds bounds) {
+    double sum_a = 0, sum_b = 0, aa = 0, bb = 0, ab = 0, count = 0;
+    for (int y = bounds.top; y < bounds.bottom; y += 4)
+        for (int x = bounds.left; x < bounds.right; x += 4) {
+            const double av = a.pixels[size_t(y) * a.width + x];
+            const double bv = b.pixels[size_t(y) * b.width + x];
+            sum_a += av;
+            sum_b += bv;
+            aa += av * av;
+            bb += bv * bv;
+            ab += av * bv;
+            ++count;
+        }
+    if (count < 16)
+        return false;
+    const double mean_a = sum_a / count, mean_b = sum_b / count;
+    const double va = std::max(0., aa / count - mean_a * mean_a);
+    const double vb = std::max(0., bb / count - mean_b * mean_b);
+    if (std::abs(mean_a - mean_b) > .35 || (vb < .000005 && (mean_b < .015 || mean_b > .985)))
+        return true;
+    if (va <= .0004 || vb <= .0004 || (ab / count - mean_a * mean_b) / std::sqrt(va * vb) >= .1)
+        return false;
+    // Same-pixel correlation also falls during ordinary head motion. Before
+    // declaring a cut, look for the old texture at nearby offsets. This coarse
+    // check is only a veto, never a motion estimate fed into stabilization.
+    const int radius = int(std::min(a.width, a.height) * .10);
+    for (int dy = -radius; dy <= radius; dy += 4)
+        for (int dx = -radius; dx <= radius; dx += 4) {
+            sum_a = sum_b = aa = bb = ab = count = 0;
+            for (int y = std::max(bounds.top, bounds.top - dy);
+                 y < std::min(bounds.bottom, bounds.bottom - dy); y += 8)
+                for (int x = std::max(bounds.left, bounds.left - dx);
+                     x < std::min(bounds.right, bounds.right - dx); x += 8) {
+                    const double av = a.pixels[size_t(y) * a.width + x];
+                    const double bv = b.pixels[size_t(y + dy) * b.width + x + dx];
+                    sum_a += av;
+                    sum_b += bv;
+                    aa += av * av;
+                    bb += bv * bv;
+                    ab += av * bv;
+                    ++count;
+                }
+            const double variance_a = count * aa - sum_a * sum_a;
+            const double variance_b = count * bb - sum_b * sum_b;
+            if (count >= 16 && variance_a > 0 && variance_b > 0 &&
+                (count * ab - sum_a * sum_b) / std::sqrt(variance_a * variance_b) > .35)
+                return false;
+        }
+    return true;
+}
+double smoothstep(double x) {
+    x = std::clamp(x, 0., 1.);
+    return x * x * (3 - 2 * x);
+}
+ImageTransform scaled(ImageTransform value, double amount) {
+    return {value.x * amount, value.y * amount, value.angle * amount};
+}
 std::vector<Point> features(const GrayImage &f, Bounds bounds) {
     struct Candidate {
         double score;
@@ -201,11 +261,16 @@ std::optional<Point> track(const Pyramid &a, const Pyramid &b, Point p, Bounds b
         return std::nullopt;
     if (q.x < 4 || q.y < 4 || q.x >= b[0].width - 5 || q.y >= b[0].height - 5)
         return std::nullopt;
-    // Brightness mismatch helps reject occlusion, cuts and wrong repeated-pattern matches.
-    double error = 0;
+    // Apply the same free brightness offset as the optical-flow solve. Testing
+    // unadjusted pixels here used to reject genuine matches after exposure changes.
+    double offset = 0, error = 0;
     for (int y = -3; y <= 3; ++y)
         for (int x = -3; x <= 3; ++x)
-            error += std::abs(sample(a[0], p.x + x, p.y + y) - sample(b[0], q.x + x, q.y + y));
+            offset += sample(b[0], q.x + x, q.y + y) - sample(a[0], p.x + x, p.y + y);
+    offset /= 49;
+    for (int y = -3; y <= 3; ++y)
+        for (int x = -3; x <= 3; ++x)
+            error += std::abs(sample(a[0], p.x + x, p.y + y) - sample(b[0], q.x + x, q.y + y) + offset);
     if (error / 49 > .06)
         return std::nullopt;
     return q;
@@ -284,6 +349,9 @@ struct ImageStabilizer::Impl {
     ImageTransform correction;
     ImageTransform follow_velocity, follow_speed;
     std::uint64_t timestamp{};
+    ImageTransform release_origin;
+    std::uint64_t weak_since{};
+    double acquisition{1};
 };
 ImageStabilizer::ImageStabilizer() : impl_(new Impl) {}
 ImageStabilizer::~ImageStabilizer() = default;
@@ -321,6 +389,9 @@ ImageResult ImageStabilizer::process(const GrayImage &f, std::uint64_t time, con
         state.settings = s;
         state.correction = {};
         state.follow_velocity = state.follow_speed = {};
+        state.release_origin = {};
+        state.weak_since = 0;
+        state.acquisition = 1;
         return done();
     }
     result.previous_time_ns = state.timestamp;
@@ -364,17 +435,19 @@ ImageResult ImageStabilizer::process(const GrayImage &f, std::uint64_t time, con
             double horizontal = retention, vertical = retention, roll = retention;
             if (s.motion.separate_axes || s.motion.turn_follow > 0) {
                 const double dt = double(time - state.timestamp) * 1e-9;
-                horizontal = image_retention(
-                    s.motion.separate_axes ? s.motion.yaw : s.smoothing, motion.x / f.width * 90 / dt,
-                    state.follow_velocity.x, state.follow_speed.x, dt, s.motion);
-                vertical = image_retention(
-                    s.motion.separate_axes ? s.motion.pitch : s.smoothing, motion.y / f.height * 90 / dt,
-                    state.follow_velocity.y, state.follow_speed.y, dt, s.motion);
-                roll = image_retention(
-                    s.motion.separate_axes ? s.motion.roll : s.smoothing, motion.angle * 180 / pi / dt,
-                    state.follow_velocity.angle, state.follow_speed.angle, dt, s.motion);
+                horizontal = image_retention(s.motion.separate_axes ? s.motion.yaw : s.smoothing,
+                                             motion.x / f.width * 90 / dt, state.follow_velocity.x,
+                                             state.follow_speed.x, dt, s.motion);
+                vertical = image_retention(s.motion.separate_axes ? s.motion.pitch : s.smoothing,
+                                           motion.y / f.height * 90 / dt, state.follow_velocity.y,
+                                           state.follow_speed.y, dt, s.motion);
+                roll = image_retention(s.motion.separate_axes ? s.motion.roll : s.smoothing,
+                                       motion.angle * 180 / pi / dt, state.follow_velocity.angle,
+                                       state.follow_speed.angle, dt, s.motion);
             }
-            auto correction = compose(motion, state.correction);
+            state.weak_since = 0;
+            state.acquisition = std::min(1., state.acquisition + double(time - state.timestamp) * 1e-9 / .10);
+            auto correction = compose(scaled(motion, smoothstep(state.acquisition)), state.correction);
             correction.x = std::clamp(correction.x * horizontal, -double(f.width) * s.max_shift_percent / 100,
                                       f.width * s.max_shift_percent / 100);
             correction.y = std::clamp(correction.y * vertical, -double(f.height) * s.max_shift_percent / 100,
@@ -384,11 +457,28 @@ ImageResult ImageStabilizer::process(const GrayImage &f, std::uint64_t time, con
                                                 s.max_roll_degrees * pi / 180)
                                    : 0;
             result.correction = correction;
-        } else if (support < .2 || std::hypot(motion.x, motion.y) >= std::min(f.width, f.height) * .10)
+        } else if (std::hypot(motion.x, motion.y) >= std::min(f.width, f.height) * .10)
             result.status = ImageStatus::scene_change;
     }
-    if (result.status != ImageStatus::tracking)
+    if (result.status != ImageStatus::tracking && scene_discontinuity(state.previous[0], current[0], bounds))
+        result.status = ImageStatus::scene_change;
+    if (result.status != ImageStatus::tracking) {
         state.follow_velocity = state.follow_speed = {};
+        state.acquisition = 0;
+        if (result.status == ImageStatus::weak) {
+            if (!state.weak_since) {
+                state.weak_since = state.timestamp;
+                state.release_origin = state.correction;
+            }
+            // Bound the entire release to 150 ms. Do not extrapolate unknown
+            // motion or pass this fading offset to calibration as a measurement.
+            const double fade = 1 - smoothstep(double(time - state.weak_since) * 1e-9 / .15);
+            result.correction = scaled(state.release_origin, fade);
+        } else {
+            state.weak_since = 0;
+            state.release_origin = {};
+        }
+    }
     state.correction = result.correction;
     state.previous = std::move(current);
     state.timestamp = time;
@@ -408,8 +498,9 @@ ImageWarp make_image_warp(std::uint32_t width, std::uint32_t height, const Setti
     auto origin = map_uv(base, 0, 0), xr = map_uv(base, 1, 0), yr = map_uv(base, 0, 1);
     double sx = base.uv_right - base.uv_left, sy = base.uv_bottom - base.uv_top;
     ImageTransform desired = result.correction;
-    if (result.status != ImageStatus::tracking || !result.width || !result.height ||
-        !std::isfinite(desired.x) || !std::isfinite(desired.y) || !std::isfinite(desired.angle))
+    if ((result.status != ImageStatus::tracking && result.status != ImageStatus::weak) || !result.width ||
+        !result.height || !std::isfinite(desired.x) || !std::isfinite(desired.y) ||
+        !std::isfinite(desired.angle))
         desired = {};
     auto compute = [&](double fraction) {
         double angle = desired.angle * fraction, c = std::cos(angle), s = std::sin(angle);
