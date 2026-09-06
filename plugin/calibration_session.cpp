@@ -72,13 +72,14 @@ void CalibrationSession::pose(const vrst::TrackingSnapshot &p, std::uint64_t now
 }
 void CalibrationSession::image(const vrst::ImageResult &r, std::uint64_t captured) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!state_.active || !captured || captured < started_ || captured - started_ > 30000000000ULL ||
-        !r.time_ns || captured <= capture_time_)
-        return;
-    if (r.status == vrst::ImageStatus::scene_change) {
+    if (r.status == vrst::ImageStatus::scene_change && captured > capture_time_ &&
+        (state_.active || state_.result.valid || !motions_.empty())) {
         discard_locked("Scene change detected. Keep the car parked and start a new calibration.");
         return;
     }
+    if (!state_.active || !captured || captured < started_ || captured - started_ > 30000000000ULL ||
+        !r.time_ns || captured <= capture_time_)
+        return;
     if (r.status == vrst::ImageStatus::tracking && r.previous_time_ns == image_time_ && capture_time_ &&
         captured - capture_time_ <= 200000000ULL && r.width && r.height && motions_.size() < 4000)
         motions_.push_back(

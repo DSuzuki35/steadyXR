@@ -105,5 +105,10 @@ int main() {
     session.finish();
     check(!session.state().result.valid, "Finish cannot restore a suggestion from old source dimensions");
     check(!collect(true).valid, "detected scene cut discards calibration instead of mixing camera views");
+    check(collect().valid, "completed suggestion ready before a later scene cut");
+    r.status = vrst::ImageStatus::scene_change;
+    r.time_ns += 16666667;
+    session.image(r, epoch + 16000000000ULL);
+    check(!session.state().result.valid, "detected scene cut also invalidates a completed suggestion");
     return failures ? 1 : 0;
 }

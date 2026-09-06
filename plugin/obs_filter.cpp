@@ -220,17 +220,41 @@ void *create(obs_data_t *settings, obs_source_t *source) {
         update(filter.get(), settings);
         signal_handler_connect(obs_source_get_signal_handler(source), "enable", enabled_changed,
                                filter.get());
-        filter->hotkeys[0] = obs_hotkey_register_source(source, "vrst_compare", text("Compare.Hotkey"),
-                                                        compare_hotkey, filter.get());
-        filter->hotkeys[1] = obs_hotkey_register_source(source, "vrst_reset", text("ResetSmoothing"),
-                                                        reset_hotkey, filter.get());
-        filter->hotkeys[2] = obs_hotkey_register_source(source, "vrst_next_preset", text("Preset.Next"),
-                                                        preset_hotkey, filter.get());
+        const char *names[] = {"vrst_compare", "vrst_reset", "vrst_next_preset"};
+        const char *labels[] = {"Compare.Hotkey", "ResetSmoothing", "Preset.Next"};
+        const char *bindings[] = {"hotkey_compare_bindings", "hotkey_reset_bindings",
+                                  "hotkey_preset_bindings"};
+        const obs_hotkey_func callbacks[] = {compare_hotkey, reset_hotkey, preset_hotkey};
+        // OBS filter sources are private, so source-owned hotkey registration
+        // rejects them. Frontend keys get unique filter UUIDs; save() persists
+        // their bindings with the filter's own scene settings.
+        for (unsigned i = 0; i < 3; ++i) {
+            const std::string key = std::string(names[i]) + "." + obs_source_get_uuid(source);
+            const std::string label = std::string(text(labels[i])) + " (" + obs_source_get_name(source) + ")";
+            filter->hotkeys[i] =
+                obs_hotkey_register_frontend(key.c_str(), label.c_str(), callbacks[i], filter.get());
+            auto *saved = obs_data_get_array(settings, bindings[i]);
+            if (saved)
+                obs_hotkey_load(filter->hotkeys[i], saved);
+            obs_data_array_release(saved);
+        }
         return filter.release();
     } catch (const std::exception &error) {
         blog(LOG_ERROR, "[vr-stabilizer] Cannot create filter: %s", error.what());
         destroy(filter.release());
         return nullptr;
+    }
+}
+
+void save(void *data, obs_data_t *settings) {
+    auto *filter = static_cast<Filter *>(data);
+    const char *keys[] = {"hotkey_compare_bindings", "hotkey_reset_bindings", "hotkey_preset_bindings"};
+    for (unsigned i = 0; i < 3; ++i) {
+        if (filter->hotkeys[i] == OBS_INVALID_HOTKEY_ID)
+            continue;
+        auto *bindings = obs_hotkey_save(filter->hotkeys[i]);
+        obs_data_set_array(settings, keys[i], bindings);
+        obs_data_array_release(bindings);
     }
 }
 
@@ -778,8 +802,7 @@ void render(void *data, gs_effect_t *) {
                                      configuration.image_revision, options)) {
                 filter->set_dimensions(filter->image.warp());
                 filter->effective_crop.store(filter->image.effective_crop());
-                if (calibrating)
-                    filter->calibration.image(filter->image.result(), filter->image.capture_time_ns());
+                filter->calibration.image(filter->image.result(), filter->image.capture_time_ns());
                 filter->applied_correction.store(filter->image.warp().correction_fraction,
                                                  std::memory_order_relaxed);
                 std::lock_guard<std::mutex> lock(filter->image_diagnostics_mutex);
@@ -876,6 +899,7 @@ bool obs_module_load(void) {
     info.create = create;
     info.destroy = destroy;
     info.update = update;
+    info.save = save;
     info.get_defaults = defaults;
     info.get_properties = properties;
     info.video_tick = tick;

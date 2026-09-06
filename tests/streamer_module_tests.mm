@@ -2,7 +2,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <obs-module.h>
+#include <string>
 #include <thread>
 int main(int argc, char **argv) {
     @autoreleasepool {
@@ -24,6 +26,12 @@ int main(int argc, char **argv) {
         v.scale_type = OBS_SCALE_BILINEAR;
         if (obs_reset_video(&v) != OBS_VIDEO_SUCCESS)
             return 2;
+        obs_audio_info audio{};
+        audio.samples_per_sec = 48000;
+        audio.speakers = SPEAKERS_STEREO;
+        if (!obs_reset_audio(&audio))
+            return 2;
+        obs_hotkey_enable_callback_rerouting(true);
         int fails = 0;
         auto check = [&](bool pass, const char *msg) {
             std::printf("%s %s\n", pass ? "PASS" : "FAIL", msg);
@@ -67,6 +75,87 @@ int main(int argc, char **argv) {
                   obs_data_get_double(s, "smoothing_pitch") == 63,
               "load preset callback restores tuning");
         check(click("preset_delete"), "delete preset callback succeeds");
+        std::map<std::string, obs_hotkey_id> keys;
+        obs_enum_hotkeys(
+            [](void *data, obs_hotkey_id id, obs_hotkey_t *key) {
+                const std::string name = obs_hotkey_get_name(key);
+                const auto dot = name.find('.');
+                (*static_cast<std::map<std::string, obs_hotkey_id> *>(data))[name.substr(0, dot)] = id;
+                return true;
+            },
+            &keys);
+        check(keys.count("vrst_compare") && keys.count("vrst_reset") && keys.count("vrst_next_preset"),
+              "all three filter hotkeys are registered in real OBS");
+        if (keys.empty()) {
+            std::printf("No OBS hotkeys were registered for the actual filter instance.\n");
+            obs_properties_destroy(p);
+            obs_data_release(s);
+            obs_data_release(input);
+            obs_source_release(filter);
+            obs_shutdown();
+            return 1;
+        }
+        obs_key_combination_t combination{INTERACT_CONTROL_KEY, OBS_KEY_F24};
+        obs_hotkey_load_bindings(keys.at("vrst_compare"), &combination, 1);
+        obs_source_save(filter);
+        auto *bindings = obs_data_get_array(s, "hotkey_compare_bindings");
+        check(bindings && obs_data_array_count(bindings) == 1, "OBS save persists filter hotkey bindings");
+        obs_data_array_release(bindings);
+        auto *scene_copy = obs_data_create_from_json(obs_data_get_json(s));
+        auto *second = obs_source_create("vr-stabilizer", "second filter", scene_copy, nullptr);
+        std::map<std::string, obs_hotkey_id> all_keys;
+        obs_enum_hotkeys(
+            [](void *data, obs_hotkey_id id, obs_hotkey_t *key) {
+                (*static_cast<std::map<std::string, obs_hotkey_id> *>(data))[obs_hotkey_get_name(key)] = id;
+                return true;
+            },
+            &all_keys);
+        check(all_keys.size() == 6, "two filter instances register unique hotkeys");
+        const std::string second_key = std::string("vrst_compare.") + obs_source_get_uuid(second);
+        auto *restored = obs_hotkey_save(all_keys.at(second_key));
+        check(restored && obs_data_array_count(restored) == 1,
+              "recreated filter restores bindings from scene JSON");
+        obs_data_array_release(restored);
+        obs_data_release(scene_copy);
+        obs_source_release(second);
+        obs_wait_for_destroy_queue();
+        all_keys.clear();
+        obs_enum_hotkeys(
+            [](void *data, obs_hotkey_id id, obs_hotkey_t *key) {
+                (*static_cast<std::map<std::string, obs_hotkey_id> *>(data))[obs_hotkey_get_name(key)] = id;
+                return true;
+            },
+            &all_keys);
+        check(all_keys.size() == 3, "destroying a filter unregisters only its own hotkeys");
+        const bool before_compare = obs_data_get_bool(s, "comparison");
+        obs_hotkey_trigger_routed_callback(keys.at("vrst_compare"), false);
+        check(obs_data_get_bool(s, "comparison") == before_compare, "comparison ignores hotkey release");
+        obs_hotkey_trigger_routed_callback(keys.at("vrst_compare"), true);
+        check(obs_data_get_bool(s, "comparison") != before_compare, "comparison toggles on hotkey press");
+        obs_hotkey_trigger_routed_callback(keys.at("vrst_compare"), true);
+        check(obs_data_get_bool(s, "comparison") == before_compare,
+              "comparison toggles back without losing settings");
+        obs_data_set_string(s, "preset_name", "Alpha");
+        obs_data_set_double(s, "smoothing", 11);
+        obs_data_set_string(s, "gaming_pc", "127.0.0.1");
+        obs_data_set_int(s, "port", 54545);
+        obs_source_update(filter, s);
+        click("preset_save");
+        obs_data_set_string(s, "preset_name", "Beta");
+        obs_data_set_double(s, "smoothing", 77);
+        obs_source_update(filter, s);
+        click("preset_save");
+        obs_data_set_int(s, "port", 56565);
+        obs_source_update(filter, s);
+        obs_hotkey_trigger_routed_callback(keys.at("vrst_next_preset"), false);
+        check(obs_data_get_double(s, "smoothing") == 77, "next-preset ignores hotkey release");
+        obs_hotkey_trigger_routed_callback(keys.at("vrst_next_preset"), true);
+        check(obs_data_get_double(s, "smoothing") == 11 &&
+                  std::string(obs_data_get_string(s, "preset_name")) == "Alpha",
+              "next preset wraps from final saved name to first");
+        check(obs_data_get_int(s, "port") == 56565, "preset hotkey preserves current sender port");
+        obs_hotkey_trigger_routed_callback(keys.at("vrst_next_preset"), true);
+        check(obs_data_get_double(s, "smoothing") == 77, "next preset advances deterministically");
         check(exists("calibration_start") && exists("calibration_finish") && exists("calibration_apply"),
               "guided calibration controls exist");
         if (exists("calibration_apply"))
