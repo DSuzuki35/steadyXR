@@ -18,6 +18,7 @@ class CalibrationSession {
     bool active() const;
     void pose(const vrst::TrackingSnapshot &, std::uint64_t now);
     void image(const vrst::ImageResult &, std::uint64_t capture_time);
+    void source(std::uintptr_t identity, unsigned width, unsigned height);
     void finish();
     CalibrationState state() const;
 
@@ -25,7 +26,10 @@ class CalibrationSession {
     mutable std::mutex mutex_;
     CalibrationState state_;
     std::uint64_t started_{}, revision_{}, image_time_{}, capture_time_{};
+    std::uintptr_t source_{};
+    unsigned width_{}, height_{};
     std::vector<vrst::CalibrationPose> poses_;
     std::vector<vrst::CalibrationMotion> motions_;
+    void discard_locked(const std::string &reason);
 };
 } // namespace vrst_plugin

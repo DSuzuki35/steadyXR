@@ -1,10 +1,42 @@
 #include "calibration_session.hpp"
 namespace vrst_plugin {
+void CalibrationSession::discard_locked(const std::string &reason) {
+    ++revision_;
+    const bool had_data = state_.active || state_.result.valid || !poses_.empty() || !motions_.empty();
+    state_.active = false;
+    state_.result = {};
+    state_.poses = state_.motions = 0;
+    state_.seconds = 0;
+    if (had_data)
+        state_.message = reason;
+    poses_.clear();
+    motions_.clear();
+    source_ = 0;
+    width_ = height_ = 0;
+    started_ = image_time_ = capture_time_ = 0;
+}
+void CalibrationSession::source(std::uintptr_t identity, unsigned width, unsigned height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!state_.active && poses_.empty() && motions_.empty() && !state_.result.valid)
+        return;
+    if (!identity || !width || !height ||
+        (source_ && (source_ != identity || width_ != width || height_ != height))) {
+        discard_locked("Capture source or size changed. Start a new calibration.");
+        return;
+    }
+    if (state_.active) {
+        source_ = identity;
+        width_ = width;
+        height_ = height;
+    }
+}
 void CalibrationSession::start(std::uint64_t time) {
     std::lock_guard<std::mutex> lock(mutex_);
     ++revision_;
     started_ = time;
     image_time_ = capture_time_ = 0;
+    source_ = 0;
+    width_ = height_ = 0;
     poses_.clear();
     motions_.clear();
     state_ = {};
@@ -15,12 +47,7 @@ void CalibrationSession::start(std::uint64_t time) {
 bool CalibrationSession::invalidate(const std::string &reason) {
     std::lock_guard<std::mutex> lock(mutex_);
     const bool was_active = state_.active;
-    ++revision_;
-    state_.active = false;
-    if (was_active || state_.result.valid) {
-        state_.result = {};
-        state_.message = reason;
-    }
+    discard_locked(reason);
     return was_active;
 }
 bool CalibrationSession::active() const {
@@ -48,6 +75,10 @@ void CalibrationSession::image(const vrst::ImageResult &r, std::uint64_t capture
     if (!state_.active || !captured || captured < started_ || captured - started_ > 30000000000ULL ||
         !r.time_ns || captured <= capture_time_)
         return;
+    if (r.status == vrst::ImageStatus::scene_change) {
+        discard_locked("Scene change detected. Keep the car parked and start a new calibration.");
+        return;
+    }
     if (r.status == vrst::ImageStatus::tracking && r.previous_time_ns == image_time_ && capture_time_ &&
         captured - capture_time_ <= 200000000ULL && r.width && r.height && motions_.size() < 4000)
         motions_.push_back(

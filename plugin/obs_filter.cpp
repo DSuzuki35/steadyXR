@@ -61,8 +61,6 @@ struct Filter {
     bool image_active{}, calibration_active{};
     vrst::CropController crop_controller;
     std::uint64_t rendered_configuration_revision{};
-    obs_source_t *calibration_target{};
-    unsigned calibration_width{}, calibration_height{};
     obs_source_t *crop_target{};
     unsigned crop_width{}, crop_height{};
     gs_effect_t *effect{};
@@ -295,6 +293,12 @@ std::string html_escape(const std::string &value) {
     return result;
 }
 
+void observe_calibration_source(Filter *filter) {
+    auto *target = obs_filter_get_target(filter->source);
+    filter->calibration.source(reinterpret_cast<std::uintptr_t>(target),
+                               target ? obs_source_get_base_width(target) : 0,
+                               target ? obs_source_get_base_height(target) : 0);
+}
 void refresh_calibration(obs_properties_t *, Filter *);
 
 void refresh_diagnostics(obs_properties_t *properties, Filter *filter) {
@@ -412,6 +416,8 @@ void refresh_calibration(obs_properties_t *props, Filter *filter) {
     auto *info = obs_properties_get(props, "calibration_status");
     if (!info)
         return;
+    if (filter)
+        observe_calibration_source(filter);
     const auto state = filter ? filter->calibration.state() : vrst_plugin::CalibrationState{};
     std::ostringstream message;
     message << html_escape(state.message) << "<br/>" << std::fixed << std::setprecision(1) << state.seconds
@@ -475,6 +481,7 @@ bool calibration_clicked(obs_properties_t *props, obs_property_t *property, void
     const auto configuration = filter->settings();
     if (action == "calibration_start") {
         filter->calibration.start(vrst::monotonic_ns());
+        observe_calibration_source(filter);
         filter->receiver.configure(configuration.host, configuration.port);
         filter->reset_image.store(true);
     } else if (action == "calibration_finish") {
@@ -482,6 +489,7 @@ bool calibration_clicked(obs_properties_t *props, obs_property_t *property, void
         filter->receiver.configure(configuration.image_mode ? "" : configuration.host, configuration.port);
         filter->reset_image.store(true);
     } else if (action == "calibration_apply") {
+        observe_calibration_source(filter);
         const auto result = filter->calibration.state().result;
         if (result.valid && !filter->calibration.active()) {
             obs_data_set_double(settings, "delay_ms", result.delay_ms);
@@ -657,6 +665,7 @@ void tick(void *data, float) {
     auto *filter = static_cast<Filter *>(data);
     const auto configuration = filter->settings();
     filter->image.tick();
+    observe_calibration_source(filter);
     bool calibrating = filter->calibration.active();
     if (calibrating) {
         vrst::MotionSettings raw;
@@ -664,9 +673,10 @@ void tick(void *data, float) {
         filter->calibration.pose(filter->receiver.snapshot(0, raw), vrst::monotonic_ns());
         calibrating = filter->calibration.active();
     }
+    filter->receiver.configure(configuration.image_mode && !calibrating ? "" : configuration.host,
+                               configuration.port);
     if (calibrating != filter->calibration_active) {
         filter->reset_image.store(true);
-        filter->calibration_target = nullptr;
         if (!calibrating)
             filter->receiver.configure(configuration.image_mode ? "" : configuration.host,
                                        configuration.port);
@@ -732,19 +742,8 @@ void render(void *data, gs_effect_t *) {
         return;
     }
     const auto configuration = filter->settings();
-    bool calibrating = filter->calibration.active();
-    if (calibrating) {
-        if (filter->calibration_target &&
-            (filter->calibration_target != target || width != filter->calibration_width ||
-             height != filter->calibration_height)) {
-            filter->calibration.invalidate("Capture source or size changed. Start a new calibration.");
-            filter->reset_image.store(true);
-            calibrating = false;
-        }
-        filter->calibration_target = target;
-        filter->calibration_width = width;
-        filter->calibration_height = height;
-    }
+    observe_calibration_source(filter);
+    const bool calibrating = filter->calibration.active();
     if (configuration.image_revision != filter->rendered_configuration_revision) {
         filter->crop_controller.reset();
         filter->rendered_configuration_revision = configuration.image_revision;
