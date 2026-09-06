@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
         const std::uint8_t *bytes = pixels.data();
         auto *texture = gs_texture_create(N, N, GS_RGBA, 1, &bytes, 0);
         int failures = 0;
-        for (int test = 0; test < 8; ++test) {
+        for (int test = 0; test < 12; ++test) {
             vrst::Settings settings;
             settings.output_16_9 = false;
             settings.stabilization_crop = 0;
@@ -80,8 +80,30 @@ int main(int argc, char **argv) {
                 r.correction = {150, 90, .6};
                 r.status = vrst::ImageStatus::weak;
             }
+            const bool hybrid = test >= 8;
+            const bool analysis = test == 7 || test == 11;
+            vrst::Warp pose;
+            if (hybrid) {
+                // An asymmetric projection and noncommuting residual rotation
+                // expose missing pose correction, reversed composition or a
+                // pose correction accidentally applied twice.
+                vrst::Settings first;
+                first.output_16_9 = false;
+                first.stabilization_crop = 18;
+                first.input_left = 8;
+                first.input_top = 12;
+                first.automatic_fov = true;
+                pose = vrst::make_warp(N, N, first, vrst::axis_angle({.2, 1, .3}, test == 10 ? .8 : .06),
+                                       vrst::Projection{-.7, 1.3, .8, -1.1});
+                settings.stabilization_crop = 15;
+                r.correction = test == 8 ? vrst::ImageTransform{} : vrst::ImageTransform{4, -2, .05};
+                if (!gs_effect_get_param_by_name(effect, "pose_correction")) {
+                    std::printf("FAIL image GPU case%d: composed pose shader is missing\n", test);
+                    ++failures;
+                    continue;
+                }
+            }
             auto warp = vrst::make_image_warp(N, N, settings, r);
-            bool analysis = test == 7;
             unsigned width = analysis ? 64 : warp.width, height = analysis ? 64 : warp.height;
             auto *target = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
             if (!gs_texrender_begin(target, width, height)) {
@@ -101,8 +123,25 @@ int main(int argc, char **argv) {
             set4(effect, "row_y", warp.row_y[0], warp.row_y[1], warp.row_y[2], 0);
             set4(effect, "trim_uv", .1, .2, .8, .7);
             set4(effect, "footprint", .8 / width, .7 / height, 0, 0);
+            if (gs_effect_get_param_by_name(effect, "pose_correction")) {
+                set4(effect, "pose_input", -1, 1, 1, -1);
+                set4(effect, "pose_output", -1, 1, 1, -1);
+                set4(effect, "pose_correction", 0, 0, 0, 1);
+                set4(effect, "pose_uv", 0, 1, 0, 1);
+            }
+            if (hybrid) {
+                set4(effect, "pose_input", pose.input.left, pose.input.right, pose.input.up, pose.input.down);
+                set4(effect, "pose_output", pose.output.left, pose.output.right, pose.output.up,
+                     pose.output.down);
+                set4(effect, "pose_correction", pose.correction.x, pose.correction.y, pose.correction.z,
+                     pose.correction.w);
+                set4(effect, "pose_uv", pose.uv_left, pose.uv_right, pose.uv_top, pose.uv_bottom);
+                set4(effect, "footprint", 1. / width, 1. / height, 0, 0);
+            }
             gs_effect_set_texture(gs_effect_get_param_by_name(effect, "image"), texture);
-            while (gs_effect_loop(effect, analysis ? "Analyze" : "Draw"))
+            const char *technique =
+                hybrid ? (analysis ? "AnalyzeHybrid" : "DrawHybrid") : (analysis ? "Analyze" : "Draw");
+            while (gs_effect_loop(effect, technique))
                 gs_draw_sprite(texture, 0, width, height);
             gs_texrender_end(target);
             auto *stage = gs_stagesurface_create(width, height, GS_RGBA);
@@ -118,10 +157,17 @@ int main(int argc, char **argv) {
                             (warp.row_x[0] * u + warp.row_x[1] * v + warp.row_x[2]) * N - .5, 0., 255.);
                         double ey = std::clamp(
                             (warp.row_y[0] * u + warp.row_y[1] * v + warp.row_y[2]) * N - .5, 0., 255.);
+                        if (hybrid) {
+                            auto uv = vrst::map_uv(pose, analysis ? u : (ex + .5) / N,
+                                                   analysis ? v : (ey + .5) / N);
+                            ex = std::clamp(uv[0] * N - .5, 0., 255.);
+                            ey = std::clamp(uv[1] * N - .5, 0., 255.);
+                        }
                         auto *p = data + y * stride + x * 4;
                         if (analysis) {
-                            double gray = .2126 * ((.1 + .8 * u) * N - .5) +
-                                          .7152 * ((.2 + .7 * v) * N - .5) + .0722 * 73;
+                            double gray = hybrid ? .2126 * ex + .7152 * ey + .0722 * 73
+                                                 : .2126 * ((.1 + .8 * u) * N - .5) +
+                                                       .7152 * ((.2 + .7 * v) * N - .5) + .0722 * 73;
                             if (std::abs(p[0] - gray) > 2 || p[0] != p[1] || p[1] != p[2] || p[3] != 255)
                                 ++bad;
                         } else if (std::abs(p[0] - ex) > 2 || std::abs(p[1] - ey) > 2 ||
