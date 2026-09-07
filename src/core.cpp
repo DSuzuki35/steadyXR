@@ -220,6 +220,7 @@ PoseResult PoseHistory::sample(std::uint64_t at) const {
     if (!(it->pose.flags & TrackingValid) || at - it->pose.time_ns > 100000000ULL)
         return out;
     Quat source = it->pose.orientation, target = it->smooth;
+    out.sample_time_ns = it->pose.time_ns;
     // A frame pose stays tied to its image. Only live tracking samples interpolate.
     if (!(it->pose.flags & FramePose) && next != entries_.end() && (next->pose.flags & TrackingValid) &&
         next->pose.time_ns - it->pose.time_ns < 100000000ULL) {
@@ -227,6 +228,8 @@ PoseResult PoseHistory::sample(std::uint64_t at) const {
                    static_cast<double>(next->pose.time_ns - it->pose.time_ns);
         source = slerp(source, next->pose.orientation, t);
         target = slerp(target, next->smooth, t);
+        out.interpolated = at != it->pose.time_ns;
+        out.sample_time_ns = at;
     }
     out.valid = true;
     out.source_orientation = source;
@@ -238,6 +241,7 @@ PoseResult PoseHistory::sample(std::uint64_t at) const {
     out.time_ns = it->pose.time_ns;
     out.sequence = it->pose.sequence;
     out.flags = it->pose.flags;
+    out.session = it->pose.session;
     return out;
 }
 std::array<double, 2> map_uv(const Warp &w, double u, double v) {

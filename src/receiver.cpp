@@ -16,6 +16,7 @@ struct Receiver::Impl {
     std::uint16_t port{wire::default_port};
     std::uint64_t generation{}, session{}, last_receive{}, last_sync{}, received{}, rejected{};
     PoseHistory history;
+    Pose latest_pose;
     ClockSync clock;
     std::thread worker;
     Impl() : worker([this] { run(); }) {}
@@ -23,6 +24,11 @@ struct Receiver::Impl {
         stop = true;
         if (worker.joinable())
             worker.join();
+    }
+    void clear_history() {
+        history.clear();
+        latest_pose = {};
+        last_receive = 0;
     }
     void run() noexcept {
         try {
@@ -86,15 +92,14 @@ struct Receiver::Impl {
                         }
                         if (session != m->session) {
                             session = m->session;
-                            history.clear();
+                            clear_history();
                             clock.clear();
-                            last_receive = 0;
                         }
                         double old = clock.offset_ns();
                         bool was_ready = clock.ready();
                         if (clock.observe(m->client_send, m->server_receive, m->server_send, at)) {
                             if (was_ready && std::abs(old - clock.offset_ns()) > 20000000)
-                                history.clear();
+                                clear_history();
                             last_sync = at;
                             error.clear();
                         } else
@@ -112,6 +117,7 @@ struct Receiver::Impl {
                             continue;
                         }
                         last_receive = at;
+                        latest_pose = m->pose;
                         ++received;
                     }
                 }
@@ -133,13 +139,13 @@ void Receiver::configure(const std::string &host, std::uint16_t port) {
     impl_->port = port ? port : wire::default_port;
     ++impl_->generation;
     impl_->session = impl_->last_receive = impl_->last_sync = impl_->received = impl_->rejected = 0;
-    impl_->history.clear();
+    impl_->clear_history();
     impl_->clock.clear();
     impl_->error = "Connecting";
 }
 void Receiver::reset() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->history.clear();
+    impl_->clear_history();
 }
 TrackingSnapshot Receiver::snapshot(double delay_ms, double smoothing) {
     MotionSettings settings;
@@ -150,6 +156,10 @@ TrackingSnapshot Receiver::snapshot(double delay_ms, const MotionSettings &smoot
     std::lock_guard<std::mutex> lock(impl_->mutex);
     auto now = monotonic_ns();
     TrackingSnapshot s;
+    s.local_time_ns = now;
+    s.latest_pose = impl_->latest_pose;
+    s.latest_received = impl_->last_receive != 0;
+    s.latest_receive_time_ns = impl_->last_receive;
     s.received = impl_->received;
     s.rejected = impl_->rejected;
     s.connected = impl_->last_receive && now - impl_->last_receive < 1000000000ULL;
@@ -157,6 +167,8 @@ TrackingSnapshot Receiver::snapshot(double delay_ms, const MotionSettings &smoot
     s.rtt_ms = impl_->clock.rtt_ms();
     impl_->history.set_smoothing(smoothing);
     double remote_now = static_cast<double>(now) + impl_->clock.offset_ns();
+    if (s.clock_ready && remote_now > 0 && remote_now < static_cast<double>(UINT64_MAX))
+        s.remote_now_ns = static_cast<std::uint64_t>(remote_now);
     double lookback = std::isfinite(delay_ms) ? std::clamp(delay_ms, 0., 1000.) : 80.;
     double target = remote_now - lookback * 1000000.;
     if (s.connected && s.clock_ready && now - impl_->last_receive < 250000000ULL && target > 0 &&

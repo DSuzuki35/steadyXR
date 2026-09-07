@@ -6,6 +6,7 @@ param(
     [string]$ObsSourceDirectory = $env:VRST_NATIVE_OBS_SOURCE_DIR,
     [string]$ObsGeneratedDirectory = $env:VRST_OBS_GENERATED_DIR,
     [string]$ObsLibrary = $env:VRST_OBS_LIBRARY,
+    [string]$CoreLibrary = '',
     [string]$Compiler = $env:CXX
 )
 $ErrorActionPreference = 'Stop'
@@ -31,6 +32,17 @@ try {
     }
     $ObsDirectory = (Resolve-Path -LiteralPath $ObsDirectory).Path
     $PluginPath = (Resolve-Path -LiteralPath $PluginPath).Path
+    if (-not $CoreLibrary) {
+        $pluginDirectory = Split-Path -Parent $PluginPath
+        foreach ($relative in @('../libvrst_core.a', '../vrst_core.lib', '../Release/vrst_core.lib', '../../Release/vrst_core.lib')) {
+            $candidate = [IO.Path]::GetFullPath((Join-Path $pluginDirectory $relative))
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $CoreLibrary = $candidate; break }
+        }
+    }
+    if (-not $CoreLibrary -or -not (Test-Path -LiteralPath $CoreLibrary -PathType Leaf)) {
+        throw 'Built vrst_core library required for frame-pairing tests; set -CoreLibrary to its path.'
+    }
+    $CoreLibrary = (Resolve-Path -LiteralPath $CoreLibrary).Path
     $ObsSourceDirectory = (Resolve-Path -LiteralPath $ObsSourceDirectory).Path
     $ObsGeneratedDirectory = (Resolve-Path -LiteralPath $ObsGeneratedDirectory).Path
     $ObsLibrary = (Resolve-Path -LiteralPath $ObsLibrary).Path
@@ -38,21 +50,33 @@ try {
     $BuildDirectory = (Resolve-Path -LiteralPath $BuildDirectory).Path
     $obsBin = Join-Path $ObsDirectory 'bin/64bit'
     $env:PATH = "$obsBin;$(Split-Path -Parent $Compiler);$previousPath"
-    foreach ($suite in @('image', 'streamer')) {
+    foreach ($suite in @('image', 'streamer', 'image_pairing')) {
         $source = Join-Path $taskRoot "tests/${suite}_module_tests.mm"
         $executable = Join-Path $BuildDirectory "vrst-${suite}-module-tests.exe"
         $config = Join-Path $BuildDirectory "obs-test-config-$suite"
         New-Item -ItemType Directory -Force -Path $config | Out-Null
+        $pairingObjects = @()
+        if ($suite -eq 'image_pairing') {
+            $imageSource = Join-Path $taskRoot 'plugin/image_filter.cpp'
+            if ($msvc) {
+                $imageObject = Join-Path $BuildDirectory 'image_filter.obj'
+                & $Compiler '/nologo' '/std:c++17' '/O2' '/EHsc' '/MT' '/c' '/wd4996' "/I$taskRoot/include" "/I$ObsSourceDirectory/libobs" "/I$ObsGeneratedDirectory" $imageSource "/Fo$imageObject"
+                if ($LASTEXITCODE -ne 0) { throw 'Image pairing support compilation failed' }
+                $pairingObjects = @($imageObject, $CoreLibrary)
+            } else {
+                $pairingObjects = @($imageSource, $CoreLibrary)
+            }
+        }
         # The harness deliberately stages and examines every output pixel twice.
         # Optimize its CPU work so the harness does not needlessly skip OBS ticks.
         if ($msvc) {
             $compileArgs = @('/nologo', '/std:c++17', '/O2', '/EHsc', '/MT', '/TP', '/wd4996',
-                "/I$taskRoot/include", "/I$ObsSourceDirectory/libobs", "/I$ObsGeneratedDirectory",
-                $source, "/Fo$BuildDirectory/$suite.obj", "/Fe$executable", '/link', $ObsLibrary)
+                "/I$taskRoot/include", "/I$taskRoot/plugin", "/I$ObsSourceDirectory/libobs", "/I$ObsGeneratedDirectory",
+                $source, "/Fo$BuildDirectory/$suite.obj", "/Fe$executable", '/link', $ObsLibrary) + $pairingObjects
         } else {
             $compileArgs = @('-std=c++17', '-O2', '-static', '-Wno-deprecated-declarations',
-                "-I$taskRoot/include", "-I$ObsSourceDirectory/libobs", "-I$ObsGeneratedDirectory",
-                '-x', 'c++', $source, '-x', 'none', $ObsLibrary, '-o', $executable)
+                "-I$taskRoot/include", "-I$taskRoot/plugin", "-I$ObsSourceDirectory/libobs", "-I$ObsGeneratedDirectory",
+                '-x', 'c++', $source, '-x', 'none') + $pairingObjects + @($ObsLibrary, '-o', $executable)
         }
         & $Compiler @compileArgs
         if ($LASTEXITCODE -ne 0) { throw "$suite module test compilation failed" }

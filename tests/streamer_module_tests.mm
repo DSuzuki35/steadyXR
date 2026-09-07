@@ -78,6 +78,23 @@ int main(int argc, char **argv) {
         check(!obs_data_get_bool(s, "auto_crop") && !obs_data_get_bool(s, "separate_axes") &&
                   !obs_data_get_bool(s, "comparison") && obs_data_get_double(s, "turn_follow") == 0,
               "new behavior defaults off for existing scenes");
+        check(exists("photo_timing_overlay") && !obs_data_get_bool(s, "photo_timing_overlay"),
+              "photo timing display exists and defaults off");
+        obs_data_set_int(s, "mode", 1);
+        obs_properties_apply_settings(p, s);
+        check(!obs_property_visible(obs_properties_get(p, "gaming_pc")),
+              "image mode hides unused sender controls with photo timing off");
+        obs_data_set_bool(s, "photo_timing_overlay", true);
+        obs_source_update(filter, s);
+        obs_properties_apply_settings(p, s);
+        check(obs_property_visible(obs_properties_get(p, "gaming_pc")) &&
+                  obs_property_visible(obs_properties_get(p, "port")) &&
+                  !obs_property_visible(obs_properties_get(p, "horizontal_fov")),
+              "image photo timing exposes sender controls while preserving image tuning controls");
+        obs_data_set_bool(s, "photo_timing_overlay", false);
+        obs_data_set_int(s, "mode", 2);
+        obs_source_update(filter, s);
+        obs_properties_apply_settings(p, s);
         auto click = [&](const char *n) {
             auto *b = obs_properties_get(p, n);
             return b && obs_property_button_clicked(b, filter);
@@ -87,12 +104,28 @@ int main(int argc, char **argv) {
         obs_data_set_double(s, "smoothing_pitch", 63);
         obs_source_update(filter, s);
         check(click("preset_save"), "save preset callback succeeds");
+        auto *saved_bank = obs_data_get_obj(s, "saved_presets");
+        const std::string before_bank = obs_data_get_json(saved_bank);
+        obs_data_release(saved_bank);
+        const auto before_fov = obs_data_get_double(s, "horizontal_fov");
+        const auto before_smoothing = obs_data_get_double(s, "smoothing");
+        obs_data_set_bool(s, "photo_timing_overlay", true);
+        obs_source_update(filter, s);
+        saved_bank = obs_data_get_obj(s, "saved_presets");
+        check(obs_data_get_double(s, "delay_ms") == 137 &&
+                  obs_data_get_double(s, "horizontal_fov") == before_fov &&
+                  obs_data_get_double(s, "smoothing") == before_smoothing &&
+                  std::string(obs_data_get_json(saved_bank)) == before_bank,
+              "photo timing toggle preserves delay, FOV, smoothing and saved presets");
+        obs_data_release(saved_bank);
         obs_data_set_double(s, "delay_ms", 2);
         obs_data_set_double(s, "smoothing_pitch", 1);
         obs_source_update(filter, s);
         check(click("preset_load") && obs_data_get_double(s, "delay_ms") == 137 &&
                   obs_data_get_double(s, "smoothing_pitch") == 63,
               "load preset callback restores tuning");
+        check(obs_data_get_bool(s, "photo_timing_overlay"),
+              "loading a preset preserves photo timing visibility");
         check(click("preset_delete"), "delete preset callback succeeds");
         std::map<std::string, obs_hotkey_id> keys;
         obs_enum_hotkeys(

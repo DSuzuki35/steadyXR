@@ -45,6 +45,9 @@ struct PoseResult {
     Projection projection{};
     std::uint64_t time_ns{}, sequence{};
     std::uint32_t flags{};
+    std::uint64_t session{};
+    std::uint64_t sample_time_ns{}; // effective source time; time_ns keeps the earlier packet stamp
+    bool interpolated{};
 };
 struct MotionSettings {
     double amount{40};

@@ -1,4 +1,5 @@
 #include "pose_math.hpp"
+#include "overlay.hpp"
 #include "vrst/net.hpp" // Winsock must precede any Windows headers.
 #include "vrst/protocol.hpp"
 #include <algorithm>
@@ -45,7 +46,7 @@ BOOL WINAPI stop_console(DWORD event) {
 
 struct Options {
     std::uint16_t port{vrst::wire::default_port};
-    bool right_eye{}, live{}, demo{}, help{};
+    bool right_eye{}, live{}, demo{}, help{}, overlay{};
 };
 
 Options parse_options(int argc, char **argv) {
@@ -63,6 +64,14 @@ Options parse_options(int argc, char **argv) {
         if (flag == "--demo") {
             result.demo = true;
             continue;
+        }
+        if (flag == "--overlay") {
+#ifdef _WIN32
+            result.overlay = true;
+            continue;
+#else
+            throw std::runtime_error("--overlay is available on Windows only.");
+#endif
         }
         if (flag != "--port" && flag != "--eye" && flag != "--mode")
             throw std::runtime_error("Unknown option '" + std::string(flag) + "'; use --help.");
@@ -94,14 +103,17 @@ Options parse_options(int argc, char **argv) {
 void print_help() {
     std::cout
         << "VR Stabilizer pose sender 0.1\n\n"
-        << "Usage: vrst-sender [--port 42424] [--eye left|right] [--mode frame|live] [--demo]\n"
+        << "Usage: vrst-sender [--port 42424] [--eye left|right] [--mode frame|live] [--demo] [--overlay]\n"
         << "  --port N       UDP listening port, 1-65535 (default 42424)\n"
         << "  --eye EYE      Eye used by the captured view (default left)\n"
         << "  --mode MODE    Compositor frame pose, with live fallback (default frame), or live pose\n"
         << "  --demo         Synthetic 90 Hz poses; SteamVR and a headset are not needed\n"
+        << "  --overlay      Movable desktop photo timing panel (Windows only; default off)\n"
         << "  --help, -h     Show this help\n\n"
         << "Frame timestamps record when this sender first observes each compositor frame.\n"
         << "This is observed-frame timing, not an exact HDMI/video match. Calibrate OBS Tracking delay.\n"
+        << "Drag the photo panel inside the captured crop and outside the image tracking region.\n"
+        << "Closing the photo panel leaves tracking running.\n"
         << "The sender reads SteamVR as a background application and waits/reconnects automatically.\n";
 }
 
@@ -423,6 +435,7 @@ int main(int argc, char **argv) {
         std::uint64_t sequence = 0, next_demo = 0;
         const auto demo_start = vrst::monotonic_ns();
         Subscribers subscribers;
+        vrst::sender::DesktopOverlay overlay(options.overlay);
 #ifdef VRST_WITH_OPENVR
         SteamVrSource steamvr(options, ids, session);
 #endif
@@ -451,7 +464,9 @@ int main(int argc, char **argv) {
                 pose->session = session;
                 pose->sequence = ++sequence;
                 subscribers.publish(socket, *pose);
+                overlay.published(*pose);
             }
+            overlay.refresh(vrst::monotonic_ns(), session);
             socket.wait(5);
         }
         std::cout << "Sender stopped.\n";

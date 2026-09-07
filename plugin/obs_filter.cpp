@@ -3,6 +3,7 @@
 #include "calibration_session.hpp"
 #include "image_filter.hpp"
 #include "presets.hpp"
+#include "timing_overlay.hpp"
 #include "vrst/advanced.hpp"
 #include "vrst/core.hpp"
 #include "vrst/protocol.hpp"
@@ -28,7 +29,7 @@ namespace {
 struct Configuration {
     vrst::Settings warp;
     vrst::ImageSettings image;
-    bool image_mode{}, comparison{};
+    bool image_mode{}, comparison{}, photo_timing_overlay{};
     int mode{};
     vrst::MotionSettings motion;
     vrst::CropSettings crop;
@@ -58,6 +59,7 @@ struct Filter {
 
     // Owned by the graphics thread after create; UI callbacks never read these.
     ImageFilter image;
+    vrst_plugin::TimingOverlay timing_overlay;
     bool image_active{}, calibration_active{};
     vrst::CropController crop_controller;
     std::uint64_t rendered_configuration_revision{};
@@ -99,6 +101,7 @@ void update(void *data, obs_data_t *settings) {
     next.mode = int(std::clamp<std::int64_t>(obs_data_get_int(settings, "mode"), 0, 2));
     next.image_mode = next.mode == 1;
     next.comparison = obs_data_get_bool(settings, "comparison");
+    next.photo_timing_overlay = obs_data_get_bool(settings, "photo_timing_overlay");
     next.signature = vrst_plugin::tuning_signature(settings);
     next.image_signature = vrst_plugin::pipeline_signature(settings);
     next.host = obs_data_get_string(settings, "gaming_pc");
@@ -154,13 +157,18 @@ void update(void *data, obs_data_t *settings) {
                               next.image_mode != filter->configuration.image_mode;
     next.peer_revision = filter->configuration.peer_revision + (peer_changed ? 1 : 0);
     const auto &old = filter->configuration;
+    const bool overlay_changed = next.photo_timing_overlay != old.photo_timing_overlay;
     const bool image_changed = next.image_signature != old.image_signature;
     next.image_revision = old.image_revision + (image_changed ? 1 : 0);
     const bool canceled = next.signature != old.signature &&
                           filter->calibration.invalidate("Settings changed. Start a new calibration.");
     filter->configuration = next;
-    if (peer_changed || canceled)
-        filter->receiver.configure(next.image_mode ? "" : next.host, next.port);
+    // The display has no place in either tuning signature: toggling it must
+    // not reset image history, crop, presets or an active calibration.
+    if (peer_changed || canceled || overlay_changed)
+        filter->receiver.configure(
+            next.image_mode && !next.photo_timing_overlay && !filter->calibration.active() ? "" : next.host,
+            next.port);
 }
 
 void enabled_changed(void *data, calldata_t *) {
@@ -178,6 +186,7 @@ void destroy(void *data) {
                               filter);
     obs_enter_graphics();
     filter->image.destroy();
+    filter->timing_overlay.destroy();
     gs_effect_destroy(filter->effect);
     obs_leave_graphics();
     delete filter; // Receiver destructor stops and joins its worker and closes the socket.
@@ -261,6 +270,7 @@ void save(void *data, obs_data_t *settings) {
 void defaults(obs_data_t *settings) {
     obs_data_set_default_int(settings, "mode", 0);
     obs_data_set_default_bool(settings, "comparison", false);
+    obs_data_set_default_bool(settings, "photo_timing_overlay", false);
     obs_data_set_default_bool(settings, "separate_axes", false);
     for (const char *key : {"smoothing_yaw", "smoothing_pitch", "smoothing_roll"})
         obs_data_set_default_double(settings, key, 40);
@@ -510,7 +520,9 @@ bool calibration_clicked(obs_properties_t *props, obs_property_t *property, void
         filter->reset_image.store(true);
     } else if (action == "calibration_finish") {
         filter->calibration.finish();
-        filter->receiver.configure(configuration.image_mode ? "" : configuration.host, configuration.port);
+        filter->receiver.configure(
+            configuration.image_mode && !configuration.photo_timing_overlay ? "" : configuration.host,
+            configuration.port);
         filter->reset_image.store(true);
     } else if (action == "calibration_apply") {
         observe_calibration_source(filter);
@@ -583,6 +595,9 @@ bool mode_changed(obs_properties_t *properties, obs_property_t *, obs_data_t *se
     for (const char *key : {"gaming_pc", "port", "automatic_fov", "horizontal_fov", "vertical_fov",
                             "delay_ms", "horizon_level", "horizon_max_degrees"})
         obs_property_set_visible(obs_properties_get(properties, key), !image);
+    for (const char *key : {"gaming_pc", "port"})
+        obs_property_set_visible(obs_properties_get(properties, key),
+                                 !image || obs_data_get_bool(settings, "photo_timing_overlay"));
     for (const char *key : {"image_max_shift", "image_max_roll", "image_track_roll", "region_left",
                             "region_right", "region_top", "region_bottom"})
         obs_property_set_visible(obs_properties_get(properties, key), mode != 0);
@@ -610,6 +625,9 @@ obs_properties_t *properties(void *data) {
     obs_property_list_add_int(p, text("Mode.Pose"), 0);
     obs_property_list_add_int(p, text("Mode.Image"), 1);
     obs_property_list_add_int(p, text("Mode.Hybrid"), 2);
+    obs_property_set_modified_callback(p, mode_changed);
+    p = obs_properties_add_bool(props, "photo_timing_overlay", text("PhotoTimingOverlay"));
+    obs_property_set_long_description(p, text("PhotoTimingOverlay.Description"));
     obs_property_set_modified_callback(p, mode_changed);
     p = obs_properties_add_text(props, "gaming_pc", text("GamingPC"), OBS_TEXT_DEFAULT);
     obs_property_set_long_description(p, text("GamingPC.Description"));
@@ -697,13 +715,12 @@ void tick(void *data, float) {
         filter->calibration.pose(filter->receiver.snapshot(0, raw), vrst::monotonic_ns());
         calibrating = filter->calibration.active();
     }
-    filter->receiver.configure(configuration.image_mode && !calibrating ? "" : configuration.host,
+    filter->receiver.configure(configuration.image_mode && !calibrating && !configuration.photo_timing_overlay
+                                   ? ""
+                                   : configuration.host,
                                configuration.port);
     if (calibrating != filter->calibration_active) {
         filter->reset_image.store(true);
-        if (!calibrating)
-            filter->receiver.configure(configuration.image_mode ? "" : configuration.host,
-                                       configuration.port);
     }
     filter->calibration_active = calibrating;
     const bool image_active = (configuration.mode != 0 || calibrating) && obs_source_enabled(filter->source);
@@ -745,6 +762,39 @@ void set_vector(gs_eparam_t *parameter, double x, double y, double z, double w) 
     gs_effect_set_val(parameter, value, sizeof(value));
 }
 
+void draw_timing(Filter *filter, const Configuration &configuration, const vrst::TrackingSnapshot &snapshot,
+                 unsigned width, unsigned height, bool calibrating, const vrst::PoseResult &selected = {},
+                 bool pose_applied = false, std::uint64_t capture_time = 0) {
+    if (!configuration.photo_timing_overlay)
+        return;
+    vrst::TimingOverlayData data;
+    data.connected = snapshot.connected;
+    data.clock_ready = snapshot.clock_ready;
+    data.now_ns = snapshot.remote_now_ns;
+    data.latest_present = snapshot.latest_received;
+    data.latest = snapshot.latest_pose;
+    data.session = snapshot.latest_received ? snapshot.latest_pose.session : 0;
+    data.latest_receive_age_ns =
+        snapshot.local_time_ns >= snapshot.latest_receive_time_ns && snapshot.latest_receive_time_ns
+            ? snapshot.local_time_ns - snapshot.latest_receive_time_ns
+            : 0;
+    data.selected = selected;
+    data.comparison = configuration.comparison;
+    data.calibrating = calibrating;
+    data.image_only = configuration.image_mode;
+    data.pose_applied = pose_applied && selected.valid && vrst::valid(selected.correction) &&
+                        !data.comparison && !data.calibrating && !data.image_only;
+    data.delay_ms = configuration.warp.delay_ms;
+    data.rtt_ms = snapshot.rtt_ms;
+    const auto local_now = vrst::monotonic_ns();
+    data.buffer_age_ns = capture_time && local_now >= capture_time ? local_now - capture_time : 0;
+    try {
+        filter->timing_overlay.draw(data, width, height);
+    } catch (const std::exception &error) {
+        blog(LOG_WARNING, "[vr-stabilizer] Photo timing display unavailable: %s", error.what());
+    }
+}
+
 void render(void *data, gs_effect_t *) {
     auto *filter = static_cast<Filter *>(data);
     auto *target = obs_filter_get_target(filter->source);
@@ -768,6 +818,9 @@ void render(void *data, gs_effect_t *) {
     const auto configuration = filter->settings();
     observe_calibration_source(filter);
     const bool calibrating = filter->calibration.active();
+    const auto snapshot = (configuration.mode != 1 && !calibrating) || configuration.photo_timing_overlay
+                              ? filter->receiver.snapshot(configuration.warp.delay_ms, configuration.motion)
+                              : vrst::TrackingSnapshot{};
     if (configuration.image_revision != filter->rendered_configuration_revision) {
         filter->crop_controller.reset();
         filter->rendered_configuration_revision = configuration.image_revision;
@@ -785,8 +838,6 @@ void render(void *data, gs_effect_t *) {
             options.crop.enabled = false;
         }
         if (options.hybrid) {
-            const auto snapshot =
-                filter->receiver.snapshot(configuration.warp.delay_ms, configuration.motion);
             options.pose = snapshot.pose;
             if (configuration.peer_revision != filter->rendered_peer_revision) {
                 filter->last_projection.reset();
@@ -805,6 +856,9 @@ void render(void *data, gs_effect_t *) {
                 filter->calibration.image(filter->image.result(), filter->image.capture_time_ns());
                 filter->applied_correction.store(filter->image.warp().correction_fraction,
                                                  std::memory_order_relaxed);
+                draw_timing(filter, configuration, snapshot, filter->image.warp().width,
+                            filter->image.warp().height, calibrating, filter->image.displayed_pose(),
+                            options.hybrid, filter->image.capture_time_ns());
                 std::lock_guard<std::mutex> lock(filter->image_diagnostics_mutex);
                 filter->image_diagnostics = filter->image.result();
                 return;
@@ -817,13 +871,16 @@ void render(void *data, gs_effect_t *) {
         // allocation fails, with no correction from an earlier frame.
         if (filter->image.fallback(filter->source, width, height, configuration.warp)) {
             filter->set_dimensions(filter->image.warp());
+            draw_timing(filter, configuration, snapshot, filter->image.warp().width,
+                        filter->image.warp().height, calibrating);
             std::lock_guard<std::mutex> lock(filter->image_diagnostics_mutex);
             filter->image_diagnostics = filter->image.result();
-        } else
+        } else {
             obs_source_skip_video_filter(filter->source);
+            draw_timing(filter, configuration, snapshot, width, height, calibrating);
+        }
         return;
     }
-    const auto snapshot = filter->receiver.snapshot(configuration.warp.delay_ms, configuration.motion);
     if (configuration.peer_revision != filter->rendered_peer_revision) {
         filter->last_projection.reset();
         filter->rendered_peer_revision = configuration.peer_revision;
@@ -868,6 +925,8 @@ void render(void *data, gs_effect_t *) {
     gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
     obs_source_process_filter_end(filter->source, filter->effect, warp.width, warp.height);
     gs_blend_state_pop();
+    draw_timing(filter, configuration, snapshot, warp.width, warp.height, calibrating, snapshot.pose,
+                snapshot.pose.valid);
 }
 
 uint32_t width(void *data) {

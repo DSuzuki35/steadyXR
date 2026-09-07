@@ -10,7 +10,7 @@ root = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
-p.add_argument('--version', default='0.3.1')
+p.add_argument('--version', default='0.3.2')
 a = p.parse_args()
 stage = root / 'dist' / f'VR-Stabilizer-{a.version}-Windows-x64'
 if stage.exists():
@@ -41,7 +41,7 @@ copy(output(Path('plugin/vr-stabilizer.dll')), 'obs-install/obs-plugins/64bit/vr
 for item in (root / 'plugin/data').rglob('*'):
     if item.is_file():
         copy(item, Path('obs-install/data/obs-plugins/vr-stabilizer') / item.relative_to(root / 'plugin/data'))
-for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1']:
+for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'Start-Delay-Check.cmd', 'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1']:
     copy(root / name, name)
 copy(a.openvr / 'LICENSE', 'licenses/OpenVR-LICENSE.txt')
 for item in (root / 'licenses').glob('*'):
@@ -54,7 +54,7 @@ for directory in ['include', 'src', 'plugin', 'sender', 'scripts', 'cmake', 'tes
     for item in (root / directory).rglob('*'):
         if item.is_file() and '__pycache__' not in item.parts:
             copy(item, Path('source') / item.relative_to(root))
-for name in ['Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd']:
+for name in ['Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'Start-Delay-Check.cmd']:
     copy(root / name, Path('source') / name)
 checks = []
 for item in sorted(stage.rglob('*')):

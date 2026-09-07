@@ -203,6 +203,63 @@ int main() {
              check(h.sample(1016666667).sequence == 1, "wrong 60Hz frame");
              check(h.sample(1033333333).sequence == 3, "wrong next frame");
          }},
+        {"live timing preserves the earlier packet and reports the interpolated target",
+         [] {
+             PoseHistory h;
+             h.set_smoothing(0);
+             h.push(pose(10, 6000000000ULL, 0, TrackingValid));
+             h.push(pose(11, 6020000000ULL, 20, TrackingValid));
+             const auto r = h.sample(6010000000ULL);
+             check(r.valid && r.session == 42 && r.sequence == 10, "source packet identity lost");
+             check(r.time_ns == 6000000000ULL, "interpolation replaced raw packet timestamp");
+             check(r.interpolated && r.sample_time_ns == 6010000000ULL,
+                   "effective interpolation timestamp missing");
+             near(angle_between(r.source_orientation, axis_angle({0, 1, 0}, 10 * pi / 180)), 0);
+         }},
+        {"frame timing remains tied to the selected image packet",
+         [] {
+             PoseHistory h;
+             h.push(pose(10, 6000000000ULL, 0));
+             h.push(pose(11, 6020000000ULL, 20));
+             const auto r = h.sample(6010000000ULL);
+             check(r.valid && r.session == 42 && r.sequence == 10, "frame packet identity lost");
+             check(!r.interpolated && r.time_ns == 6000000000ULL && r.sample_time_ns == 6000000000ULL,
+                   "frame pose falsely labeled interpolated");
+             near(angle_between(r.source_orientation, {}), 0);
+         }},
+        {"live timing reports interpolation only between eligible samples",
+         [] {
+             struct Case {
+                 std::uint64_t next_time, sample_time, expected_time;
+                 std::uint32_t next_flags;
+             };
+             for (const auto &c : {Case{6020000000ULL, 6000000000ULL, 6000000000ULL, TrackingValid},
+                                   Case{6020000000ULL, 6030000000ULL, 6020000000ULL, TrackingValid},
+                                   Case{6020000000ULL, 6010000000ULL, 6000000000ULL, 0},
+                                   Case{6100000000ULL, 6010000000ULL, 6000000000ULL, TrackingValid}}) {
+                 PoseHistory h;
+                 h.push(pose(10, 6000000000ULL, 0, TrackingValid));
+                 h.push(pose(11, c.next_time, 20, c.next_flags));
+                 const auto r = h.sample(c.sample_time);
+                 check(r.valid && !r.interpolated && r.time_ns == c.expected_time &&
+                           r.sample_time_ns == c.expected_time,
+                       "held or exact live sample falsely labeled interpolated");
+             }
+         }},
+        {"unavailable poses expose no previous packet timing",
+         [] {
+             PoseHistory h;
+             h.push(pose(10, 6000000000ULL, 0, TrackingValid));
+             h.push(pose(11, 6020000000ULL, 20, 0));
+             for (auto at : {5990000000ULL, 6020000000ULL, 6300000000ULL}) {
+                 const auto r = h.sample(at);
+                 check(!r.valid && !r.session && !r.time_ns && !r.sample_time_ns && !r.interpolated,
+                       "unavailable pose retained timing metadata");
+             }
+             h.clear();
+             const auto r = h.sample(6000000000ULL);
+             check(!r.valid && !r.session && !r.sample_time_ns, "clear retained pose timing");
+         }},
         {"smoothing suppresses head jitter and zero disables it",
          [] {
              PoseHistory h;
@@ -252,6 +309,9 @@ int main() {
              p.session = 43;
              h.push(p);
              check(h.size() == 1, "old session retained");
+             const auto r = h.sample(2000000000);
+             check(r.valid && r.session == 43 && r.sample_time_ns == 2000000000,
+                   "restart retained previous session timing");
          }},
         {"NTP offset sign maps sender clock to receiver clock",
          [] {

@@ -80,9 +80,12 @@ struct Capture {
     obs_source_t *source;
     unsigned draws{}, width{}, height{}, bad{};
     unsigned red[2]{}, alpha[2]{};
+    std::uint64_t checksum{}, top_checksum{};
+    unsigned dark_panel_pixels{}, bright_panel_pixels{};
     bool good{true};
     double elapsed_ms{};
     std::vector<uint8_t> patch;
+    std::string preview_path;
 };
 void capture(void *data) {
     auto &c = *static_cast<Capture *>(data);
@@ -111,11 +114,32 @@ void capture(void *data) {
         uint8_t *pixels = nullptr;
         uint32_t stride{};
         if (gs_stagesurface_map(stage, &pixels, &stride)) {
+            if (!repeat && !c.preview_path.empty()) {
+                if (auto *file = std::fopen(c.preview_path.c_str(), "wb")) {
+                    std::fprintf(file, "P6\n%u %u\n255\n", c.width, c.height);
+                    std::vector<uint8_t> row(c.width * 3);
+                    for (unsigned y = 0; y < c.height; ++y) {
+                        for (unsigned x = 0; x < c.width; ++x)
+                            std::memcpy(row.data() + x * 3, pixels + y * stride + x * 4, 3);
+                        std::fwrite(row.data(), 1, row.size(), file);
+                    }
+                    std::fclose(file);
+                }
+            }
             c.red[repeat] = pixels[(c.height / 2) * stride + (c.width / 2) * 4];
             c.alpha[repeat] = pixels[(c.height / 2) * stride + (c.width / 2) * 4 + 3];
             for (unsigned y = 0; y < c.height; ++y)
                 for (unsigned x = 0; x < c.width; ++x) {
                     const auto *p = pixels + y * stride + x * 4;
+                    if (!repeat) {
+                        c.checksum = c.checksum * 131 + p[0] + 257 * p[1] + 65537 * p[2] + p[3];
+                        if (y < c.height / 2)
+                            c.top_checksum = c.top_checksum * 131 + p[0] + 257 * p[1] + 65537 * p[2] + p[3];
+                        else {
+                            c.dark_panel_pixels += p[0] < 40 && p[1] < 40 && p[2] < 40 && p[3] == 255;
+                            c.bright_panel_pixels += p[0] > 220 && p[1] > 220 && p[2] > 220 && p[3] == 255;
+                        }
+                    }
                     if (p[3] < 254 || p[1] < 50 || p[2] < p[1])
                         ++c.bad;
                 }
@@ -134,9 +158,10 @@ void capture(void *data) {
     c.elapsed_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
-Capture frame(obs_source_t *source, float value, bool opaque = true) {
+Capture frame(obs_source_t *source, float value, bool opaque = true, const std::string &preview_path = {}) {
     red.store(value);
     Capture c{source};
+    c.preview_path = preview_path;
     obs_queue_task(OBS_TASK_GRAPHICS, capture, &c, true);
     std::printf("Frame red %.2f: output %u/%u, draws %u, size %ux%u, uncovered %u, readback %.1f ms\n", value,
                 c.red[0], c.red[1], c.draws, c.width, c.height, c.bad, c.elapsed_ms);
@@ -374,6 +399,59 @@ int main(int argc, char **argv) {
                   transparent_delayed.alpha[0] == transparent_pose.alpha[0],
               "straight-alpha source is premultiplied once in image warm-up and delayed output, matching "
               "pose mode");
+        alpha = 1.f;
+        obs_data_set_double(settings, "smoothing", 0);
+        obs_data_set_double(settings, "stabilization_crop", 0);
+        obs_source_update(filter, settings);
+        frame(source, .4f);
+        const auto timing_default = frame(source, .4f);
+        obs_data_set_bool(settings, "photo_timing_overlay", false);
+        obs_source_update(filter, settings);
+        const auto timing_off = frame(source, .4f);
+        check(timing_default.checksum == timing_off.checksum && !timing_off.dark_panel_pixels,
+              "default photo timing off preserves every output pixel");
+        obs_data_set_bool(settings, "photo_timing_overlay", true);
+        obs_source_update(filter, settings);
+#ifdef _WIN32
+        const std::string preview_path = std::string(argv[4]) + "/photo-timing-output.ppm";
+#else
+        const std::string preview_path = "/tmp/vrst-photo-timing-output.ppm";
+#endif
+        const auto timing_on = frame(source, .8f, false, preview_path);
+        check(timing_on.dark_panel_pixels > 1000 && timing_on.bright_panel_pixels > 100 &&
+                  timing_on.top_checksum == timing_off.top_checksum,
+              "enabled photo timing draws readable text after stabilization inside the bottom of output");
+        check(timing_on.red[0] == timing_off.red[0],
+              "enabling photo timing preserves the displayed buffered frame");
+        obs_data_set_bool(settings, "photo_timing_overlay", false);
+        obs_source_update(filter, settings);
+        const auto timing_removed = frame(source, .2f);
+        check(!timing_removed.dark_panel_pixels && timing_removed.red[0] > timing_on.red[0] + 50,
+              "disabling photo timing preserves buffered video and never burns the panel into analysis");
+        for (int mode : {0, 2}) {
+            obs_data_set_int(settings, "mode", mode);
+            obs_data_set_bool(settings, "photo_timing_overlay", true);
+            obs_data_set_bool(settings, "comparison", true);
+            obs_source_update(filter, settings);
+            const auto diagnostic = frame(source, .4f, false);
+            check(diagnostic.dark_panel_pixels > 1000 && diagnostic.bright_panel_pixels > 100,
+                  "photo timing also draws in pose and hybrid comparison output without tracking");
+        }
+        obs_data_set_bool(settings, "comparison", false);
+        obs_data_set_int(settings, "mode", 1);
+        obs_source_update(filter, settings);
+        check(obs_property_button_clicked(obs_properties_get(props, "calibration_start"), filter),
+              "photo timing can remain enabled while parked-car calibration starts");
+        const auto calibration_overlay = frame(source, .4f, false);
+        check(calibration_overlay.dark_panel_pixels > 1000 && calibration_overlay.bright_panel_pixels > 100,
+              "photo timing draws after calibration video output");
+        obs_data_set_bool(settings, "photo_timing_overlay", false);
+        obs_source_update(filter, settings);
+        obs_property_button_clicked(obs_properties_get(props, "refresh_diagnostics"), filter);
+        check(!obs_property_enabled(obs_properties_get(props, "calibration_start")) &&
+                  obs_property_enabled(obs_properties_get(props, "calibration_finish")),
+              "turning photo timing off preserves an active image-only calibration");
+        obs_property_button_clicked(obs_properties_get(props, "calibration_finish"), filter);
         obs_properties_destroy(props);
         obs_data_release(settings);
         obs_source_dec_showing(source);

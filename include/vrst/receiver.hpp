@@ -11,6 +11,10 @@ struct TrackingSnapshot {
     std::uint64_t received{}, rejected{};
     std::uint64_t local_pose_time_ns{}; // selected raw pose stamp mapped into receiver's monotonic clock
     std::string status;
+    Pose latest_pose; // last accepted raw packet, independent of selected delay and tracking-valid flag
+    bool latest_received{}; // retained when stale; cleared with history/session/connection resets
+    std::uint64_t local_time_ns{}, remote_now_ns{}; // receiver now; sender now (zero without current sync)
+    std::uint64_t latest_receive_time_ns{}; // local monotonic time of latest_pose reception
 };
 class Receiver {
   public:

@@ -165,6 +165,7 @@ bool ImageFilter::capture(Slot &slot, obs_source_t *source, const vrst::Settings
     slot.local_time = vrst::monotonic_ns();
     slot.settings = settings;
     slot.hybrid = options.hybrid;
+    slot.pose = options.pose;
     slot.pose_valid = options.pose.valid && vrst::valid(options.pose.correction);
     if (slot.hybrid)
         slot.pose_warp = vrst::make_warp(width_, height_, pose_settings(settings),
@@ -255,6 +256,7 @@ bool ImageFilter::draw(bool comparison) {
 
 bool ImageFilter::fallback(obs_source_t *source, unsigned width, unsigned height,
                            const vrst::Settings &settings) {
+    have_display_ = false;
     result_ = {};
     result_.status = vrst::ImageStatus::invalid;
     warp_ = vrst::make_image_warp(width, height, settings, result_);

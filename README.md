@@ -6,11 +6,11 @@ The filter appears as **VR Stabilizer** in OBS. Windows downloads include both c
 
 Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
 
-Version **0.3.1 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender.
+Version **0.3.2 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
 
 For pose mode, SteamVR must be supplying headset tracking. Native Pimax OpenXR without SteamVR needs a future tracking provider; it is not included in this release. Image mode works independently of the runtime because it analyzes the captured video.
 
-The local v0.3.1 Windows test package uses LLVM-MinGW with static runtime libraries. Eight automated suites cover core math, image motion, per-axis smoothing/crop, calibration and collection, sender math and real UDP integration. Native OBS GPU/module tests exercise SDR sources, full 4K output and bounded 480×270 analysis. Synthetic results do not guarantee racing-footage quality; the live Dream Air / Elgato / iRacing / LMU setup still needs validation. The published v0.3.0 package uses Visual Studio binaries from [GitHub's build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
+The local v0.3.2 Windows test package uses LLVM-MinGW with static runtime libraries. Ten automated suites cover core math, image motion, per-axis smoothing/crop, calibration and collection, timing displays, the native sender window, sender math and real UDP integration. Native OBS GPU/module tests exercise SDR sources, full 4K output and bounded 480×270 analysis. Synthetic results do not guarantee racing-footage quality; the live Dream Air / Elgato / iRacing / LMU setup still needs validation. The published v0.3.0 package uses Visual Studio binaries from [GitHub's build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
 
 ## Install the downloaded ZIP
 
@@ -111,6 +111,27 @@ Hybrid adds one OBS video frame, like image mode. The pose transform travels wit
 
 The solver aligns raw observed image motion with clock-corrected pose times, searching the entire 0–1000 ms range in 1 ms steps. It compares motion accumulated over sliding windows of approximately 60 ms, so repeated capture frames and timing noise do not dominate individual-frame matches. It uses each buffered frame's capture time, not the later analysis time. A fitted recording reports horizontal/vertical match, fit error and the rates of collected video observations and poses. These are collection rates, not hardware refresh rates; poor or ambiguous matches still produce no suggestion. Source, size or tuning changes invalidate stale observations/suggestions and discard their recorded data. Detected scene cuts also invalidate them while image analysis is running. Pose-only mode does not keep image analysis running after collection; changes to the game mirror or camera view that leave the OBS source/size unchanged require a fresh calibration even if an old suggestion is still shown. It estimates an effective small-motion projection of the captured mirror; this is not a measurement of Dream Air optics. Scene parallax, mirror processing and render/capture cadence can still bias results. Synthetic calibration tests establish implementation accuracy, not a live hardware accuracy guarantee.
 
+## Photo timing check with both monitors
+
+1. On the gaming PC, close the previous sender console with Ctrl+C and start **`Start-Delay-Check.cmd`** from the new package. It runs the normal sender with a movable yellow desktop panel. Drag its title bar to position it on the display sent through HDMI/Elgato. Keep the panel inside the retained picture and outside the **Image tracking region**, so its moving digits cannot influence stabilization/calibration. If exclusive fullscreen hides the desktop panel, use a borderless/windowed mirror.
+2. Update the filter on the stream PC and enable **Photo timing overlay**. Enter the gaming PC address/port if needed. A cyan panel appears in the filter's video output, after stabilization. It also works in image-only mode, where it explicitly says no headset pose is applied.
+3. Keep the car parked. Show the gaming display and the stream PC's OBS preview side by side and take several phone photos containing both monitors. The gaming panel should also be readable inside the captured picture on the stream monitor.
+4. Compare the yellow panel directly on the gaming display with its delayed copy in the OBS picture to estimate visible image delay. Compare the captured yellow **POSE** with the cyan **USED** to investigate tracking alignment. These values use the same original gaming-clock epoch; check that **SESSION** agrees. For an interpolated live pose, use **BLEND AT** as the effective selected time and retain **USED** as the earlier packet's stamp. This is a manual diagnostic; it never changes Tracking delay automatically.
+5. After measuring, close the yellow window and uncheck **Photo timing overlay**. Closing the panel leaves the tracking sender running. Ctrl+C in the sender console stops tracking. To show the gaming panel again, restart the sender with `Start-Delay-Check.cmd`.
+
+| Label | Meaning |
+| --- | --- |
+| NOW | Current gaming-clock seconds; OBS maps its local clock to that same clock |
+| POSE / LATEST | The sender's observed pose / the latest accepted pose packet at OBS |
+| USED | Original packet timestamp/sequence selected for the displayed image, including hybrid's buffered frame |
+| BLEND AT | Effective time when the used live pose was interpolated between packets |
+| SESSION / OLD SESSION | Sender run identity; a previous buffered session is explicitly labeled |
+| DELAY / VIDEO BUFFER | Requested tracking lookback / local age of the buffered image in this filter |
+| RECEIVE AGE / RTT | Time since the last accepted packet / clock-sync round-trip time |
+| NONE / STALE / WAITING | No pose correction applied, old tracking data, or unavailable clock/data |
+
+The desktop panel timestamps a **pose observation**, not a verified pose-to-iRacing-mirror frame association. It is composited independently of the game and does not tag that game's render submission. A phone photo also includes display/preview latency, display scanout and camera exposure timing. At 60 fps a new picture arrives about every 16.7 ms; three decimal places do not imply 1 ms alignment accuracy. The filter's own image/hybrid buffer adds another video frame, so a photographed end-to-end delay is not automatically the correct Tracking delay setting. A/B comparison and calibration display **NONE** because their output applies no headset correction. No source frame-ID decoder or automatic delay measurement is included in this version.
+
 ## A/B comparison, presets and hotkeys
 
 Use **A/B: show unstabilized picture** to compare fairly: crop, framing, output size and buffering stay the same, while only final correction is hidden. Motion analysis and automatic crop keep running, so changing A/B does not cold-start the estimator. This differs from disabling the entire OBS filter, which also removes its framing and buffer.
@@ -161,6 +182,7 @@ Start-Tracking.cmd --eye right
 Start-Tracking.cmd --mode live
 Start-Tracking.cmd --port 42425
 Start-Tracking.cmd --demo
+Start-Delay-Check.cmd
 ```
 
 Demo mode emits synthetic tracking for connection tests; it does not follow a headset or provide matching game footage. Do not use it to stabilize gameplay. Keep `openvr_api.dll` beside `vrst-sender.exe`.
@@ -207,4 +229,4 @@ python3 scripts/package.py --openvr .deps/openvr-2.15.6
 
 License: GPL-2.0-or-later. Third-party runtime notices and licenses are included. These development binaries are unsigned.
 
-On Windows with OBS installed, `scripts/test-module-windows.ps1` builds and runs the image and streamer module tests against the existing plugin DLL in isolated OBS contexts. It accepts `-Compiler`, `-DependenciesDirectory`, `-ObsDirectory` and `-PluginPath`; its defaults use the prepared `.deps` SDK and `build-windows` plugin. Buffering and jitter checks run at 60 fps. The full-pixel 4K readback check runs at 30 fps because the harness reads the entire output twice per sample; it does not certify 4K60 performance.
+On Windows with OBS installed, `scripts/test-module-windows.ps1` builds and runs image, streamer and deterministic buffered-pose pairing module tests in isolated OBS contexts. It accepts `-Compiler`, `-DependenciesDirectory`, `-ObsDirectory`, `-PluginPath` and `-CoreLibrary`; its defaults use the prepared `.deps` SDK and `build-windows` plugin/core library. Buffering and jitter checks run at 60 fps. The full-pixel 4K readback check runs at 30 fps because the harness reads the entire output twice per sample; it does not certify 4K60 performance. The photo overlay is verified in actual D3D11 output and is off by default.

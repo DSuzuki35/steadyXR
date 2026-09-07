@@ -32,6 +32,9 @@ class ImageFilter {
         // Calibration needs the source capture time, never analysis completion.
         return have_display_ ? slots_[display_].local_time : 0;
     }
+    vrst::PoseResult displayed_pose() const {
+        return have_display_ && slots_[display_].hybrid ? slots_[display_].pose : vrst::PoseResult{};
+    }
     double effective_crop() const {
         return effective_crop_;
     }
@@ -43,6 +46,7 @@ class ImageFilter {
         gs_stagesurf_t *stage{};
         std::uint64_t time{}, local_time{};
         vrst::Warp pose_warp;
+        vrst::PoseResult pose;
         vrst::Settings settings;
         bool captured{}, staged{}, pose_valid{}, hybrid{};
     };
