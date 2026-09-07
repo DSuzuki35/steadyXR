@@ -4,6 +4,8 @@ uniform float4 input_projection;  // signed left, right, up, down tangents
 uniform float4 output_projection;
 uniform float4 correction;        // quaternion x, y, z, w
 uniform float4 input_uv;          // original texture's left, right, top, bottom
+uniform bool mirror_edges;
+uniform float4 source_texel;
 
 sampler_state source_sampler {
     Filter = Linear;
@@ -31,15 +33,20 @@ float4 PSStabilize(VertData v_in) : TARGET
     float3 ray = float3(lerp(output_projection.x, output_projection.y, v_in.uv.x),
                         lerp(output_projection.z, output_projection.w, v_in.uv.y), -1.0);
     ray = ray + 2.0 * cross(correction.xyz, cross(correction.xyz, ray) + correction.w * ray);
-    if (ray.z >= -0.000001)
+    if (!mirror_edges && ray.z >= -0.000001)
         return float4(0.0, 0.0, 0.0, 0.0);
-    float2 tangent = ray.xy / -ray.z;
+    float2 tangent = ray.xy / (mirror_edges ? max(0.05, -ray.z) : -ray.z);
     float2 local_uv = float2((tangent.x - input_projection.x) / (input_projection.y - input_projection.x),
                              (input_projection.z - tangent.y) / (input_projection.z - input_projection.w));
-    if (local_uv.x < 0.0 || local_uv.x > 1.0 || local_uv.y < 0.0 || local_uv.y > 1.0)
+    if (mirror_edges)
+        local_uv = 1.0 - abs(1.0 - 2.0 * frac(local_uv * 0.5));
+    else if (local_uv.x < 0.0 || local_uv.x > 1.0 || local_uv.y < 0.0 || local_uv.y > 1.0)
         return float4(0.0, 0.0, 0.0, 0.0);
     float2 source_uv = float2(lerp(input_uv.x, input_uv.y, local_uv.x),
                               lerp(input_uv.z, input_uv.w, local_uv.y));
+    if (mirror_edges)
+        source_uv = clamp(source_uv, input_uv.xz + source_texel.xy * 0.5,
+                                     input_uv.yw - source_texel.xy * 0.5);
     return image.Sample(source_sampler, source_uv);
 }
 

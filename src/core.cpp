@@ -37,8 +37,8 @@ Vec3 rotation_vector(Quat q) {
     const double scale = n > 1e-12 ? 2 * std::atan2(n, q.w) / n : 2;
     return {q.x * scale, q.y * scale, q.z * scale};
 }
-double axis_retention(double amount, double velocity, double &signed_speed, double &speed,
-                      double dt, const MotionSettings &s) {
+double axis_retention(double amount, double velocity, double &signed_speed, double &speed, double dt,
+                      const MotionSettings &s) {
     const double limit = s.turn_speed * pi / 180;
     velocity = std::clamp(velocity, -4 * limit, 4 * limit);
     const double blend = 1 - std::exp(-dt / .2);
@@ -50,8 +50,8 @@ double axis_retention(double amount, double velocity, double &signed_speed, doub
     const double strength = amount / 100, tau = .02 + .48 * strength * strength;
     return amount <= 0 ? 0 : std::exp(-dt * (1 + 12 * follow) / tau);
 }
-Quat next_advanced(const Pose &prev, Quat smooth, const Pose &cur, const MotionSettings &s,
-                   Vec3 &velocity, Vec3 &speed) {
+Quat next_advanced(const Pose &prev, Quat smooth, const Pose &cur, const MotionSettings &s, Vec3 &velocity,
+                   Vec3 &speed) {
     if (!s.separate_axes && s.turn_follow <= 0) {
         velocity = speed = {};
         return next_smooth(prev, smooth, cur, s.amount);
@@ -65,12 +65,10 @@ Quat next_advanced(const Pose &prev, Quat smooth, const Pose &cur, const MotionS
     const auto change = rotation_vector(multiply(conjugate(prev.orientation), cur.orientation));
     auto error = rotation_vector(multiply(conjugate(cur.orientation), smooth));
     // The correction is represented in the current eye's local pitch/yaw/roll axes.
-    error.x *= axis_retention(s.separate_axes ? s.pitch : s.amount, change.x / dt,
-                             velocity.x, speed.x, dt, s);
-    error.y *= axis_retention(s.separate_axes ? s.yaw : s.amount, change.y / dt,
-                             velocity.y, speed.y, dt, s);
-    error.z *= axis_retention(s.separate_axes ? s.roll : s.amount, change.z / dt,
-                             velocity.z, speed.z, dt, s);
+    error.x *=
+        axis_retention(s.separate_axes ? s.pitch : s.amount, change.x / dt, velocity.x, speed.x, dt, s);
+    error.y *= axis_retention(s.separate_axes ? s.yaw : s.amount, change.y / dt, velocity.y, speed.y, dt, s);
+    error.z *= axis_retention(s.separate_axes ? s.roll : s.amount, change.z / dt, velocity.z, speed.z, dt, s);
     const double angle = std::hypot(error.x, std::hypot(error.y, error.z));
     return normalized(multiply(cur.orientation, axis_angle(error, angle)));
 }
@@ -169,7 +167,7 @@ bool PoseHistory::push(const Pose &in) {
         entry.follow_velocity = entries_.back().follow_velocity;
         entry.follow_speed = entries_.back().follow_speed;
         entry.smooth = next_advanced(entries_.back().pose, entries_.back().smooth, p, motion_,
-                                    entry.follow_velocity, entry.follow_speed);
+                                     entry.follow_velocity, entry.follow_speed);
     }
     entries_.push_back(entry);
     while (entries_.size() > 2048 ||
@@ -187,8 +185,8 @@ void PoseHistory::recompute() {
         const auto &prev = entries_[i - 1];
         cur.follow_velocity = prev.follow_velocity;
         cur.follow_speed = prev.follow_speed;
-        cur.smooth = next_advanced(prev.pose, prev.smooth, cur.pose, motion_,
-                                  cur.follow_velocity, cur.follow_speed);
+        cur.smooth =
+            next_advanced(prev.pose, prev.smooth, cur.pose, motion_, cur.follow_velocity, cur.follow_speed);
     }
 }
 void PoseHistory::set_smoothing(double amount) {
@@ -198,9 +196,9 @@ void PoseHistory::set_smoothing(double amount) {
 }
 void PoseHistory::set_smoothing(const MotionSettings &raw) {
     const auto s = sanitize_motion(raw);
-    if (s.amount == motion_.amount && s.separate_axes == motion_.separate_axes &&
-        s.yaw == motion_.yaw && s.pitch == motion_.pitch && s.roll == motion_.roll &&
-        s.turn_follow == motion_.turn_follow && s.turn_speed == motion_.turn_speed)
+    if (s.amount == motion_.amount && s.separate_axes == motion_.separate_axes && s.yaw == motion_.yaw &&
+        s.pitch == motion_.pitch && s.roll == motion_.roll && s.turn_follow == motion_.turn_follow &&
+        s.turn_speed == motion_.turn_speed)
         return;
     motion_ = s;
     smoothing_ = s.amount;
@@ -234,9 +232,8 @@ PoseResult PoseHistory::sample(std::uint64_t at) const {
     out.valid = true;
     out.source_orientation = source;
     out.target_orientation = target;
-    out.correction = smoothing_ <= 0 && !motion_.separate_axes
-                         ? Quat{}
-                         : normalized(multiply(conjugate(source), target));
+    out.correction =
+        smoothing_ <= 0 && !motion_.separate_axes ? Quat{} : normalized(multiply(conjugate(source), target));
     out.projection = it->pose.projection;
     out.time_ns = it->pose.time_ns;
     out.sequence = it->pose.sequence;
@@ -297,13 +294,27 @@ Warp make_warp(std::uint32_t width, std::uint32_t height, const Settings &s, Qua
     cy -= safe(s.framing_y, 0, -100, 100) / 100 * ((w.input.up - w.input.down) - sy) / 2;
     w.output = {cx - sx / 2, cx + sx / 2, cy + sy / 2, cy - sy / 2};
     w.correction = valid(correction) ? normalized(correction) : Quat{};
-    if (!corners_inside(w)) {
+    const auto fits = [&] {
+        if (!s.mirror_edges)
+            return corners_inside(w);
+        // Reflection extends the captured image, not the eye's projection plane.
+        // Keep a margin from its horizon so even extreme turns stay finite.
+        for (double u : {0., 1.})
+            for (double v : {0., 1.}) {
+                const auto ray = rotate(w.correction, {w.output.left + u * (w.output.right - w.output.left),
+                                                       w.output.up + v * (w.output.down - w.output.up), -1});
+                if (ray.z > -.05)
+                    return false;
+            }
+        return true;
+    };
+    if (!fits()) {
         Quat desired = w.correction;
         double lo = 0, hi = 1;
         for (int i = 0; i < 24; ++i) {
             double m = (lo + hi) / 2;
             w.correction = slerp({}, desired, m);
-            if (corners_inside(w))
+            if (fits())
                 lo = m;
             else
                 hi = m;

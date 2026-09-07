@@ -80,6 +80,8 @@ int main(int argc, char **argv) {
               "new behavior defaults off for existing scenes");
         check(exists("photo_timing_overlay") && !obs_data_get_bool(s, "photo_timing_overlay"),
               "photo timing display exists and defaults off");
+        check(exists("mirror_edges") && !obs_data_get_bool(s, "mirror_edges"),
+              "mirror edges is selectable and defaults off");
         obs_data_set_int(s, "mode", 1);
         obs_properties_apply_settings(p, s);
         check(!obs_property_visible(obs_properties_get(p, "gaming_pc")),
@@ -102,6 +104,7 @@ int main(int argc, char **argv) {
         obs_data_set_string(s, "preset_name", "LMU / Porsche");
         obs_data_set_double(s, "delay_ms", 137);
         obs_data_set_double(s, "smoothing_pitch", 63);
+        obs_data_set_bool(s, "mirror_edges", true);
         obs_source_update(filter, s);
         check(click("preset_save"), "save preset callback succeeds");
         auto *saved_bank = obs_data_get_obj(s, "saved_presets");
@@ -120,10 +123,12 @@ int main(int argc, char **argv) {
         obs_data_release(saved_bank);
         obs_data_set_double(s, "delay_ms", 2);
         obs_data_set_double(s, "smoothing_pitch", 1);
+        obs_data_set_bool(s, "mirror_edges", false);
         obs_source_update(filter, s);
         check(click("preset_load") && obs_data_get_double(s, "delay_ms") == 137 &&
                   obs_data_get_double(s, "smoothing_pitch") == 63,
               "load preset callback restores tuning");
+        check(obs_data_get_bool(s, "mirror_edges"), "presets restore mirrored edge choice");
         check(obs_data_get_bool(s, "photo_timing_overlay"),
               "loading a preset preserves photo timing visibility");
         check(click("preset_delete"), "delete preset callback succeeds");

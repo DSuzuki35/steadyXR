@@ -75,8 +75,10 @@ bool ImageFilter::load() {
     pose_output_ = gs_effect_get_param_by_name(effect_, "pose_output");
     pose_correction_ = gs_effect_get_param_by_name(effect_, "pose_correction");
     pose_uv_ = gs_effect_get_param_by_name(effect_, "pose_uv");
+    mirror_edges_ = gs_effect_get_param_by_name(effect_, "mirror_edges");
+    source_texel_ = gs_effect_get_param_by_name(effect_, "source_texel");
     if (!image_ || !row_x_ || !row_y_ || !trim_ || !footprint_ || !pose_input_ || !pose_output_ ||
-        !pose_correction_ || !pose_uv_)
+        !pose_correction_ || !pose_uv_ || !mirror_edges_ || !source_texel_)
         return false;
     // OBS's effect translator may retain pose uniforms in the legacy analysis
     // technique too. Initialize them even before the first hybrid frame.
@@ -143,6 +145,7 @@ bool ImageFilter::allocate(unsigned width, unsigned height, const vrst::Settings
     gray_.width = small_width_;
     gray_.height = small_height_;
     gray_.pixels.resize(std::size_t(small_width_) * small_height_);
+    gray_.valid_pixels.resize(gray_.pixels.size());
     for (auto &slot : slots_) {
         slot.full = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
         slot.small = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
@@ -205,6 +208,8 @@ bool ImageFilter::capture(Slot &slot, obs_source_t *source, const vrst::Settings
         const double span_x = 1 - left - settings.input_right / 100;
         const double span_y = 1 - top - settings.input_bottom / 100;
         vector(trim_, left, top, span_x, span_y);
+        gs_effect_set_bool(mirror_edges_, settings.mirror_edges);
+        vector(source_texel_, 1. / width_, 1. / height_, 0, 0);
         vector(footprint_, span_x / small_width_, span_y / small_height_, 0, 0);
         set_pose(slot.hybrid ? slot.pose_warp : vrst::Warp{});
         if (slot.hybrid)
@@ -226,8 +231,10 @@ bool ImageFilter::read(Slot &slot) {
     if (!slot.staged || !gs_stagesurface_map(slot.stage, &pixels, &stride))
         return false;
     for (unsigned y = 0; y < small_height_; ++y)
-        for (unsigned x = 0; x < small_width_; ++x)
+        for (unsigned x = 0; x < small_width_; ++x) {
             gray_.pixels[std::size_t(y) * small_width_ + x] = pixels[y * stride + 4 * x] / 255.0f;
+            gray_.valid_pixels[std::size_t(y) * small_width_ + x] = pixels[y * stride + 4 * x + 3] == 255;
+        }
     gs_stagesurface_unmap(slot.stage);
     return true;
 }
@@ -246,6 +253,11 @@ bool ImageFilter::draw(bool comparison) {
     vector(row_x_, warp.row_x[0], warp.row_x[1], warp.row_x[2], 0);
     vector(row_y_, warp.row_y[0], warp.row_y[1], warp.row_y[2], 0);
     const auto &slot = slots_[display_];
+    const auto &s = slot.settings;
+    vector(trim_, s.input_left / 100, s.input_top / 100, 1 - (s.input_left + s.input_right) / 100,
+           1 - (s.input_top + s.input_bottom) / 100);
+    gs_effect_set_bool(mirror_edges_, s.mirror_edges);
+    vector(source_texel_, 1. / width_, 1. / height_, 0, 0);
     if (slot.hybrid)
         set_pose(slot.pose_warp, comparison);
     while (gs_effect_loop(effect_, slot.hybrid ? "DrawHybrid" : "Draw"))
@@ -264,6 +276,13 @@ bool ImageFilter::fallback(obs_source_t *source, unsigned width, unsigned height
         return false;
     vector(row_x_, warp_.row_x[0], warp_.row_x[1], warp_.row_x[2], 0);
     vector(row_y_, warp_.row_y[0], warp_.row_y[1], warp_.row_y[2], 0);
+    // This path has no correction. Do not inherit reflection/trim state from
+    // a previously displayed frame after allocation or capture failure.
+    gs_effect_set_bool(mirror_edges_, false);
+    vector(trim_, settings.input_left / 100, settings.input_top / 100,
+           1 - (settings.input_left + settings.input_right) / 100,
+           1 - (settings.input_top + settings.input_bottom) / 100);
+    vector(source_texel_, 1. / width, 1. / height, 0, 0);
     gs_blend_state_push();
     gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
     obs_source_process_filter_end(source, effect_, warp_.width, warp_.height);

@@ -7,7 +7,8 @@
 namespace vrst {
 struct GrayImage {
     unsigned width{}, height{};
-    std::vector<float> pixels; // row-major linear luminance in [0, 1]
+    std::vector<float> pixels;              // row-major linear luminance in [0, 1]
+    std::vector<std::uint8_t> valid_pixels; // Optional: zero excludes synthetic/out-of-view samples.
 };
 struct ImageSettings {
     double smoothing{40};

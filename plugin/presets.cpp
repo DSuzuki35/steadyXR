@@ -22,7 +22,8 @@ void copy_tuning(obs_data_t *to, obs_data_t *from) {
           "auto_crop_extra",     "auto_crop_speed"})
         if (has(key))
             obs_data_set_double(to, key, obs_data_get_double(from, key));
-    for (const char *key : {"automatic_fov", "image_track_roll", "output_16_9", "separate_axes", "auto_crop"})
+    for (const char *key :
+         {"automatic_fov", "image_track_roll", "output_16_9", "separate_axes", "auto_crop", "mirror_edges"})
         if (has(key))
             obs_data_set_bool(to, key, obs_data_get_bool(from, key));
     if (has("mode"))

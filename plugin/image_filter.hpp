@@ -58,6 +58,7 @@ class ImageFilter {
     gs_effect_t *effect_{};
     gs_eparam_t *image_{}, *row_x_{}, *row_y_{}, *trim_{}, *footprint_{};
     gs_eparam_t *pose_input_{}, *pose_output_{}, *pose_correction_{}, *pose_uv_{};
+    gs_eparam_t *mirror_edges_{}, *source_texel_{};
     Slot slots_[2];
     vrst::ImageStabilizer stabilizer_;
     vrst::GrayImage gray_;

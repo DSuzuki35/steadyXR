@@ -15,6 +15,10 @@ namespace {
 std::atomic<unsigned> draws{0}, source_width{640}, source_height{480};
 std::atomic<float> red{0.2f}, alpha{1.f};
 int failures{};
+std::atomic<bool> settings_applied{true};
+void applied(void *, calldata_t *) {
+    settings_applied.store(true);
+}
 std::atomic<bool> textured{false};
 std::atomic<float> shift{0};
 gs_texture_t *pattern{};
@@ -82,13 +86,16 @@ struct Capture {
     unsigned red[2]{}, alpha[2]{};
     std::uint64_t checksum{}, top_checksum{};
     unsigned dark_panel_pixels{}, bright_panel_pixels{};
-    bool good{true};
+    bool good{true}, ready{true};
     double elapsed_ms{};
     std::vector<uint8_t> patch;
     std::string preview_path;
 };
 void capture(void *data) {
     auto &c = *static_cast<Capture *>(data);
+    c.ready = settings_applied.load();
+    if (!c.ready)
+        return;
     const auto started = std::chrono::steady_clock::now();
     obs_enter_graphics();
     c.width = obs_source_get_width(c.source);
@@ -158,11 +165,23 @@ void capture(void *data) {
     c.elapsed_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
+// Video-source settings are applied by OBS on its next tick. Queue the
+// pixel assertion for that tick, without idling a tick and resetting the buffer.
+void update_for_frame(obs_source_t *source, obs_data_t *settings) {
+    settings_applied.store(false);
+    obs_source_update(source, settings);
+}
 Capture frame(obs_source_t *source, float value, bool opaque = true, const std::string &preview_path = {}) {
     red.store(value);
     Capture c{source};
     c.preview_path = preview_path;
-    obs_queue_task(OBS_TASK_GRAPHICS, capture, &c, true);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    do {
+        obs_queue_task(OBS_TASK_GRAPHICS, capture, &c, true);
+        if (!c.ready)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (!c.ready && std::chrono::steady_clock::now() < deadline);
+    check(c.ready, "OBS applies requested settings before pixel assertions");
     std::printf("Frame red %.2f: output %u/%u, draws %u, size %ux%u, uncovered %u, readback %.1f ms\n", value,
                 c.red[0], c.red[1], c.draws, c.width, c.height, c.bad, c.elapsed_ms);
     if (opaque)
@@ -240,6 +259,7 @@ int main(int argc, char **argv) {
         check(source && filter, "image filter instance created with image shader");
         if (!source || !filter)
             return 2;
+        signal_handler_connect(obs_source_get_signal_handler(filter), "update", applied, nullptr);
         obs_source_filter_add(source, filter);
         obs_source_inc_showing(source);
         auto *props = obs_source_properties(filter);
@@ -279,23 +299,23 @@ int main(int argc, char **argv) {
         obs_data_set_double(settings, "input_right", 12.5);
         obs_data_set_double(settings, "input_top", 10);
         obs_data_set_double(settings, "input_bottom", 10);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         auto trimmed = frame(source, .2f);
         check(trimmed.width == 480 && trimmed.height == 384 && trimmed.red[0] == first.red[0],
               "input trim resets image buffer and preserves correct aspect and dimensions");
         obs_data_set_double(settings, "region_top", 30);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         const auto region = frame(source, .6f);
         check(region.red[0] == fourth.red[0], "tracking region edit restarts with the current image");
         obs_data_set_int(settings, "mode", 0);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         obs_properties_apply_settings(props, settings);
         check(obs_property_visible(obs_properties_get(props, "horizon_level")) &&
                   !obs_property_visible(obs_properties_get(props, "image_max_shift")),
               "pose mode restores horizon controls");
         frame(source, .4f);
         obs_data_set_int(settings, "mode", 1);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         const auto mode = frame(source, .2f);
         check(mode.red[0] == first.red[0], "mode switch clears old image frames");
         source_width = 800;
@@ -307,7 +327,7 @@ int main(int argc, char **argv) {
         obs_data_set_double(settings, "vertical_fov", 170);
         obs_data_set_bool(settings, "automatic_fov", true);
         obs_data_set_double(settings, "delay_ms", 900);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         const auto irrelevant = frame(source, .8f);
         check(irrelevant.width == resized.width && irrelevant.height == resized.height &&
                   irrelevant.red[0] == resized.red[0],
@@ -322,7 +342,7 @@ int main(int argc, char **argv) {
         double motion_energy[2]{};
         for (unsigned run = 0; run < 2; ++run) {
             obs_data_set_double(settings, "smoothing", run ? 100 : 0);
-            obs_source_update(filter, settings);
+            update_for_frame(filter, settings);
             obs_property_button_clicked(obs_properties_get(props, "reset_smoothing"), filter);
             std::vector<uint8_t> previous;
             for (unsigned i = 0; i < 16; ++i) {
@@ -376,13 +396,13 @@ int main(int argc, char **argv) {
         source_height = 480;
         alpha = .5f;
         obs_data_set_int(settings, "mode", 0);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         auto changed_at = obs_get_video_frame_time();
         while (obs_get_video_frame_time() == changed_at)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         const auto transparent_pose = frame(source, .4f, false);
         obs_data_set_int(settings, "mode", 1);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         changed_at = obs_get_video_frame_time();
         while (obs_get_video_frame_time() == changed_at)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -402,16 +422,16 @@ int main(int argc, char **argv) {
         alpha = 1.f;
         obs_data_set_double(settings, "smoothing", 0);
         obs_data_set_double(settings, "stabilization_crop", 0);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         frame(source, .4f);
         const auto timing_default = frame(source, .4f);
         obs_data_set_bool(settings, "photo_timing_overlay", false);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         const auto timing_off = frame(source, .4f);
         check(timing_default.checksum == timing_off.checksum && !timing_off.dark_panel_pixels,
               "default photo timing off preserves every output pixel");
         obs_data_set_bool(settings, "photo_timing_overlay", true);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
 #ifdef _WIN32
         const std::string preview_path = std::string(argv[4]) + "/photo-timing-output.ppm";
 #else
@@ -424,7 +444,7 @@ int main(int argc, char **argv) {
         check(timing_on.red[0] == timing_off.red[0],
               "enabling photo timing preserves the displayed buffered frame");
         obs_data_set_bool(settings, "photo_timing_overlay", false);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         const auto timing_removed = frame(source, .2f);
         check(!timing_removed.dark_panel_pixels && timing_removed.red[0] > timing_on.red[0] + 50,
               "disabling photo timing preserves buffered video and never burns the panel into analysis");
@@ -432,21 +452,21 @@ int main(int argc, char **argv) {
             obs_data_set_int(settings, "mode", mode);
             obs_data_set_bool(settings, "photo_timing_overlay", true);
             obs_data_set_bool(settings, "comparison", true);
-            obs_source_update(filter, settings);
+            update_for_frame(filter, settings);
             const auto diagnostic = frame(source, .4f, false);
             check(diagnostic.dark_panel_pixels > 1000 && diagnostic.bright_panel_pixels > 100,
                   "photo timing also draws in pose and hybrid comparison output without tracking");
         }
         obs_data_set_bool(settings, "comparison", false);
         obs_data_set_int(settings, "mode", 1);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         check(obs_property_button_clicked(obs_properties_get(props, "calibration_start"), filter),
               "photo timing can remain enabled while parked-car calibration starts");
         const auto calibration_overlay = frame(source, .4f, false);
         check(calibration_overlay.dark_panel_pixels > 1000 && calibration_overlay.bright_panel_pixels > 100,
               "photo timing draws after calibration video output");
         obs_data_set_bool(settings, "photo_timing_overlay", false);
-        obs_source_update(filter, settings);
+        update_for_frame(filter, settings);
         obs_property_button_clicked(obs_properties_get(props, "refresh_diagnostics"), filter);
         check(!obs_property_enabled(obs_properties_get(props, "calibration_start")) &&
                   obs_property_enabled(obs_properties_get(props, "calibration_finish")),

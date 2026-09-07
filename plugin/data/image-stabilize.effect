@@ -8,6 +8,8 @@ uniform float4 pose_input;
 uniform float4 pose_output;
 uniform float4 pose_correction;
 uniform float4 pose_uv;
+uniform bool mirror_edges;
+uniform float4 source_texel;
 
 sampler_state linear_clamp {
     Filter = Linear;
@@ -25,9 +27,20 @@ VertData VSDefault(VertData v) {
     return v;
 }
 
+float2 reflected_source(float2 uv) {
+    if (!mirror_edges)
+        return uv;
+    float2 local_uv = (uv - trim_uv.xy) / trim_uv.zw;
+    local_uv = 1.0 - abs(1.0 - 2.0 * frac(local_uv * 0.5));
+    // Reflect only inside input trim; never interpolate black bars/window borders.
+    return clamp(trim_uv.xy + local_uv * trim_uv.zw,
+                 trim_uv.xy + source_texel.xy * 0.5,
+                 trim_uv.xy + trim_uv.zw - source_texel.xy * 0.5);
+}
+
 float4 PSWarp(VertData v) : TARGET {
     float3 uv = float3(v.uv, 1.0);
-    return image.Sample(linear_clamp, float2(dot(row_x.xyz, uv), dot(row_y.xyz, uv)));
+    return image.Sample(linear_clamp, reflected_source(float2(dot(row_x.xyz, uv), dot(row_y.xyz, uv))));
 }
 
 // Both analysis and final rendering map through the pose warp saved with the
@@ -37,7 +50,9 @@ float2 pose_map(float2 uv) {
                         lerp(pose_output.z, pose_output.w, uv.y), -1.0);
     ray += 2.0 * cross(pose_correction.xyz,
                       cross(pose_correction.xyz, ray) + pose_correction.w * ray);
-    float2 tangent = ray.xy / -ray.z;
+    // The residual may extend outside the intermediate pose view. Keep its
+    // projection finite too, then reflect once in the original source image.
+    float2 tangent = ray.xy / (mirror_edges ? max(0.05, -ray.z) : -ray.z);
     float2 local_uv = float2((tangent.x - pose_input.x) / (pose_input.y - pose_input.x),
                             (pose_input.z - tangent.y) / (pose_input.z - pose_input.w));
     return float2(lerp(pose_uv.x, pose_uv.y, local_uv.x),
@@ -46,17 +61,23 @@ float2 pose_map(float2 uv) {
 
 float4 PSHybrid(VertData v) : TARGET {
     float3 uv = float3(v.uv, 1.0);
-    return image.Sample(linear_clamp, pose_map(float2(dot(row_x.xyz, uv), dot(row_y.xyz, uv))));
+    return image.Sample(linear_clamp, reflected_source(pose_map(float2(dot(row_x.xyz, uv), dot(row_y.xyz, uv)))));
 }
 
-float3 analysis_sample(float2 p, bool hybrid) {
-    return image.Sample(linear_clamp, hybrid ? pose_map(p) : p).rgb;
+float4 analysis_sample(float2 p, bool hybrid) {
+    float2 uv = hybrid ? pose_map(p) : p;
+    float2 low = trim_uv.xy + source_texel.xy * 0.5;
+    float2 high = trim_uv.xy + trim_uv.zw - source_texel.xy * 0.5;
+    bool real = uv.x >= low.x && uv.x <= high.x && uv.y >= low.y && uv.y <= high.y;
+    // Alpha here is a validity mask, independent of source alpha. The tracker
+    // never sees reflected content or clamp-filled edges as genuine features.
+    return float4(image.Sample(linear_clamp, uv).rgb, real ? 1.0 : 0.0);
 }
 
 float4 analyze(float2 p, float2 d, bool hybrid) {
     // Four by four bilinear box samples across the footprint of one analysis
     // pixel suppress aliasing when a 4K input is reduced to 480 by 270.
-    float3 c = analysis_sample(p + d * float2(-0.375, -0.375), hybrid);
+    float4 c = analysis_sample(p + d * float2(-0.375, -0.375), hybrid);
     c += analysis_sample(p + d * float2(-0.125, -0.375), hybrid);
     c += analysis_sample(p + d * float2( 0.125, -0.375), hybrid);
     c += analysis_sample(p + d * float2( 0.375, -0.375), hybrid);
@@ -72,8 +93,8 @@ float4 analyze(float2 p, float2 d, bool hybrid) {
     c += analysis_sample(p + d * float2(-0.125,  0.375), hybrid);
     c += analysis_sample(p + d * float2( 0.125,  0.375), hybrid);
     c += analysis_sample(p + d * float2( 0.375,  0.375), hybrid);
-    float gray = dot(c / 16.0, float3(0.2126, 0.7152, 0.0722));
-    return float4(gray, gray, gray, 1.0);
+    float gray = dot(c.rgb / 16.0, float3(0.2126, 0.7152, 0.0722));
+    return float4(gray, gray, gray, c.a > 15.5 ? 1.0 : 0.0);
 }
 
 float4 PSAnalyze(VertData v) : TARGET {

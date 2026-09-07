@@ -87,6 +87,7 @@ struct Settings {
     bool output_16_9{true};
     double framing_x{0}, framing_y{0}; // -100..100, within available framing margin
     double input_left{0}, input_right{0}, input_top{0}, input_bottom{0}; // percent per edge
+    bool mirror_edges{false}; // Allow correction beyond the trimmed image, filled by reflection.
 };
 struct Warp {
     Projection input{}, output{};

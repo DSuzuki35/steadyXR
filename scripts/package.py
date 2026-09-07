@@ -10,7 +10,7 @@ root = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
-p.add_argument('--version', default='0.3.3')
+p.add_argument('--version', default='0.3.4')
 p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
 stage = root / 'dist' / f'VR-Stabilizer-{a.version}-Windows-x64'

@@ -1,4 +1,4 @@
-Horizon Lock VR - Version 0.3.3
+Horizon Lock VR - Version 0.3.4
 
 GAMING-PC
 Gaming-PC\Start-Delay-Check.cmd startet Tracking und das Foto-Overlay.
@@ -28,11 +28,26 @@ LATEST zeigt das zuletzt empfangene Pose-Paket; USED die angewendete Pose.
 Mehrere Fotos helfen, Schwankungen sichtbar zu machen.
 Die Werte sind eine Orientierung, kein exaktes Tagging der iRacing-Bildframes.
 
-UPDATE 0.3.3
-Behebt den SteamVR-Startabsturz des lokalen Senders aus 0.3.1/0.3.2.
-Startfehler bleiben jetzt mit Fehlercode sichtbar.
-Das OBS-Plugin arbeitet wie in 0.3.2. Ist dort schon 0.3.2 installiert,
-ist fuer diesen Startfehler kein erneutes Kopieren auf den Stream-PC noetig.
+UPDATE 0.3.4 - SPIEGELRAENDER
+Im OBS-Filter "Mirror image edges" einschalten (bei den Crop-Einstellungen).
+Wenn die Bewegung mehr Platz braucht als der Crop bietet, wird der fehlende
+Rand gespiegelt. Die Stabilisierung kann dadurch ueber die Crop-Grenze hinaus
+weiterarbeiten. Funktioniert mit Pose, Image-based und Hybrid.
+Die Option ist zunaechst aus und wird in Presets gespeichert.
+Input trim bleibt die Grenze der Spiegelung; abgeschnittene Fensterraender
+werden nicht wieder eingeblendet. Die Bildanalyse ignoriert gespiegelte Bereiche.
+Automatischer Crop kann weiterhin zusaetzlichen echten Bildrand bereitstellen.
+
+Zum Ausprobieren: bisherigen Tracking delay beibehalten, Smoothing schrittweise
+auf etwa 65 bis 75 erhoehen. Bei getrennten Achsen gelten deren eigene Werte.
+Im Image/Hybrid-Modus Maximum image shift zuerst bei 1 Prozent belassen.
+Im Tracking-Bereich moeglichst feste Cockpitstruktur verwenden; Lenkrad,
+Haende und wechselnde Overlays vermeiden. Bei groesseren Kopfbewegungen sieht
+man die Spiegelung; sie erzeugt keine zusaetzlichen echten Bildinformationen.
+Ein Reset View oder ein falsches Bewegungsmatch kann weiterhin springen.
+
+Fuer dieses Update auf dem Stream-PC sowohl die DLL als auch den data-Ordner
+erneut kopieren. Der Sender enthaelt weiterhin den SteamVR-Startfix aus 0.3.3.
 
 Das ZIP in diesem Ordner enthaelt das vollstaendige Paket samt Quellcode.
 Fruehere versionierte ZIPs werden bei spaeteren Updates aufbewahrt.

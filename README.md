@@ -6,11 +6,11 @@ The filter appears as **VR Stabilizer** in OBS. Windows downloads include both c
 
 Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
 
-Version **0.3.3 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
+Version **0.3.4 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
 
 For pose mode, SteamVR must be supplying headset tracking. Native Pimax OpenXR without SteamVR needs a future tracking provider; it is not included in this release. Image mode works independently of the runtime because it analyzes the captured video.
 
-The local v0.3.3 Windows test package uses LLVM-MinGW with static runtime libraries. Eleven automated suites cover core math, image motion, per-axis smoothing/crop, calibration and collection, timing displays, the native sender window, sender math, launcher failures and real UDP integration. Version 0.3.3 fixes a SteamVR startup crash in the MinGW sender by retrieving the eye transform through Valve's C function table. Native OBS GPU/module tests exercise SDR sources, full 4K output and bounded 480×270 analysis. Synthetic results do not guarantee racing-footage quality; the live Dream Air / Elgato / iRacing / LMU setup still needs validation. The published v0.3.0 package uses Visual Studio binaries from [GitHub's build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
+The local v0.3.4 Windows test package uses LLVM-MinGW with static runtime libraries. Twelve automated suites cover core math, image motion, per-axis smoothing/crop, calibration and collection, timing displays, the native sender window, sender math, launcher failures and real UDP integration. Version 0.3.3 fixes a SteamVR startup crash in the MinGW sender by retrieving the eye transform through Valve's C function table. Native OBS GPU/module tests exercise SDR sources, full 4K output and bounded 480×270 analysis. Synthetic results do not guarantee racing-footage quality; the live Dream Air / Elgato / iRacing / LMU setup still needs validation. The published v0.3.0 package uses Visual Studio binaries from [GitHub's build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
 
 ## Install the downloaded ZIP
 
@@ -74,6 +74,14 @@ At a large/fast head turn the filter gradually limits correction to what fits in
 
 Diagnostics are refreshed when the properties open or when **Refresh diagnostics** is clicked. In pose mode, “Selected pose age” includes tracking delay and RTT is the network round trip. Image mode reports feature confidence, inliers, analysis dimensions and processing time. A correction limit below 100% means the crop margin constrained the requested correction.
 
+## Mirrored edges when crop runs out
+
+Enable **Mirror image edges** beside the crop controls to keep correction active beyond the available crop in pose, image and hybrid modes. Missing pixels are reflected from the trimmed source after the final transform. Input trim stays excluded, including at bilinear sample boundaries. The option defaults off and is saved in presets. Automatic crop still seeks genuine image margin and reduces the amount of reflection needed.
+
+This can preserve smoother movement when crop would otherwise limit correction. It does not reconstruct unseen scenery, correct a wrong motion estimate, or hide a game view reset. Large movements expose recognizable reflections. Image shift/roll limits remain in effect, and extreme pose correction remains bounded before the projection becomes singular. Hybrid analysis uses only genuine source pixels; reflected or clamped areas cannot supply tracked features or trigger a false scene cut solely because they leave the frame.
+
+Version 0.3.4 adds CPU motion/mask tests and native OBS pixel readback checks for all rendering paths, trim boundaries, analysis validity, presets and fallback behavior. In a synthetic alternating-jitter test with zero crop, the applied output motion RMS falls from 1.4000 to 0.0331 analysis pixels with mirroring. This measures removal of the crop constraint, not a guaranteed improvement on racing footage. Install both the new DLL and shader/data files together.
+
 ## Image-based microjitter
 
 1. Choose **Image-based microjitter**. FOV, network, tracking-delay and horizon controls are hidden because this mode does not use them.
@@ -81,7 +89,7 @@ Diagnostics are refreshed when the properties open or when **Refresh diagnostics
 3. Exclude animated steering wheels, mirrors, overlays, other cars and moving track scenery. Leave a reasonably large, textured area. Very narrow or flat regions may have too few safe feature patches; diagnostics then show weak tracking and the correction gently releases.
 4. Start with smoothing 40, maximum shift 1%, maximum roll 0.5° and stabilization crop 10%. Compare against smoothing 0, then increase smoothing gradually. Increase correction limits only if visible jitter needs it.
 
-The algorithm tracks subpixel image features, rejects inconsistent matches and estimates small shifts/roll. It smooths that measured motion, caps the correction, and limits it again to available crop. Uniform exposure changes are removed when checking feature matches. Brief weak matches release the existing correction over 150 ms instead of snapping to zero; accepted tracking ramps back in over 100 ms. This transition does not invent motion for calibration. Automatic crop accounts for the fading correction. Detected scene changes, unavailable analysis and ROI, size, mode, trim or reset changes clear history immediately.
+The algorithm tracks subpixel image features, rejects inconsistent matches and estimates small shifts/roll. It smooths that measured motion, caps the correction, and limits it again to available crop when mirrored edges are disabled. Uniform exposure changes are removed when checking feature matches. Brief weak matches release the existing correction over 150 ms instead of snapping to zero; accepted tracking ramps back in over 100 ms. This transition does not invent motion for calibration. Automatic crop accounts for the fading correction. Detected scene changes, unavailable analysis and ROI, size, mode, trim or reset changes clear history immediately.
 
 Full-resolution video remains on the GPU. A filtered grayscale copy, at most 480×270, is used for analysis. The measured correction is applied to that exact captured frame. This adds **one OBS video frame after warm-up: 16.7 ms at 60 fps**. Audio is not delayed automatically; account for this when aligning audio or other cameras. Missing/hidden frames restart the buffer. No gaming-PC clock or capture-card delay calibration is needed for image mode.
 

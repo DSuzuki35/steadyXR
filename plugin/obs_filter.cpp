@@ -70,6 +70,7 @@ struct Filter {
     gs_eparam_t *output_projection{};
     gs_eparam_t *correction{};
     gs_eparam_t *input_uv{};
+    gs_eparam_t *mirror_edges{}, *source_texel{};
     std::optional<vrst::Projection> last_projection;
     std::uint64_t rendered_peer_revision{};
 
@@ -142,6 +143,7 @@ void update(void *data, obs_data_t *settings) {
     next.image.region_right = std::min(next.image.region_right, 94 - next.image.region_left);
     next.image.region_bottom = std::min(next.image.region_bottom, 94 - next.image.region_top);
     s.stabilization_crop = number(settings, "stabilization_crop", 10, 0, 40);
+    s.mirror_edges = obs_data_get_bool(settings, "mirror_edges");
     s.framing_zoom = number(settings, "framing_zoom", 0, 0, 40);
     s.output_16_9 = obs_data_get_bool(settings, "output_16_9");
     s.framing_x = number(settings, "framing_x", 0, -100, 100);
@@ -220,8 +222,10 @@ void *create(obs_data_t *settings, obs_source_t *source) {
         filter->output_projection = gs_effect_get_param_by_name(filter->effect, "output_projection");
         filter->correction = gs_effect_get_param_by_name(filter->effect, "correction");
         filter->input_uv = gs_effect_get_param_by_name(filter->effect, "input_uv");
+        filter->mirror_edges = gs_effect_get_param_by_name(filter->effect, "mirror_edges");
+        filter->source_texel = gs_effect_get_param_by_name(filter->effect, "source_texel");
         if (!filter->input_projection || !filter->output_projection || !filter->correction ||
-            !filter->input_uv) {
+            !filter->input_uv || !filter->mirror_edges || !filter->source_texel) {
             blog(LOG_ERROR, "[vr-stabilizer] Shader is missing required warp parameters");
             destroy(filter.release());
             return nullptr;
@@ -277,6 +281,7 @@ void defaults(obs_data_t *settings) {
     obs_data_set_default_double(settings, "turn_follow", 0);
     obs_data_set_default_double(settings, "turn_speed", 90);
     obs_data_set_default_bool(settings, "auto_crop", false);
+    obs_data_set_default_bool(settings, "mirror_edges", false);
     obs_data_set_default_double(settings, "auto_crop_extra", 10);
     obs_data_set_default_double(settings, "auto_crop_speed", 3);
     obs_data_set_default_string(settings, "preset_name", "iRacing");
@@ -665,6 +670,8 @@ obs_properties_t *properties(void *data) {
     obs_property_set_modified_callback(p, advanced_changed);
     slider(props, "auto_crop_extra", "AutoCrop.Extra", 0, 20, 0.1, "%", "AutoCrop.Description");
     slider(props, "auto_crop_speed", "AutoCrop.Speed", 0.1, 10, 0.1, "%/s", "AutoCrop.Description");
+    p = obs_properties_add_bool(props, "mirror_edges", text("MirrorEdges"));
+    obs_property_set_long_description(p, text("MirrorEdges.Description"));
     slider(props, "framing_zoom", "FramingZoom", 0, 40, 0.1, "%", "FramingZoom.Description");
     p = obs_properties_add_bool(props, "output_16_9", text("Output16x9"));
     obs_property_set_long_description(p, text("Output16x9.Description"));
@@ -921,6 +928,8 @@ void render(void *data, gs_effect_t *) {
     set_vector(filter->correction, warp.correction.x, warp.correction.y, warp.correction.z,
                warp.correction.w);
     set_vector(filter->input_uv, warp.uv_left, warp.uv_right, warp.uv_top, warp.uv_bottom);
+    gs_effect_set_bool(filter->mirror_edges, warp_settings.mirror_edges);
+    set_vector(filter->source_texel, 1. / width, 1. / height, 0, 0);
     gs_blend_state_push();
     gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
     obs_source_process_filter_end(filter->source, filter->effect, warp.width, warp.height);

@@ -59,6 +59,7 @@ double image_retention(double amount, double velocity, double &signed_speed, dou
 bool good(const GrayImage &f) {
     return f.width >= 32 && f.height >= 32 && f.width <= 1024 && f.height <= 1024 &&
            f.pixels.size() == size_t(f.width) * f.height &&
+           (f.valid_pixels.empty() || f.valid_pixels.size() == f.pixels.size()) &&
            std::all_of(f.pixels.begin(), f.pixels.end(),
                        [](float x) { return std::isfinite(x) && x >= 0 && x <= 1; });
 }
@@ -71,9 +72,15 @@ float sample(const GrayImage &f, double x, double y) {
 }
 Pyramid pyramid(const GrayImage &f) {
     Pyramid p{f};
+    // NaNs are internal sentinels only. Their propagation through the box
+    // pyramid and bilinear patches excludes every footprint touching a mask.
+    if (!f.valid_pixels.empty())
+        for (size_t i = 0; i < f.pixels.size(); ++i)
+            if (!f.valid_pixels[i])
+                p[0].pixels[i] = std::numeric_limits<float>::quiet_NaN();
     while (p.size() < 3 && p.back().width >= 96 && p.back().height >= 64) {
         const auto &a = p.back();
-        GrayImage b{a.width / 2, a.height / 2, {}};
+        GrayImage b{a.width / 2, a.height / 2, {}, {}};
         b.pixels.resize(size_t(b.width) * b.height);
         for (unsigned y = 0; y < b.height; ++y)
             for (unsigned x = 0; x < b.width; ++x) {
@@ -101,6 +108,8 @@ bool scene_discontinuity(const GrayImage &a, const GrayImage &b, Bounds bounds) 
         for (int x = bounds.left; x < bounds.right; x += 4) {
             const double av = a.pixels[size_t(y) * a.width + x];
             const double bv = b.pixels[size_t(y) * b.width + x];
+            if (!std::isfinite(av) || !std::isfinite(bv))
+                continue;
             sum_a += av;
             sum_b += bv;
             aa += av * av;
@@ -130,6 +139,8 @@ bool scene_discontinuity(const GrayImage &a, const GrayImage &b, Bounds bounds) 
                      x < std::min(bounds.right, bounds.right - dx); x += 8) {
                     const double av = a.pixels[size_t(y) * a.width + x];
                     const double bv = b.pixels[size_t(y + dy) * b.width + x + dx];
+                    if (!std::isfinite(av) || !std::isfinite(bv))
+                        continue;
                     sum_a += av;
                     sum_b += bv;
                     aa += av * av;
@@ -230,7 +241,7 @@ std::optional<Point> track(const Pyramid &a, const Pyramid &b, Point p, Bounds b
             cc += gy[i] * gy[i];
         }
         double determinant = aa * cc - bb * bb;
-        if (determinant < 1e-9)
+        if (!std::isfinite(determinant) || determinant < 1e-9)
             return std::nullopt;
         for (int iteration = 0; iteration < 12; ++iteration) {
             Point q{o.x + delta.x, o.y + delta.y};
@@ -271,7 +282,7 @@ std::optional<Point> track(const Pyramid &a, const Pyramid &b, Point p, Bounds b
     for (int y = -3; y <= 3; ++y)
         for (int x = -3; x <= 3; ++x)
             error += std::abs(sample(a[0], p.x + x, p.y + y) - sample(b[0], q.x + x, q.y + y) + offset);
-    if (error / 49 > .06)
+    if (!std::isfinite(error) || error / 49 > .06)
         return std::nullopt;
     return q;
 }
@@ -524,7 +535,7 @@ ImageWarp make_image_warp(std::uint32_t width, std::uint32_t height, const Setti
             }
         return true;
     };
-    if (!compute(1)) {
+    if (!compute(1) && !settings.mirror_edges) {
         double lo = 0, hi = 1;
         for (int i = 0; i < 24; ++i) {
             double mid = (lo + hi) / 2;

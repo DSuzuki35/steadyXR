@@ -58,6 +58,7 @@ double required_pose_crop(unsigned width, unsigned height, const Settings &s, Qu
         return base_crop(s);
     return required_crop(s, extra, [&](double crop) {
         auto candidate = s;
+        candidate.mirror_edges = false; // Prefer real pixels; reflect while crop catches up.
         candidate.stabilization_crop = crop;
         return make_warp(width, height, candidate, correction, automatic).correction_fraction == 1;
     });
@@ -70,6 +71,7 @@ double required_image_crop(unsigned width, unsigned height, const Settings &s, c
         return base_crop(s);
     return required_crop(s, extra, [&](double crop) {
         auto candidate = s;
+        candidate.mirror_edges = false;
         candidate.stabilization_crop = crop;
         return make_image_warp(width, height, candidate, r).correction_fraction == 1;
     });

@@ -2,6 +2,7 @@
 #import <AppKit/AppKit.h>
 #endif
 #include "../plugin/image_filter.hpp"
+#include "mirror_shader_checks.hpp"
 #include <cstdio>
 #include <string>
 
@@ -20,6 +21,7 @@ vrst::ImageSettings image_settings;
 bool rendered{};
 bool fallback_requested{};
 int failures{};
+gs_texture_t *source_pattern{};
 void check(bool pass, const char *message) {
     std::printf("%s: %s\n", pass ? "PASS" : "FAIL", message);
     failures += !pass;
@@ -35,6 +37,16 @@ unsigned dimension(void *) {
     return 64;
 }
 void source_render(void *, gs_effect_t *) {
+    if (source_pattern) {
+        auto *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+        const bool srgb = gs_framebuffer_srgb_enabled();
+        gs_enable_framebuffer_srgb(true);
+        gs_effect_set_texture_srgb(gs_effect_get_param_by_name(effect, "image"), source_pattern);
+        while (gs_effect_loop(effect, "Draw"))
+            gs_draw_sprite(source_pattern, 0, 64, 64);
+        gs_enable_framebuffer_srgb(srgb);
+        return;
+    }
     auto *effect = obs_get_base_effect(OBS_EFFECT_SOLID);
     vec4 color;
     vec4_set(&color, .3f, .4f, .8f, 1.f);
@@ -60,6 +72,7 @@ vrst::PoseResult pose(std::uint64_t sequence, std::uint64_t session = 41) {
 void exercise(void *data) {
     obs_enter_graphics();
     check(pipeline.load(), "real image shader loads for pose/video pairing");
+    failures += mirror_shader_checks();
     auto *source = static_cast<obs_source_t *>(data);
     auto *output = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
     auto draw = [&] {
@@ -124,6 +137,75 @@ void exercise(void *data) {
     options.pose = pose(77);
     draw();
     check(!pipeline.displayed_pose().valid, "image-only output never exposes an applied pose");
+    std::vector<uint8_t> pattern(64 * 64 * 4);
+    for (unsigned y = 0; y < 64; ++y)
+        for (unsigned x = 0; x < 64; ++x) {
+            const unsigned i = (y * 64 + x) * 4;
+            pattern[i] = uint8_t(x * 3);
+            pattern[i + 1] = uint8_t(y * 3);
+            pattern[i + 2] = 80;
+            pattern[i + 3] = 255;
+        }
+    const uint8_t *pattern_data = pattern.data();
+    source_pattern = gs_texture_create(64, 64, GS_RGBA, 1, &pattern_data, 0);
+    // The entire exercise shares one OBS tick; a fresh source avoids reusing
+    // the solid texture OBS cached during the earlier fallback metadata check.
+    auto *original_source = source;
+    source = obs_source_create("pairing-test-input", "mirror pixel input", nullptr, nullptr);
+    auto *pixel_filter = obs_source_create("pairing-test-filter", "mirror pixel filter", nullptr, nullptr);
+    obs_source_filter_add(source, pixel_filter);
+    obs_source_inc_showing(source);
+    auto *readback = gs_stagesurface_create(64, 64, GS_RGBA);
+    const auto read_pixel = [&](unsigned x, unsigned y) {
+        std::array<int, 4> color{-1, -1, -1, -1};
+        gs_stage_texture(readback, gs_texrender_get_texture(output));
+        uint8_t *mapped = nullptr;
+        uint32_t stride = 0;
+        if (gs_stagesurface_map(readback, &mapped, &stride)) {
+            for (unsigned i = 0; i < 4; ++i)
+                color[i] = mapped[y * stride + 4 * x + i];
+            gs_stagesurface_unmap(readback);
+        }
+        return color;
+    };
+    pipeline.clear();
+    settings.mirror_edges = true;
+    options.hybrid = true;
+    options.pose = pose(88);
+    options.pose.correction = vrst::axis_angle({0, 1, 0}, .22);
+    draw();
+    const auto actual = read_pixel(2, 32);
+    const auto expected_warp = vrst::make_warp(64, 64, settings, options.pose.correction);
+    auto expected_uv = vrst::map_uv(expected_warp, 2.5 / 64, 32.5 / 64);
+    for (auto &coordinate : expected_uv) {
+        coordinate -= 2 * std::floor(coordinate / 2);
+        if (coordinate > 1)
+            coordinate = 2 - coordinate;
+        coordinate = std::clamp(coordinate, .5 / 64, 1 - .5 / 64);
+    }
+    check(std::abs(actual[0] - (expected_uv[0] * 64 - .5) * 3) < 2 && actual[3] == 255,
+          "real hybrid pipeline applies full pose and mirrored fill in its displayed frame");
+    pipeline.clear();
+    settings.input_left = settings.input_right = 20;
+    options.hybrid = false;
+    draw(); // Leave narrow trim/mirror shader state behind.
+    settings.input_left = settings.input_right = 0;
+    fallback_requested = true;
+    draw();
+    const auto fallback_pixel = read_pixel(2, 32);
+    std::printf("Fallback edge RGBA: %d %d %d %d\n", fallback_pixel[0], fallback_pixel[1], fallback_pixel[2],
+                fallback_pixel[3]);
+    check(std::abs(fallback_pixel[0] - 6) <= 1 && fallback_pixel[3] == 255,
+          "fallback sets fresh edge parameters rather than reusing earlier mirrored trim");
+    fallback_requested = false;
+    obs_source_dec_showing(source);
+    obs_source_filter_remove(source, pixel_filter);
+    obs_source_release(pixel_filter);
+    obs_source_release(source);
+    source = original_source;
+    gs_stagesurface_destroy(readback);
+    gs_texture_destroy(source_pattern);
+    source_pattern = nullptr;
     gs_texrender_destroy(output);
     pipeline.destroy();
     obs_leave_graphics();
