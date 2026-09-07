@@ -41,7 +41,7 @@ if not obs_dll.exists():
     with zipfile.ZipFile(windows_zip) as z:
         z.extract('bin/64bit/obs.dll', deps / 'obs-windows')
 openvr = deps / 'openvr-2.15.6'
-for name in ['headers/openvr.h', 'lib/win64/openvr_api.lib', 'bin/win64/openvr_api.dll', 'LICENSE']:
+for name in ['headers/openvr.h', 'headers/openvr_capi.h', 'lib/win64/openvr_api.lib', 'bin/win64/openvr_api.dll', 'LICENSE']:
     download(f'openvr-2.15.6/{name}', f'https://raw.githubusercontent.com/ValveSoftware/openvr/v2.15.6/{name}')
 include = deps / 'obs-sdk/include'
 lib = deps / 'obs-sdk/lib'

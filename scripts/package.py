@@ -10,9 +10,12 @@ root = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
-p.add_argument('--version', default='0.3.2')
+p.add_argument('--version', default='0.3.3')
+p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
 stage = root / 'dist' / f'VR-Stabilizer-{a.version}-Windows-x64'
+if stage.resolve().parent != (root / 'dist').resolve():
+    raise SystemExit('Invalid package version/path')
 if stage.exists():
     shutil.rmtree(stage)
 
@@ -48,7 +51,7 @@ for item in (root / 'licenses').glob('*'):
     if item.is_file():
         copy(item, Path('licenses') / item.name)
 # Include corresponding project source so the binary package is self-contained.
-for name in ['CMakeLists.txt', '.clang-format', '.gitignore', 'LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md']:
+for name in ['AGENTS.md', 'CMakeLists.txt', '.clang-format', '.gitignore', 'LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md']:
     copy(root / name, Path('source') / name)
 for directory in ['include', 'src', 'plugin', 'sender', 'scripts', 'cmake', 'tests', 'docs', '.github', 'licenses']:
     for item in (root / directory).rglob('*'):
@@ -69,5 +72,22 @@ with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
 with zipfile.ZipFile(archive) as z:
     if z.testzip():
         raise SystemExit('ZIP integrity check failed')
+archive_sum = archive.with_suffix('.zip.sha256')
+archive_sum.write_text(f'{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n')
+if a.delivery_dir:
+    delivery = a.delivery_dir.resolve()
+    delivery.mkdir(parents=True, exist_ok=True)
+    # Copy only project files. Preserve previous ZIPs and any user-added files.
+    for item in (archive, archive_sum):
+        destination = delivery / item.name
+        if item.resolve() != destination:
+            shutil.copy2(item, destination)
+    for folder, source in [('Gaming-PC/sender', stage / 'sender'),
+                           ('Stream-PC', stage / 'obs-install')]:
+        shutil.copytree(source, delivery / folder, dirs_exist_ok=True)
+    for name in ['Start-Tracking.cmd', 'Start-Delay-Check.cmd']:
+        shutil.copy2(stage / name, delivery / 'Gaming-PC' / name)
+    shutil.copy2(root / 'docs/local-delivery-de.txt', delivery / 'LIESMICH.txt')
+    print(f'Ready-to-use files: {delivery}')
 print(archive)
 print(f'{archive.stat().st_size:,} bytes; {len(checks)} files; ZIP integrity passed')

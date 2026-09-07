@@ -6,11 +6,11 @@ The filter appears as **VR Stabilizer** in OBS. Windows downloads include both c
 
 Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
 
-Version **0.3.2 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
+Version **0.3.3 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
 
 For pose mode, SteamVR must be supplying headset tracking. Native Pimax OpenXR without SteamVR needs a future tracking provider; it is not included in this release. Image mode works independently of the runtime because it analyzes the captured video.
 
-The local v0.3.2 Windows test package uses LLVM-MinGW with static runtime libraries. Ten automated suites cover core math, image motion, per-axis smoothing/crop, calibration and collection, timing displays, the native sender window, sender math and real UDP integration. Native OBS GPU/module tests exercise SDR sources, full 4K output and bounded 480×270 analysis. Synthetic results do not guarantee racing-footage quality; the live Dream Air / Elgato / iRacing / LMU setup still needs validation. The published v0.3.0 package uses Visual Studio binaries from [GitHub's build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
+The local v0.3.3 Windows test package uses LLVM-MinGW with static runtime libraries. Eleven automated suites cover core math, image motion, per-axis smoothing/crop, calibration and collection, timing displays, the native sender window, sender math, launcher failures and real UDP integration. Version 0.3.3 fixes a SteamVR startup crash in the MinGW sender by retrieving the eye transform through Valve's C function table. Native OBS GPU/module tests exercise SDR sources, full 4K output and bounded 480×270 analysis. Synthetic results do not guarantee racing-footage quality; the live Dream Air / Elgato / iRacing / LMU setup still needs validation. The published v0.3.0 package uses Visual Studio binaries from [GitHub's build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
 
 ## Install the downloaded ZIP
 
@@ -186,6 +186,10 @@ Start-Delay-Check.cmd
 ```
 
 Demo mode emits synthetic tracking for connection tests; it does not follow a headset or provide matching game footage. Do not use it to stabilize gameplay. Keep `openvr_api.dll` beside `vrst-sender.exe`.
+
+For an opt-in hardware check with SteamVR running, use `python sender/steamvr_smoke_test.py build-windows/vrst-sender.exe --require-tracking`. It tests both eyes, frame/live modes, actual UDP poses and photo-window visibility, without changing SteamVR settings. It is separate from CTest because it requires a live tracked headset.
+
+Local delivery can be created with `scripts/package.py --openvr <SDK> --delivery-dir <folder>`. It preserves versioned ZIPs and adds `Gaming-PC` launchers plus `Stream-PC/obs-plugins` and `Stream-PC/data` ready to copy into OBS.
 
 ## Build and test from source
 

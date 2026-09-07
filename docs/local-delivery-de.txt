@@ -1,0 +1,38 @@
+Horizon Lock VR - Version 0.3.3
+
+GAMING-PC
+Gaming-PC\Start-Delay-Check.cmd startet Tracking und das Foto-Overlay.
+Gaming-PC\Start-Tracking.cmd startet nur Tracking.
+SteamVR und die Brille vorher starten. Nur einen Sender gleichzeitig starten.
+Das schwarze Sender-Fenster offen lassen. Mit Strg+C beenden.
+Schliessen des Foto-Overlays allein beendet den Sender nicht.
+
+STREAM-PC / OBS
+OBS schliessen. Die beiden Ordner aus Stream-PC:
+  obs-plugins
+  data
+direkt nach C:\Program Files\obs-studio kopieren und vorhandene
+Horizon-Lock-Dateien ersetzen. Danach OBS starten.
+Die Datei liegt dann hier:
+C:\Program Files\obs-studio\obs-plugins\64bit\vr-stabilizer.dll
+Der Empfaenger ist Bestandteil dieses OBS-Filters.
+
+FOTO FUER DELAY-CHECK
+Im VR-Stabilizer-Filter "Photo timing overlay" einschalten.
+Das Gaming-Overlay muss im an den Stream-PC uebertragenen Bild sichtbar sein.
+Ausserhalb des fuer die Bildanalyse verwendeten Bereichs platzieren.
+Auf dem Stream-PC kann ein Foto beide Anzeigen im selben Bild festhalten:
+die mit dem Videosignal angekommene Gaming-Anzeige und die OBS-Anzeige.
+NOW ist in beiden Anzeigen auf die Gaming-PC-Uhr bezogen.
+LATEST zeigt das zuletzt empfangene Pose-Paket; USED die angewendete Pose.
+Mehrere Fotos helfen, Schwankungen sichtbar zu machen.
+Die Werte sind eine Orientierung, kein exaktes Tagging der iRacing-Bildframes.
+
+UPDATE 0.3.3
+Behebt den SteamVR-Startabsturz des lokalen Senders aus 0.3.1/0.3.2.
+Startfehler bleiben jetzt mit Fehlercode sichtbar.
+Das OBS-Plugin arbeitet wie in 0.3.2. Ist dort schon 0.3.2 installiert,
+ist fuer diesen Startfehler kein erneutes Kopieren auf den Stream-PC noetig.
+
+Das ZIP in diesem Ordner enthaelt das vollstaendige Paket samt Quellcode.
+Fruehere versionierte ZIPs werden bei spaeteren Updates aufbewahrt.

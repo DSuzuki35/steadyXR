@@ -1,5 +1,5 @@
-#include "pose_math.hpp"
 #include "overlay.hpp"
+#include "pose_math.hpp"
 #include "vrst/net.hpp" // Winsock must precede any Windows headers.
 #include "vrst/protocol.hpp"
 #include <algorithm>
@@ -23,6 +23,12 @@
 #endif
 #ifdef VRST_WITH_OPENVR
 #include <openvr.h>
+// Valve's C header uses a legacy __WIN32 bool typedef, including in C++.
+// Preserve the compiler macro while selecting its standard bool definition.
+#pragma push_macro("__WIN32")
+#undef __WIN32
+#include <openvr_capi.h>
+#pragma pop_macro("__WIN32")
 #endif
 
 namespace {
@@ -286,7 +292,15 @@ class SteamVrSource {
             float left = 0, right = 0, top = 0, bottom = 0;
             system_->GetProjectionRaw(eye_, &left, &right, &top, &bottom);
             const auto projection = vrst::sender::projection_from_raw(left, right, top, bottom);
-            const auto eye_rotation = rotation(system_->GetEyeToHeadTransform(eye_));
+            // C++ aggregate returns differ between MinGW and SteamVR's MSVC
+            // ABI. The official C function table has no implicit this argument
+            // and safely returns this matrix with either Windows compiler.
+            const auto raw_eye = system_functions_->GetEyeToHeadTransform(static_cast<::EVREye>(eye_));
+            vr::HmdMatrix34_t eye_transform{};
+            for (int row = 0; row < 3; ++row)
+                for (int column = 0; column < 4; ++column)
+                    eye_transform.m[row][column] = raw_eye.m[row][column];
+            const auto eye_rotation = rotation(eye_transform);
             metadata_valid_ = vrst::valid(projection) && eye_rotation.has_value();
             if (metadata_valid_) {
                 projection_ = projection;
@@ -337,6 +351,7 @@ class SteamVrSource {
     SessionIds &ids_;
     std::uint64_t &session_;
     vr::IVRSystem *system_{};
+    VR_IVRSystem_FnTable *system_functions_{};
     vr::IVRCompositor *compositor_{};
     vrst::sender::FrameSelector frames_;
     vrst::Projection projection_;
@@ -363,6 +378,14 @@ class SteamVrSource {
                    now);
             return;
         }
+        const std::string table_version = std::string("FnTable:") + vr::IVRSystem_Version;
+        system_functions_ =
+            static_cast<VR_IVRSystem_FnTable *>(vr::VR_GetGenericInterface(table_version.c_str(), &error));
+        if (error != vr::VRInitError_None || !system_functions_) {
+            disconnect(now);
+            report("Waiting for SteamVR's system function table; retrying automatically.", now);
+            return;
+        }
         compositor_ = vr::VRCompositor();
         frames_ = {};
         metadata_at_ = 0;
@@ -373,6 +396,7 @@ class SteamVrSource {
     void disconnect(std::uint64_t now) {
         vr::VR_Shutdown();
         system_ = nullptr;
+        system_functions_ = nullptr;
         compositor_ = nullptr;
         frames_ = {};
         metadata_valid_ = false;
