@@ -6,6 +6,8 @@ Vorschaufenster aufnehmen (ohne Neustart) verwenden und iRacing-Fenster waehlen.
 Es ist KEIN Spiel-Neustart und KEINE Verbindungseinrichtung noetig.
 Das Originalfenster geoeffnet und nicht minimiert lassen.
 Clean Preview auf den Capture-Card-Monitor ziehen, F11 fuer Vollbild.
+Auf dem Stream-PC den bisherigen Stabilisierungsfilter fuer diese Quelle
+deaktivieren, damit das Bild nicht zweimal stabilisiert wird.
 Der normale Fenstermodus arbeitet mit Bildanalyse und ist unabhaengig von
 OpenVR, Pimax OpenXR oder SteamVR/SBoys3. Kein Tracking-Sender erforderlich.
 Die zusaetzliche OpenXR-Pose-Option benoetigt Einrichtung und Spiel-Neustart.

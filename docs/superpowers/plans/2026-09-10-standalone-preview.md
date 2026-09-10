@@ -1,8 +1,8 @@
 # Standalone preview implementation plan
 
-**Goal:** Deliver an OBS-free stabilized OpenXR preview for the gaming PC.
+**Goal:** Deliver an OBS-free stabilized copy of the existing iRacing preview for the gaming PC, without restarting the game.
 
-**Architecture:** D3D11 OpenXR implicit capture layer, versioned single-outstanding-frame GPU IPC, native Win32 viewer using existing rotational stabilization. Images are copied before release and paired with submitted context/inset metadata at EndFrame. The game never waits for the viewer.
+**Architecture:** Default Windows Graphics Capture of the existing simulator window, bounded GPU frame storage and small asynchronous image-analysis readback, displayed by a native Win32 viewer. Optional D3D11 OpenXR capture uses single-outstanding-frame GPU IPC and existing rotational stabilization. Its images are copied before release and paired with submitted context/inset metadata at EndFrame. The game never waits for the viewer.
 
 **Tech Stack:** C++17, Win32, D3D11/DXGI, OpenXR 1.1 headers, CMake, existing vrst_core.
 

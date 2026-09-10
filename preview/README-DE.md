@@ -11,6 +11,8 @@ Die Standalone-App übernimmt dein vorhandenes iRacing-Vorschaufenster, glättet
 
 Die normale Fensteraufnahme verwendet **Bildanalyse** und ist vom VR-Treiber unabhängig: iRacing kann über OpenVR, Pimax OpenXR oder SteamVR mit SBoys3 laufen. Sie benutzt keine Headset-Pose. Die Analyse verfolgt bevorzugt Cockpitstruktur in der unteren Bildhälfte; große Szenenwechsel und fehlende Bilddetails können die Erkennung einschränken. Es gibt keine Garantie, dass jede Bewegung oder jeder bisherige Sprung dadurch verschwindet.
 
+Falls nach sehr schnellem Schließen des Quellfensters **Windows capture shutdown stalled** erscheint, nur Horizon Lock Preview schließen und erneut öffnen. iRacing kann weiterlaufen. Das Aufräumen bleibt auf eine Aufnahme begrenzt und blockiert die Bedienung nicht.
+
 ## Einstellen und vergleichen
 
 - Startwerte: 40 % Glättung, 10 % Crop-Reserve, 60 FPS.
