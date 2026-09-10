@@ -9,3 +9,5 @@ VR Stabilizer source is licensed under GPL-2.0-or-later; see LICENSE. Correspond
 Windows and UCRT system DLLs are supplied by Windows. The native macOS verification harness uses SIMDe 0.8.2 headers (MIT); they are not included in the Windows package.
 
 The implementation does not copy code from OpenXR-Layer-OBSMirror; that project is referenced as a capture option and conceptual precedent.
+
+- **Khronos OpenXR SDK headers 1.1.43**: pinned commit `781f2eab3698d653c804ecbd11e0aed47eaad1c6`. The unchanged headers and their license notices accompany the preview source under `source/third_party/openxr`; license texts are also in `licenses/OpenXR-Apache-2.0.txt` and `licenses/OpenXR-MIT.txt`. No OpenXR loader/runtime binary is redistributed. https://github.com/KhronosGroup/OpenXR-SDK/tree/781f2eab3698d653c804ecbd11e0aed47eaad1c6

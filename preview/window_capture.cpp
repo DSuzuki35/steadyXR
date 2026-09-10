@@ -109,7 +109,7 @@ BOOL CALLBACK enumerate(HWND window, LPARAM parameter) {
     if (copied <= 0)
         return TRUE;
     title.resize(copied);
-    result.push_back({window, std::move(title)});
+    result.push_back({window, std::move(title), pid});
     return TRUE;
 }
 } // namespace

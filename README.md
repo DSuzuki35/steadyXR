@@ -6,11 +6,21 @@ The filter appears as **VR Stabilizer** in OBS. Windows downloads include both c
 
 Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
 
-Version **0.3.4 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
+Version **0.4.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
 
 For pose mode, SteamVR must be supplying headset tracking. Native Pimax OpenXR without SteamVR needs a future tracking provider; it is not included in this release. Image mode works independently of the runtime because it analyzes the captured video.
 
 The local v0.3.4 Windows test package uses LLVM-MinGW with static runtime libraries. Twelve automated suites cover core math, image motion, per-axis smoothing/crop, calibration and collection, timing displays, the native sender window, sender math, launcher failures and real UDP integration. Version 0.3.3 fixes a SteamVR startup crash in the MinGW sender by retrieving the eye transform through Valve's C function table. Native OBS GPU/module tests exercise SDR sources, full 4K output and bounded 480×270 analysis. Synthetic results do not guarantee racing-footage quality; the live Dream Air / Elgato / iRacing / LMU setup still needs validation. The published v0.3.0 package uses Visual Studio binaries from [GitHub's build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
+
+## Standalone gaming-PC preview (new in 0.4.0)
+
+`Start-Preview.cmd` opens an OBS-free native app. The default **Vorschaufenster aufnehmen (ohne Neustart)** captures the existing iRacing preview with Windows Graphics Capture, stabilizes it with image analysis and displays a clean output window. No game restart or OpenXR setup is required. Select the preview window, move **Clean Preview** to the capture-card display and press F11. Keep the original window open and not minimized. This path is independent of the headset runtime, including OpenVR, Pimax OpenXR and SteamVR/SBoys3.
+
+Output is capped internally at 1920×1080, with 30/60/90 FPS controls, smoothing, crop and mirrored edges. Small (at most 480×270) asynchronous GPU readbacks feed the existing CPU image analysis; every result stays paired with its retained full frame. **Pause / GPU-Vergleich** stops capture and continuous rendering for a game-frametime comparison. Capture, copies, analysis and presentation have a cost; no percentage saving over OBS is claimed. Disable the OBS stabilizer on an already stabilized source to avoid processing it twice. Window capture targets SDR. [German setup and controls](preview/README-DE.md).
+
+The optional **OpenXR-Pose direkt** mode captures submitted eye images with their corresponding poses. Only that mode requires clicking **Verbindung einrichten** and restarting iRacing in **OpenXR / D3D11**. It supports stereo/context-foveal quad views and is runtime-independent at the OpenXR layer level, including the intended SteamVR OpenXR + SBoys3 path. It does not change headset submissions. Native tests use a fake OpenXR runtime; real Pimax/SBoys3 compatibility and overhead still need live validation.
+
+To build only the preview: run `python scripts/prepare-preview-deps.py`, configure CMake with `-DVRST_BUILD_PREVIEW=ON -DVRST_OPENXR_DIR=.deps/openxr-sdk` and a Windows x64 toolchain, then build. The source ZIP includes pinned headers under `third_party/openxr`, which CMake detects automatically. Tests need no global layer registration and do not switch runtimes.
 
 ## Install the downloaded ZIP
 

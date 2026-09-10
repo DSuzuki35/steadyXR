@@ -10,6 +10,7 @@ import subprocess
 import tarfile
 import urllib.request
 import zipfile
+import importlib.util
 
 root = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser()
@@ -44,6 +45,10 @@ openvr = deps / 'openvr-2.15.6'
 for name in ['headers/openvr.h', 'headers/openvr_capi.h', 'lib/win64/openvr_api.lib', 'bin/win64/openvr_api.dll', 'LICENSE']:
     download(f'openvr-2.15.6/{name}', f'https://raw.githubusercontent.com/ValveSoftware/openvr/v2.15.6/{name}')
 include = deps / 'obs-sdk/include'
+preview_spec = importlib.util.spec_from_file_location('preview_deps', root / 'scripts/prepare-preview-deps.py')
+preview_deps = importlib.util.module_from_spec(preview_spec)
+preview_spec.loader.exec_module(preview_deps)
+preview_deps.prepare(deps / 'openxr-sdk')
 lib = deps / 'obs-sdk/lib'
 include.mkdir(parents=True, exist_ok=True)
 lib.mkdir(parents=True, exist_ok=True)
@@ -66,6 +71,6 @@ if 'obs_register_source_s' not in names or 'gs_effect_create_from_file' not in n
     raise SystemExit('OBS export extraction failed')
 definition.write_text('LIBRARY obs.dll\nEXPORTS\n' + '\n'.join(names) + '\n')
 subprocess.run(link, check=True)
-manifest = {'obs_source': str(source), 'obs_library': str(library), 'obs_generated': str(include), 'openvr': str(openvr)}
+manifest = {'obs_source': str(source), 'obs_library': str(library), 'obs_generated': str(include), 'openvr': str(openvr), 'openxr': str(deps / 'openxr-sdk')}
 (deps / 'paths.json').write_text(json.dumps(manifest, indent=2) + '\n')
 print(json.dumps(manifest, indent=2))

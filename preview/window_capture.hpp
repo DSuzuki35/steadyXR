@@ -10,6 +10,7 @@ namespace vrst::preview {
 struct CaptureWindow {
     HWND handle{};
     std::wstring title;
+    DWORD pid{};
 };
 // Start, poll, stop and destruction run on the owning UI thread. poll returns a
 // private GPU texture, valid until the next successful poll or stop.

@@ -1,6 +1,18 @@
-Horizon Lock VR - Version 0.3.4
+Horizon Lock VR - Version 0.4.0
 
-GAMING-PC
+GAMING-PC – NEUE STANDALONE-VORSCHAU
+Gaming-PC\Start-Preview.cmd starten.
+Vorschaufenster aufnehmen (ohne Neustart) verwenden und iRacing-Fenster waehlen.
+Es ist KEIN Spiel-Neustart und KEINE Verbindungseinrichtung noetig.
+Das Originalfenster geoeffnet und nicht minimiert lassen.
+Clean Preview auf den Capture-Card-Monitor ziehen, F11 fuer Vollbild.
+Der normale Fenstermodus arbeitet mit Bildanalyse und ist unabhaengig von
+OpenVR, Pimax OpenXR oder SteamVR/SBoys3. Kein Tracking-Sender erforderlich.
+Die zusaetzliche OpenXR-Pose-Option benoetigt Einrichtung und Spiel-Neustart.
+Details: Gaming-PC\Preview-Anleitung.md
+Native automatisierte Tests bestanden; Sichtpruefung beim Fahren steht aus.
+
+GAMING-PC – BISHERIGER OBS-/SENDER-WEG
 Gaming-PC\Start-Delay-Check.cmd startet Tracking und das Foto-Overlay.
 Gaming-PC\Start-Tracking.cmd startet nur Tracking.
 SteamVR und die Brille vorher starten. Nur einen Sender gleichzeitig starten.
