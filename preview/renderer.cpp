@@ -608,10 +608,26 @@ bool Renderer::consume(Channel &channel) {
                 d.SampleDesc.Count != 1)
                 return recover(L"Image format does not match metadata");
             hr = r.shared[i].As(&r.keyed[i]);
+            d.Width = packet.views[i].rect_width;
+            d.Height = packet.views[i].rect_height;
             if (FAILED(hr) || !r.make_local(i, d))
                 return recover(L"GPU image connection", hr);
         }
         r.opened = packet;
+    }
+    // A runtime may resize its submitted subrect without replacing the shared
+    // texture. Resize only the private eye image; do not reset pose history.
+    for (unsigned i = 0; i < packet.view_count; ++i) {
+        D3D11_TEXTURE2D_DESC d{};
+        r.local[i]->GetDesc(&d);
+        if (d.Width != unsigned(packet.views[i].rect_width) ||
+            d.Height != unsigned(packet.views[i].rect_height)) {
+            r.frame = {}; // The retained pixels are being replaced, even if acquisition must retry.
+            d.Width = packet.views[i].rect_width;
+            d.Height = packet.views[i].rect_height;
+            if (!r.make_local(i, d))
+                return recover(L"Resize private eye image");
+        }
     }
     unsigned acquired = 0;
     HRESULT acquisition = S_OK;
@@ -631,8 +647,11 @@ bool Renderer::consume(Channel &channel) {
             return recover(L"Rebuilding GPU connection", acquisition);
         return false;
     }
-    for (unsigned i = 0; i < packet.view_count; ++i)
-        r.context->CopyResource(r.local[i].Get(), r.shared[i].Get());
+    for (unsigned i = 0; i < packet.view_count; ++i) {
+        const auto &v = packet.views[i];
+        const D3D11_BOX box{UINT(v.x), UINT(v.y), 0, UINT(v.x + v.rect_width), UINT(v.y + v.rect_height), 1};
+        r.context->CopySubresourceRegion(r.local[i].Get(), 0, 0, 0, 0, r.shared[i].Get(), 0, &box);
+    }
     r.context->Flush();
     HRESULT release = S_OK;
     for (unsigned i = 0; i < packet.view_count; ++i) {
@@ -644,6 +663,12 @@ bool Renderer::consume(Channel &channel) {
         return recover(L"Release GPU image", release);
     s.ready = 0;
     r.frame = packet;
+    for (unsigned i = 0; i < packet.view_count; ++i) {
+        auto &v = r.frame.views[i];
+        v.x = v.y = 0;
+        v.width = v.rect_width;
+        v.height = v.rect_height;
+    }
     r.error.clear();
     return true;
 }

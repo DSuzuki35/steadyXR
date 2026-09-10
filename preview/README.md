@@ -1,4 +1,4 @@
-# Horizon Lock VR Preview 0.4.1
+# Horizon Lock VR Preview 0.4.2
 
 Standalone gaming-PC preview with OpenXR pose stabilization or existing-window capture. The headset image is unchanged. No OBS or video encoder is required on the gaming PC.
 
@@ -13,7 +13,7 @@ The new viewer works with the installed 0.4.0 layer. **No connection reinstall o
 - **Crop left / right / top / bottom:** independently trim 0–45% per side, in 0.1% steps. Arrow keys adjust one step.
 - **Crop reserve:** additional stabilization margin, separate from framing crop. Aspect fitting may trim the remaining image further.
 - **Smoothing:** movement smoothing with 0.1% precision, separate from horizon leveling.
-- **Horizon lock (OpenXR):** 0% preserves normal smoothed head roll; 100% levels roll relative to tracking-world up. Intermediate values blend the effect while preserving viewing direction. It fades near straight up/down, where a level horizon is undefined. Default: 0%. Inactive in image mode or when stabilization is disabled.
+- **Horizon lock (OpenXR):** 0% preserves normal smoothed head roll; 100% levels roll using the upright Y-axis hemisphere of the submitted OpenXR layer space. This also supports iRacing poses whose upright direction is -Y. Look normally ahead when starting the preview or pressing Reset preview; the upright hemisphere is retained until reset. Intermediate values remove the corresponding fraction of head roll while preserving viewing direction. It fades near straight up/down, where a level horizon is undefined. Default: 0%. Inactive in image mode or when stabilization is disabled.
 - **Mirror edges:** fill exposed borders with reflected source content.
 - **Mirror limit:** maximum extension per source axis, as a percentage of source width/height. Default 10%; range 0–50%. Beyond the limit: black. Increase crop reserve or mirror limit if exposed edges appear. Mirroring does not reconstruct scenery.
 - **Disable stabilization:** compare the captured image while capture continues.
@@ -41,3 +41,5 @@ Use **Clean Preview** on the capture-card display and disable the old OBS stabil
 If **Windows capture shutdown stalled** appears after quickly closing a source, restart only Horizon Lock Preview. iRacing can remain running. Cleanup remains bounded and does not block the UI.
 
 Keep each preview directory intact. Settings are in preview.ini beside the EXE. The --demo option shows synthetic content. Automated tests cover GPU output, resolution, crop/aspect, horizon, mirror limits, settings, fullscreen, capture lifecycle and OpenXR ownership. Driving quality and GPU cost still depend on the live setup.
+
+OpenXR performance: the viewer polls for GPU-ready frames independently of the selected capture rate and copies only the selected eye subrect. This avoids a second frame-rate gate and reduces GPU copy bandwidth for side-by-side stereo textures. The selected FPS remains a target; actual output depends on game frame rate and available GPU time.

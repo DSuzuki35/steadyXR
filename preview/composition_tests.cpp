@@ -76,6 +76,81 @@ int main() {
         ls.reset();
         check(angle_between(ls.update(pole, level).warp.correction, {}) < 1e-6,
               "vertical pole must fade ambiguous leveling without a jump");
+        // A submitted layer space can have the opposite Y hemisphere. Its
+        // upright image must not be turned upside down by absolute leveling.
+        auto posed = [](std::uint64_t seq, Quat q) {
+            auto f = frame(seq);
+            for (auto &v : f.views) {
+                v.orientation[0] = float(q.x);
+                v.orientation[1] = float(q.y);
+                v.orientation[2] = float(q.z);
+                v.orientation[3] = float(q.w);
+            }
+            return f;
+        };
+        for (double tilt : {-.15, .15}) {
+            FrameStabilizer inverted;
+            Options strength;
+            strength.smoothing = 0;
+            const auto basis = axis_angle({0, 0, 1}, pi);
+            const auto neutral = multiply(basis, base);
+            const auto tilted = multiply(neutral, axis_angle({0, 0, 1}, tilt));
+            inverted.update(posed(1, neutral), strength);
+            for (double percent : {0., 25., 50., 75., 100.}) {
+                strength.horizon_lock = percent;
+                const auto result = inverted.update(posed(2, tilted), strength);
+                const auto expected = multiply(neutral, axis_angle({0, 0, 1}, tilt * (1 - percent / 100)));
+                check(angle_between(multiply(tilted, result.warp.correction), expected) < 1e-6,
+                      "inverted layer space must level upright at every slider strength");
+            }
+            strength.horizon_lock = 50;
+            const auto other = multiply(neutral, axis_angle({0, 0, 1}, -tilt));
+            const auto result = inverted.update(posed(3, other), strength);
+            check(angle_between(multiply(other, result.warp.correction),
+                                multiply(neutral, axis_angle({0, 0, 1}, -tilt * .5))) < 1e-6,
+                  "crossing inverted neutral must not jump across the atan2 branch cut");
+            auto recentered = posed(4, source);
+            recentered.reference_epoch++;
+            strength.horizon_lock = 100;
+            check(angle_between(multiply(source, inverted.update(recentered, strength).warp.correction),
+                                base) < 1e-6,
+                  "reference reset must discard old horizon hemisphere");
+        }
+        // Captured read-only from Dan's running iRacing session while looking
+        // normally ahead: old code interpreted this as +175.444 degrees roll.
+        const auto actual = normalized(Quat{.617033, -.0105413, .784674, .0587049});
+        FrameStabilizer live;
+        Options live_options;
+        live_options.smoothing = 0;
+        live_options.horizon_lock = 100;
+        const auto live_result = live.update(posed(1, actual), live_options);
+        const auto live_target = multiply(actual, live_result.warp.correction);
+        check(angle_between(live_result.warp.correction, {}) < 5 * pi / 180 &&
+                  std::abs(rotate(live_target, {1, 0, 0}).y) < 1e-6 &&
+                  rotate(live_target, {0, 1, 0}).y < -.98,
+              "recorded iRacing pose must correct less than five degrees and retain upright hemisphere");
+        live_options.horizon_lock = 50;
+        check(std::abs(angle_between(live.update(posed(1, actual), live_options).warp.correction, {}) -
+                       angle_between(live_result.warp.correction, {}) * .5) < 1e-6,
+              "recorded iRacing half strength must give half correction");
+        // A large tilt must not silently choose a different upright hemisphere.
+        FrameStabilizer large_tilt;
+        live_options.horizon_lock = 0;
+        large_tilt.update(posed(1, {}), live_options);
+        live_options.horizon_lock = 50;
+        const auto past_sideways = axis_angle({0, 0, 1}, 100 * pi / 180);
+        check(
+            angle_between(multiply(past_sideways,
+                                   large_tilt.update(posed(2, past_sideways), live_options).warp.correction),
+                          axis_angle({0, 0, 1}, 50 * pi / 180)) < 1e-6,
+            "horizon hemisphere must remain fixed through a sideways head tilt");
+        FrameStabilizer deferred;
+        live_options.horizon_lock = 100;
+        check(angle_between(deferred.update(posed(1, pq), live_options).warp.correction, {}) < 1e-6,
+              "ambiguous vertical startup must defer horizon selection");
+        check(angle_between(deferred.update(posed(2, actual), live_options).warp.correction,
+                            live_result.warp.correction) < 1e-6,
+              "horizon selection must recover when head returns from vertical");
         auto wide = frame(3);
         wide.views[0].fov[0] = -2;
         wide.views[0].fov[1] = 2;

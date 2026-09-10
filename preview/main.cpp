@@ -723,7 +723,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.4.1",
+    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.4.2",
                                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 100, 100, 1050,
                                      775, nullptr, nullptr, instance, nullptr);
     state.output =
@@ -992,7 +992,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             state.update_status();
             last_status = now;
         }
-        if (state.active() && double(now) >= next_frame) {
+        // OpenXR is already rate-limited by the producer. A second 60 Hz
+        // polling gate misses frames whose GPU key becomes ready just after
+        // the poll, leaving the producer's single slot occupied another frame.
+        const bool submitted_feed = !state.demo && !state.window_mode;
+        if (state.active() && (submitted_feed || double(now) >= next_frame)) {
             bool received = state.demo          ? state.renderer.demo((now - state.start_ms) / 1000.)
                             : state.window_mode ? state.capture_frame(now)
                                                 : state.renderer.consume(state.channel);
@@ -1003,14 +1007,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             if ((received || state.dirty) && state.renderer.has_frame())
                 state.renderer.draw(state.options);
             state.dirty = false;
-            next_frame = std::max(next_frame + 1000. / state.rate, double(now));
+            if (!submitted_feed)
+                next_frame = std::max(next_frame + 1000. / state.rate, double(now));
         } else if (state.dirty && state.renderer.has_frame() && IsWindowVisible(state.output) &&
                    !IsIconic(state.output)) {
             state.renderer.draw(state.options);
             state.dirty = false;
         }
-        const DWORD delay =
-            state.active() ? DWORD(std::clamp(next_frame - double(GetTickCount64()), 1., 16.)) : 50;
+        const DWORD delay = !state.active() ? 50
+                            : submitted_feed
+                                ? 1
+                                : DWORD(std::clamp(next_frame - double(GetTickCount64()), 1., 16.));
         MsgWaitForMultipleObjectsEx(0, nullptr, delay, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
     if (state.channel.lock()) {

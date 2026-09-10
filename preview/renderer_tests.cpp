@@ -149,6 +149,30 @@ int main(int argc, char **argv) {
         options.stabilize = false;
         options.output_width = 1280;
         options.output_height = 720;
+        // Move and resize the selected eye inside the same stereo texture.
+        // No pixel outside the submitted subrect may leak into the private copy.
+        require(keyed->AcquireSync(0, 0) == S_OK, "resize producer key");
+        std::fill(input.begin(), input.end(), 0xffff0000u);
+        for (int y = 64; y < 192; ++y)
+            for (int x = 256; x < 384; ++x)
+                input[y * 512 + x] = 0xff0000ffu;
+        context->UpdateSubresource(texture.Get(), 0, nullptr, input.data(), 512 * 4, 0);
+        context->Flush();
+        keyed->ReleaseSync(1);
+        require(channel.lock(), "resize subrect lock");
+        auto &resized = channel.data()->frame;
+        resized.sequence++;
+        resized.display_time += 16666667;
+        resized.views[0].x = 256;
+        resized.views[0].y = 64;
+        resized.views[0].rect_width = resized.views[0].rect_height = 128;
+        channel.data()->ready = 1;
+        channel.unlock();
+        require(renderer.consume(channel), "consume resized eye without replacing producer texture");
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "draw resized eye");
+        for (auto pixel : pixels)
+            require((pixel & 255) > 240 && ((pixel >> 8) & 255) < 3 && ((pixel >> 16) & 255) < 3,
+                    "resized private eye must retain the exact submitted subrect");
         // Replacing the GPU generation may fail before its first acquisition.
         // Old pose metadata must not survive destruction of the matching image.
         require(channel.lock(), "replacement lock");

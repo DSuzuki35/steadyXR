@@ -32,6 +32,7 @@ class FrameStabilizer {
   private:
     PoseHistory history_;
     Frame previous_{};
+    double horizon_up_sign_{};
 };
 
 class Renderer {

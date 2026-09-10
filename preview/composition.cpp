@@ -61,11 +61,22 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     result.warp = make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
                             options.stabilize ? pose.correction : Quat{}, projection(frame.views[0]));
     auto effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
-    if (options.stabilize && std::isfinite(options.horizon_lock) && options.horizon_lock > 0) {
+    // Projection poses are expressed in the application's layer space, not
+    // necessarily gravity-aligned runtime space. iRacing can submit an upright
+    // image with eye-up pointing along -Y. Choose the upright hemisphere from
+    // the source once, even with leveling disabled, and keep it until reset.
+    // Re-selecting every frame would flip the horizon during a large head tilt.
+    if (horizon_up_sign_ == 0) {
+        const double source_up_y = rotate(orientation(frame.views[0]), {0, 1, 0}).y;
+        if (std::abs(source_up_y) > .25)
+            horizon_up_sign_ = source_up_y > 0 ? 1 : -1;
+    }
+    if (horizon_up_sign_ != 0 && options.stabilize && std::isfinite(options.horizon_lock) &&
+        options.horizon_lock > 0) {
         const auto right = rotate(effective_target, {1, 0, 0}), up = rotate(effective_target, {0, 1, 0});
         const double fade = std::clamp((std::hypot(up.y, right.y) - .05) / .20, 0., 1.);
-        const double roll =
-            std::atan2(right.y, up.y) * std::clamp(options.horizon_lock, 0., 100.) / 100 * fade;
+        const double roll = std::atan2(horizon_up_sign_ * right.y, horizon_up_sign_ * up.y) *
+                            std::clamp(options.horizon_lock, 0., 100.) / 100 * fade;
         effective_target =
             normalized(multiply(axis_angle(rotate(effective_target, {0, 0, -1}), roll), effective_target));
         result.warp.correction =
@@ -83,5 +94,6 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
 void FrameStabilizer::reset() {
     history_.clear();
     previous_ = {};
+    horizon_up_sign_ = 0;
 }
 } // namespace vrst::preview
