@@ -11,7 +11,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
 p.add_argument('--openxr', type=Path, help='Include the standalone preview and its pinned OpenXR source headers')
-p.add_argument('--version', default='0.4.0')
+p.add_argument('--version', default='0.4.1')
 p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
 stage = root / 'dist' / f'VR-Stabilizer-{a.version}-Windows-x64'
@@ -52,7 +52,7 @@ if a.openxr:
     for name in ['horizonlock-preview.exe', 'horizonlock-openxr-layer.dll']:
         copy(output(Path('preview') / name), Path('preview') / name)
     copy(a.build / 'preview/XR_APILAYER_HORIZONLOCK_preview.json', 'preview/XR_APILAYER_HORIZONLOCK_preview.json')
-    copy(root / 'preview/README-DE.md', 'preview/README-DE.md')
+    copy(root / 'preview/README.md', 'preview/README.md')
     copy(root / 'Start-Preview.cmd', 'Start-Preview.cmd')
     for name in ['include/openxr/openxr.h', 'include/openxr/openxr_platform.h',
                  'include/openxr/openxr_platform_defines.h', 'include/openxr/openxr_loader_negotiation.h',
@@ -110,9 +110,17 @@ if a.delivery_dir:
     if a.openxr:
         preview_folder = delivery / 'Gaming-PC' / f'Preview-{a.version}'
         shutil.copytree(stage / 'preview', preview_folder, dirs_exist_ok=True)
+        # Keep the user's working OpenXR mode and tuning across viewer upgrades.
+        # Do not register or replace their active OpenXR layer.
+        if not (preview_folder / 'preview.ini').exists():
+            settings = [item for item in (delivery / 'Gaming-PC').glob('Preview-*/preview.ini')
+                        if item.is_file() and item.parent != preview_folder]
+            if settings:
+                shutil.copy2(max(settings, key=lambda item: item.stat().st_mtime), preview_folder / 'preview.ini')
         (delivery / 'Gaming-PC/Start-Preview.cmd').write_text(
             '@echo off\nstart "" "%~dp0Preview-' + a.version + '\\horizonlock-preview.exe"\n', encoding='ascii')
-        shutil.copy2(stage / 'preview/README-DE.md', delivery / 'Gaming-PC/Preview-Anleitung.md')
+        shutil.copy2(stage / 'preview/README.md', delivery / 'Gaming-PC/Preview-Guide.md')
+        shutil.copy2(stage / 'preview/README.md', delivery / 'Gaming-PC/Preview-Anleitung.md')
     shutil.copy2(root / 'docs/local-delivery-de.txt', delivery / 'LIESMICH.txt')
     print(f'Ready-to-use files: {delivery}')
 print(archive)

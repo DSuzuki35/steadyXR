@@ -1,67 +1,27 @@
-Horizon Lock VR - Version 0.4.0
+Horizon Lock VR - Version 0.4.1
 
-GAMING-PC – NEUE STANDALONE-VORSCHAU
-Gaming-PC\Start-Preview.cmd starten.
-Vorschaufenster aufnehmen (ohne Neustart) verwenden und iRacing-Fenster waehlen.
-Es ist KEIN Spiel-Neustart und KEINE Verbindungseinrichtung noetig.
-Das Originalfenster geoeffnet und nicht minimiert lassen.
-Clean Preview auf den Capture-Card-Monitor ziehen, F11 fuer Vollbild.
-Auf dem Stream-PC den bisherigen Stabilisierungsfilter fuer diese Quelle
-deaktivieren, damit das Bild nicht zweimal stabilisiert wird.
-Der normale Fenstermodus arbeitet mit Bildanalyse und ist unabhaengig von
-OpenVR, Pimax OpenXR oder SteamVR/SBoys3. Kein Tracking-Sender erforderlich.
-Die zusaetzliche OpenXR-Pose-Option benoetigt Einrichtung und Spiel-Neustart.
-Details: Gaming-PC\Preview-Anleitung.md
-Native automatisierte Tests bestanden; Sichtpruefung beim Fahren steht aus.
+GAMING PC - STANDALONE PREVIEW
+Run Gaming-PC\Start-Preview.cmd after closing the previous preview app.
+Existing settings are copied if the new version has no preview.ini.
+A working 0.4.0 OpenXR layer is compatible. No reinstall or iRacing restart
+is needed for this viewer update. Keep Preview-0.4.0 while its layer is registered.
 
-GAMING-PC – BISHERIGER OBS-/SENDER-WEG
-Gaming-PC\Start-Delay-Check.cmd startet Tracking und das Foto-Overlay.
-Gaming-PC\Start-Tracking.cmd startet nur Tracking.
-SteamVR und die Brille vorher starten. Nur einen Sender gleichzeitig starten.
-Das schwarze Sender-Fenster offen lassen. Mit Strg+C beenden.
-Schliessen des Foto-Overlays allein beendet den Sender nicht.
+New: four crop sliders, aspect ratio, configurable render resolution
+(default 3840x2160), horizon lock, mirror limit, automatic fullscreen and
+monitor selection. The app is in English. See Gaming-PC\Preview-Guide.md.
+The HDMI signal resolution still follows Windows display settings.
+Disable the old OBS stabilizer on this already stabilized source.
 
-STREAM-PC / OBS
-OBS schliessen. Die beiden Ordner aus Stream-PC:
-  obs-plugins
-  data
-direkt nach C:\Program Files\obs-studio kopieren und vorhandene
-Horizon-Lock-Dateien ersetzen. Danach OBS starten.
-Die Datei liegt dann hier:
-C:\Program Files\obs-studio\obs-plugins\64bit\vr-stabilizer.dll
-Der Empfaenger ist Bestandteil dieses OBS-Filters.
+GAMING PC - EXISTING SENDER WORKFLOW
+Gaming-PC\Start-Tracking.cmd starts tracking.
+Gaming-PC\Start-Delay-Check.cmd starts tracking and the photo timing overlay.
+Start SteamVR and the headset first. Run only one sender.
+Keep its console open. Ctrl+C stops it.
 
-FOTO FUER DELAY-CHECK
-Im VR-Stabilizer-Filter "Photo timing overlay" einschalten.
-Das Gaming-Overlay muss im an den Stream-PC uebertragenen Bild sichtbar sein.
-Ausserhalb des fuer die Bildanalyse verwendeten Bereichs platzieren.
-Auf dem Stream-PC kann ein Foto beide Anzeigen im selben Bild festhalten:
-die mit dem Videosignal angekommene Gaming-Anzeige und die OBS-Anzeige.
-NOW ist in beiden Anzeigen auf die Gaming-PC-Uhr bezogen.
-LATEST zeigt das zuletzt empfangene Pose-Paket; USED die angewendete Pose.
-Mehrere Fotos helfen, Schwankungen sichtbar zu machen.
-Die Werte sind eine Orientierung, kein exaktes Tagging der iRacing-Bildframes.
+STREAM PC / OBS
+Close OBS. Copy obs-plugins and data directly from Stream-PC into:
+C:\Program Files\obs-studio
+The receiver is part of the OBS filter.
 
-UPDATE 0.3.4 - SPIEGELRAENDER
-Im OBS-Filter "Mirror image edges" einschalten (bei den Crop-Einstellungen).
-Wenn die Bewegung mehr Platz braucht als der Crop bietet, wird der fehlende
-Rand gespiegelt. Die Stabilisierung kann dadurch ueber die Crop-Grenze hinaus
-weiterarbeiten. Funktioniert mit Pose, Image-based und Hybrid.
-Die Option ist zunaechst aus und wird in Presets gespeichert.
-Input trim bleibt die Grenze der Spiegelung; abgeschnittene Fensterraender
-werden nicht wieder eingeblendet. Die Bildanalyse ignoriert gespiegelte Bereiche.
-Automatischer Crop kann weiterhin zusaetzlichen echten Bildrand bereitstellen.
-
-Zum Ausprobieren: bisherigen Tracking delay beibehalten, Smoothing schrittweise
-auf etwa 65 bis 75 erhoehen. Bei getrennten Achsen gelten deren eigene Werte.
-Im Image/Hybrid-Modus Maximum image shift zuerst bei 1 Prozent belassen.
-Im Tracking-Bereich moeglichst feste Cockpitstruktur verwenden; Lenkrad,
-Haende und wechselnde Overlays vermeiden. Bei groesseren Kopfbewegungen sieht
-man die Spiegelung; sie erzeugt keine zusaetzlichen echten Bildinformationen.
-Ein Reset View oder ein falsches Bewegungsmatch kann weiterhin springen.
-
-Fuer dieses Update auf dem Stream-PC sowohl die DLL als auch den data-Ordner
-erneut kopieren. Der Sender enthaelt weiterhin den SteamVR-Startfix aus 0.3.3.
-
-Das ZIP in diesem Ordner enthaelt das vollstaendige Paket samt Quellcode.
-Fruehere versionierte ZIPs werden bei spaeteren Updates aufbewahrt.
+Complete binary ZIP, matching source ZIP and SHA-256 checksums are here.
+Previous versioned packages are preserved.

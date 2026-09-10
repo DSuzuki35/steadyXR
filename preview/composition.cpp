@@ -1,4 +1,5 @@
 #include "renderer.hpp"
+#include <algorithm>
 #include <cmath>
 namespace vrst::preview {
 namespace {
@@ -9,6 +10,19 @@ Projection projection(const View &v) {
     return {v.fov[0], v.fov[1], v.fov[2], v.fov[3]};
 }
 } // namespace
+FramingRegion framing_region(double source_aspect, const Options &options) {
+    const auto edge = [](double v) { return std::isfinite(v) ? std::clamp(v, 0., 45.) / 100 : 0.; };
+    FramingRegion r{edge(options.crop_left), 1 - edge(options.crop_right), edge(options.crop_top),
+                    1 - edge(options.crop_bottom)};
+    const double aspect = std::isfinite(options.aspect) ? std::clamp(options.aspect, .25, 4.) : 16. / 9.;
+    double w = r.right - r.left, h = r.bottom - r.top;
+    if (w * source_aspect / h > aspect)
+        w = h * aspect / source_aspect;
+    else
+        h = w * source_aspect / aspect;
+    const double cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    return {cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2};
+}
 Composition FrameStabilizer::update(const Frame &frame, const Options &options) {
     Composition result;
     if (frame.view_count < 1 || frame.view_count > 2 || frame.display_time <= 0)
@@ -43,9 +57,24 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     settings.automatic_fov = true;
     settings.stabilization_crop = options.crop;
     settings.mirror_edges = options.mirror;
+    settings.output_16_9 = false;
     result.warp = make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
                             options.stabilize ? pose.correction : Quat{}, projection(frame.views[0]));
-    const auto effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
+    auto effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
+    if (options.stabilize && std::isfinite(options.horizon_lock) && options.horizon_lock > 0) {
+        const auto right = rotate(effective_target, {1, 0, 0}), up = rotate(effective_target, {0, 1, 0});
+        const double fade = std::clamp((std::hypot(up.y, right.y) - .05) / .20, 0., 1.);
+        const double roll =
+            std::atan2(right.y, up.y) * std::clamp(options.horizon_lock, 0., 100.) / 100 * fade;
+        effective_target =
+            normalized(multiply(axis_angle(rotate(effective_target, {0, 0, -1}), roll), effective_target));
+        result.warp.correction =
+            normalized(multiply(conjugate(orientation(frame.views[0])), effective_target));
+    }
+    auto &out = result.warp.output;
+    const auto region = framing_region((out.right - out.left) / (out.up - out.down), options);
+    const double x = out.left, y = out.up, w = out.right - out.left, h = out.down - out.up;
+    out = {x + w * region.left, x + w * region.right, y + h * region.top, y + h * region.bottom};
     result.focus_correction =
         multiply(conjugate(orientation(frame.views[frame.view_count - 1])), effective_target);
     result.valid = true;

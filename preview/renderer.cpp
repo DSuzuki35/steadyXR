@@ -36,7 +36,10 @@ float4 PS(Varying v):SV_TARGET {
  if (imageMode.x>.5) {
    float3 at=float3(v.uv,1);
    float2 uv=float2(dot(imageRowX.xyz,at),dot(imageRowY.xyz,at));
-   if (flags.x>.5) uv=1-abs(1-2*frac(uv*.5));
+   if (flags.x>.5) {
+     if(any(uv < -imageMode.y)||any(uv > 1+imageMode.y))return float4(0,0,0,1);
+     uv=1-abs(1-2*frac(uv*.5));
+   }
    else if(any(uv<0)||any(uv>1))return float4(0,0,0,1);
    return float4(contextImage.Sample(linearClamp,clamp(uv,clamp0.xy,clamp0.zw)).rgb,1);
  }
@@ -44,7 +47,10 @@ float4 PS(Varying v):SV_TARGET {
  float3 ray=rotateQ(correction,targetRay);
  float2 uv=project(ray,inputFov);
  bool outside=any(uv<0)||any(uv>1)||ray.z>=-.05;
- if (flags.x>.5) uv=1-abs(1-2*frac(uv*.5));
+ if (flags.x>.5) {
+   if(ray.z>=-.05||any(uv < -imageMode.y)||any(uv > 1+imageMode.y))return float4(0,0,0,1);
+   uv=1-abs(1-2*frac(uv*.5));
+ }
  else if (outside) return float4(0,0,0,1);
  float2 sampleUV=clamp(rect0.xy+uv*rect0.zw,clamp0.xy,clamp0.zw);
  float4 color=contextImage.Sample(linearClamp,sampleUV);
@@ -102,6 +108,10 @@ struct Renderer::Impl {
     ComPtr<IDXGISwapChain> swap;
     ComPtr<ID3D11Texture2D> back;
     ComPtr<ID3D11RenderTargetView> target;
+    ComPtr<ID3D11Texture2D> output;
+    ComPtr<ID3D11RenderTargetView> output_target;
+    ComPtr<ID3D11ShaderResourceView> output_view;
+    unsigned output_width{}, output_height{};
     ComPtr<ID3D11VertexShader> vs;
     ComPtr<ID3D11PixelShader> ps;
     ComPtr<ID3D11PixelShader> downsample;
@@ -158,6 +168,10 @@ struct Renderer::Impl {
         downsample.Reset();
         target.Reset();
         back.Reset();
+        output_view.Reset();
+        output_target.Reset();
+        output.Reset();
+        output_width = output_height = 0;
         sampler.Reset();
         constants.Reset();
         ps.Reset();
@@ -191,7 +205,7 @@ struct Renderer::Impl {
             }
         }
         if (!selected)
-            return fail(L"Grafikkarte des Spiels nicht gefunden");
+            return fail(L"Game graphics adapter not found");
         const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
         hr = D3D11CreateDevice(selected.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
                                D3D11_CREATE_DEVICE_BGRA_SUPPORT, &level, 1, D3D11_SDK_VERSION, &device,
@@ -210,17 +224,17 @@ struct Renderer::Impl {
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         hr = factory->CreateSwapChain(device.Get(), &desc, &swap);
         if (FAILED(hr))
-            return fail(L"Vorschaufenster", hr);
+            return fail(L"Preview window", hr);
         factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
         ComPtr<ID3DBlob> vblob, pblob, errors;
         hr = D3DCompile(shader, sizeof(shader) - 1, nullptr, nullptr, nullptr, "VS", "vs_5_0",
                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vblob, &errors);
         if (FAILED(hr))
-            return fail(L"Vertex-Shader", hr);
+            return fail(L"Vertex shader", hr);
         hr = D3DCompile(shader, sizeof(shader) - 1, nullptr, nullptr, nullptr, "PS", "ps_5_0",
                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pblob, &errors);
         if (FAILED(hr))
-            return fail(L"Pixel-Shader", hr);
+            return fail(L"Pixel shader", hr);
         if (FAILED(hr = device->CreateVertexShader(vblob->GetBufferPointer(), vblob->GetBufferSize(), nullptr,
                                                    &vs)) ||
             FAILED(hr = device->CreatePixelShader(pblob->GetBufferPointer(), pblob->GetBufferSize(), nullptr,
@@ -232,7 +246,7 @@ struct Renderer::Impl {
         if (FAILED(hr) ||
             FAILED(hr = device->CreatePixelShader(small_blob->GetBufferPointer(), small_blob->GetBufferSize(),
                                                   nullptr, &downsample)))
-            return fail(L"Analyse-Shader", hr);
+            return fail(L"Analysis shader", hr);
         D3D11_BUFFER_DESC cb{};
         cb.ByteWidth = sizeof(Params);
         cb.Usage = D3D11_USAGE_DYNAMIC;
@@ -240,7 +254,7 @@ struct Renderer::Impl {
         cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         hr = device->CreateBuffer(&cb, nullptr, &constants);
         if (FAILED(hr))
-            return fail(L"Shaderparameter", hr);
+            return fail(L"Shader parameters", hr);
         D3D11_SAMPLER_DESC sd{};
         sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -255,9 +269,6 @@ struct Renderer::Impl {
         RECT client{};
         GetClientRect(window, &client);
         unsigned w = std::max<LONG>(16, client.right), h = std::max<LONG>(16, client.bottom);
-        const double scale = std::min({1., 1920. / w, 1080. / h});
-        w = std::max(16u, unsigned(w * scale));
-        h = std::max(16u, unsigned(h * scale));
         if (w == width && h == height && target)
             return true;
         context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -265,18 +276,51 @@ struct Renderer::Impl {
         back.Reset();
         HRESULT hr = swap->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
         if (FAILED(hr))
-            return fail(L"Fenstergroesse", hr);
+            return fail(L"Window dimensions", hr);
         hr = swap->GetBuffer(0, IID_PPV_ARGS(&back));
         if (FAILED(hr))
-            return fail(L"Ausgabebild", hr);
+            return fail(L"Output image", hr);
         D3D11_RENDER_TARGET_VIEW_DESC rt{};
         rt.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
         rt.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
         hr = device->CreateRenderTargetView(back.Get(), &rt, &target);
         if (FAILED(hr))
-            return fail(L"Ausgabeziel", hr);
+            return fail(L"Output target", hr);
         width = w;
         height = h;
+        return true;
+    }
+    bool resize_output(const Options &options) {
+        unsigned w = std::clamp(options.output_width, 320u, 7680u),
+                 h = std::clamp(options.output_height, 180u, 4320u);
+        if (output && w == output_width && h == output_height)
+            return true;
+        context->OMSetRenderTargets(0, nullptr, nullptr);
+        output_view.Reset();
+        output_target.Reset();
+        output.Reset();
+        D3D11_TEXTURE2D_DESC d{};
+        d.Width = w;
+        d.Height = h;
+        d.MipLevels = d.ArraySize = 1;
+        d.SampleDesc.Count = 1;
+        d.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+        d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        HRESULT hr = device->CreateTexture2D(&d, nullptr, &output);
+        D3D11_RENDER_TARGET_VIEW_DESC rt{};
+        rt.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        rt.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
+        sv.Format = rt.Format;
+        sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        sv.Texture2D.MipLevels = 1;
+        if (FAILED(hr) || FAILED(hr = device->CreateRenderTargetView(output.Get(), &rt, &output_target)) ||
+            FAILED(hr = device->CreateShaderResourceView(output.Get(), &sv, &output_view))) {
+            output.Reset();
+            return fail(L"Output resolution allocation", hr);
+        }
+        output_width = w;
+        output_height = h;
         return true;
     }
     bool make_local(unsigned i, const D3D11_TEXTURE2D_DESC &input) {
@@ -289,10 +333,10 @@ struct Renderer::Impl {
         srv[i].Reset();
         HRESULT hr = device->CreateTexture2D(&desc, nullptr, &local[i]);
         if (FAILED(hr))
-            return fail(L"Bildkopie", hr);
+            return fail(L"Image copy", hr);
         hr = device->CreateShaderResourceView(local[i].Get(), nullptr, &srv[i]);
         if (FAILED(hr))
-            return fail(L"Bildformat", hr);
+            return fail(L"Image format", hr);
         return true;
     }
 };
@@ -354,7 +398,7 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
             r.error.clear();
         } else if (hr != DXGI_ERROR_WAS_STILL_DRAWING) {
             r.pending.clear();
-            r.fail(L"Bildanalyse wird neu aufgebaut", hr);
+            r.fail(L"Rebuilding image analysis", hr);
             return false;
         }
     }
@@ -364,11 +408,11 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
     texture->GetDesc(&input);
     if (!input.Width || !input.Height || input.Width > 16384 || input.Height > 16384 ||
         input.ArraySize != 1 || input.SampleDesc.Count != 1)
-        return r.fail(L"Fensterbildformat ungueltig");
+        return r.fail(L"Invalid window image format");
     ComPtr<ID3D11Device> source_device;
     texture->GetDevice(&source_device);
     if (source_device.Get() != r.device.Get())
-        return r.fail(L"Fensterbild auf falscher GPU");
+        return r.fail(L"Window image is on the wrong GPU");
     std::unique_ptr<Impl::Pending> p;
     if (r.free_pending.empty())
         p = std::make_unique<Impl::Pending>();
@@ -393,7 +437,7 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
         d.Format = storage_format;
         HRESULT hr = r.device->CreateTexture2D(&d, nullptr, &p->full);
         if (FAILED(hr))
-            return r.fail(L"Fenster-Zwischenbild", hr);
+            return r.fail(L"Window intermediate image", hr);
         D3D11_SHADER_RESOURCE_VIEW_DESC view{};
         view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
         view.Texture2D.MipLevels = 1;
@@ -402,7 +446,7 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
                                                                    : input.Format;
         hr = r.device->CreateShaderResourceView(p->full.Get(), &view, &p->view);
         if (FAILED(hr))
-            return r.fail(L"Fenster-Farbraum", hr);
+            return r.fail(L"Window color space", hr);
     }
     const double scale = std::min({1., 480. / input.Width, 270. / input.Height});
     const unsigned aw = std::max(1u, unsigned(input.Width * scale)),
@@ -420,13 +464,13 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
         d.BindFlags = D3D11_BIND_RENDER_TARGET;
         HRESULT hr = r.device->CreateTexture2D(&d, nullptr, &p->small);
         if (FAILED(hr) || FAILED(hr = r.device->CreateRenderTargetView(p->small.Get(), nullptr, &p->target)))
-            return r.fail(L"Analysebild", hr);
+            return r.fail(L"Analysis image", hr);
         d.Usage = D3D11_USAGE_STAGING;
         d.BindFlags = 0;
         d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
         hr = r.device->CreateTexture2D(&d, nullptr, &p->staging);
         if (FAILED(hr))
-            return r.fail(L"Analyse-Puffer", hr);
+            return r.fail(L"Analysis buffer", hr);
     }
     p->width = input.Width;
     p->height = input.Height;
@@ -529,7 +573,7 @@ bool Renderer::consume(Channel &channel) {
     };
     const Frame packet = s.frame;
     if (!valid_frame(packet))
-        return recover(L"Ungueltige Bildmetadaten");
+        return recover(L"Invalid image metadata");
     if (!r.device || !same(r.adapter, packet.adapter)) {
         if (!r.initialize(&packet.adapter)) {
             s.ready = 2;
@@ -556,16 +600,16 @@ bool Renderer::consume(Channel &channel) {
             HRESULT hr = r.device->OpenSharedResource(
                 reinterpret_cast<HANDLE>(packet.views[i].texture_handle), IID_PPV_ARGS(&r.shared[i]));
             if (FAILED(hr))
-                return recover(L"Spielbild oeffnen", hr);
+                return recover(L"Open game image", hr);
             D3D11_TEXTURE2D_DESC d{};
             r.shared[i]->GetDesc(&d);
             if (d.Width != packet.views[i].width || d.Height != packet.views[i].height ||
                 d.Format != packet.views[i].format || d.ArraySize != 1 || d.MipLevels != 1 ||
                 d.SampleDesc.Count != 1)
-                return recover(L"Bildformat passt nicht zu Metadaten");
+                return recover(L"Image format does not match metadata");
             hr = r.shared[i].As(&r.keyed[i]);
             if (FAILED(hr) || !r.make_local(i, d))
-                return recover(L"GPU-Bildverbindung", hr);
+                return recover(L"GPU image connection", hr);
         }
         r.opened = packet;
     }
@@ -584,7 +628,7 @@ bool Renderer::consume(Channel &channel) {
                 acquisition = hr;
         }
         if (acquisition != WAIT_TIMEOUT)
-            return recover(L"GPU-Verbindung wird neu aufgebaut", acquisition);
+            return recover(L"Rebuilding GPU connection", acquisition);
         return false;
     }
     for (unsigned i = 0; i < packet.view_count; ++i)
@@ -597,7 +641,7 @@ bool Renderer::consume(Channel &channel) {
             release = hr;
     }
     if (FAILED(release))
-        return recover(L"GPU-Bildfreigabe", release);
+        return recover(L"Release GPU image", release);
     s.ready = 0;
     r.frame = packet;
     r.error.clear();
@@ -656,16 +700,19 @@ bool Renderer::demo(double seconds, bool quad) {
 
 bool Renderer::draw(const Options &options, bool present) {
     auto &r = *impl_;
-    if (!r.device || !r.swap || !r.resize())
+    if (!r.device || !r.swap || !r.resize() || !r.resize_output(options))
         return false;
     const float clear[4] = {.005f, .009f, .016f, 1};
-    r.context->ClearRenderTargetView(r.target.Get(), clear);
+    r.context->ClearRenderTargetView(r.output_target.Get(), clear);
     if (r.frame.view_count) {
         Params p{};
+        p.image_mode[1] =
+            float(std::isfinite(options.mirror_limit) ? std::clamp(options.mirror_limit, 0., 50.) / 100 : 0.);
         if (r.window_mode) {
             Settings settings;
             settings.stabilization_crop = options.crop;
             settings.mirror_edges = options.mirror;
+            settings.output_16_9 = false;
             auto result = r.image_result;
             if (!options.stabilize)
                 result.correction = {};
@@ -673,13 +720,20 @@ bool Renderer::draw(const Options &options, bool present) {
                 make_image_warp(r.frame.views[0].width, r.frame.views[0].height, settings, result);
             std::copy(warp.row_x.begin(), warp.row_x.end(), p.image_row_x);
             std::copy(warp.row_y.begin(), warp.row_y.end(), p.image_row_y);
+            const auto region =
+                framing_region(double(r.frame.views[0].width) / r.frame.views[0].height, options);
+            for (auto row : {p.image_row_x, p.image_row_y}) {
+                row[2] += float(row[0] * region.left + row[1] * region.top);
+                row[0] *= float(region.right - region.left);
+                row[1] *= float(region.bottom - region.top);
+            }
             p.image_mode[0] = 1;
             rect(p.rect0, p.clamp0, r.frame.views[0]);
             p.flags[0] = options.mirror ? 1.f : 0.f;
         } else {
             const auto composition = r.stabilizer.update(r.frame, options);
             if (!composition.valid)
-                return r.fail(L"Pose/Projektion ungueltig");
+                return r.fail(L"Invalid pose or projection");
             put(p.input, composition.warp.input);
             put(p.output, composition.warp.output);
             put(p.correction, composition.warp.correction);
@@ -696,21 +750,23 @@ bool Renderer::draw(const Options &options, bool present) {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         HRESULT hr = r.context->Map(r.constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         if (FAILED(hr))
-            return r.fail(L"Shaderparameter aktualisieren", hr);
+            return r.fail(L"Update shader parameters", hr);
         std::memcpy(mapped.pData, &p, sizeof(p));
         r.context->Unmap(r.constants.Get(), 0);
         D3D11_VIEWPORT vp{};
-        vp.Width = float(r.width);
-        vp.Height = vp.Width * 9.f / 16.f;
-        if (vp.Height > r.height) {
-            vp.Height = float(r.height);
-            vp.Width = vp.Height * 16.f / 9.f;
+        const float aspect =
+            float(std::isfinite(options.aspect) ? std::clamp(options.aspect, .25, 4.) : 16. / 9.);
+        vp.Width = float(r.output_width);
+        vp.Height = vp.Width / aspect;
+        if (vp.Height > r.output_height) {
+            vp.Height = float(r.output_height);
+            vp.Width = vp.Height * aspect;
         }
-        vp.TopLeftX = (r.width - vp.Width) / 2;
-        vp.TopLeftY = (r.height - vp.Height) / 2;
+        vp.TopLeftX = (r.output_width - vp.Width) / 2;
+        vp.TopLeftY = (r.output_height - vp.Height) / 2;
         vp.MaxDepth = 1;
         r.context->RSSetViewports(1, &vp);
-        auto *rt = r.target.Get();
+        auto *rt = r.output_target.Get();
         r.context->OMSetRenderTargets(1, &rt, nullptr);
         r.context->IASetInputLayout(nullptr);
         r.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -726,20 +782,44 @@ bool Renderer::draw(const Options &options, bool present) {
         ID3D11ShaderResourceView *empty[2] = {};
         r.context->PSSetShaderResources(0, 2, empty);
     }
+    // Present the complete requested-resolution canvas without distorting it
+    // when the physical client area has a different aspect ratio.
+    r.context->ClearRenderTargetView(r.target.Get(), clear);
+    auto *rt = r.target.Get();
+    r.context->OMSetRenderTargets(1, &rt, nullptr);
+    const float scale = std::min(float(r.width) / r.output_width, float(r.height) / r.output_height);
+    D3D11_VIEWPORT fitted{(r.width - r.output_width * scale) / 2,
+                          (r.height - r.output_height * scale) / 2,
+                          r.output_width * scale,
+                          r.output_height * scale,
+                          0,
+                          1};
+    r.context->RSSetViewports(1, &fitted);
+    r.context->IASetInputLayout(nullptr);
+    r.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    r.context->VSSetShader(r.vs.Get(), nullptr, 0);
+    r.context->PSSetShader(r.downsample.Get(), nullptr, 0);
+    auto *sample = r.sampler.Get();
+    r.context->PSSetSamplers(0, 1, &sample);
+    auto *view = r.output_view.Get();
+    r.context->PSSetShaderResources(0, 1, &view);
+    r.context->Draw(3, 0);
+    ID3D11ShaderResourceView *empty{};
+    r.context->PSSetShaderResources(0, 1, &empty);
     if (present) {
         const HRESULT hr = r.swap->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
         if (FAILED(hr) && hr != DXGI_ERROR_WAS_STILL_DRAWING)
-            return r.fail(L"Vorschau darstellen", hr);
+            return r.fail(L"Present preview", hr);
     }
     return true;
 }
 
 bool Renderer::readback(std::vector<std::uint32_t> &pixels, unsigned &width, unsigned &height) {
     auto &r = *impl_;
-    if (!r.back)
+    if (!r.output)
         return false;
     D3D11_TEXTURE2D_DESC d{};
-    r.back->GetDesc(&d);
+    r.output->GetDesc(&d);
     d.Usage = D3D11_USAGE_STAGING;
     d.BindFlags = d.MiscFlags = 0;
     d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
@@ -747,7 +827,7 @@ bool Renderer::readback(std::vector<std::uint32_t> &pixels, unsigned &width, uns
     HRESULT hr = r.device->CreateTexture2D(&d, nullptr, &staging);
     if (FAILED(hr))
         return r.fail(L"Test readback", hr);
-    r.context->CopyResource(staging.Get(), r.back.Get());
+    r.context->CopyResource(staging.Get(), r.output.Get());
     D3D11_MAPPED_SUBRESOURCE m{};
     hr = r.context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &m);
     if (FAILED(hr))

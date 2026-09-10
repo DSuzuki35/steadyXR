@@ -30,6 +30,7 @@ int main(int argc, char **argv) {
         std::vector<std::uint32_t> pixels;
         unsigned w, h;
         require(renderer.readback(pixels, w, h), "GPU readback");
+        require(w == 3840 && h == 2160, "default rendering must be exactly 4K");
         auto center = pixels[(h / 2) * w + w / 2];
         auto side = pixels[(h / 2) * w + w / 8];
         require(((center >> 8) & 255) > ((center) & 255) + 80, "foveal inset must replace context at center");
@@ -44,7 +45,11 @@ int main(int argc, char **argv) {
         }
         SetWindowPos(window, nullptr, 0, 0, 1280, 800, SWP_NOMOVE | SWP_NOZORDER);
         require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "resize and letterbox");
-        require(w == 1280 && h == 800, "resize dimensions");
+        require(w == 3840 && h == 2160, "window resize must preserve render dimensions");
+        options.output_width = 1280;
+        options.output_height = 720;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h) && w == 1280 && h == 720,
+                "chosen render resolution");
         require((pixels[0] & 0xffffff) != (pixels[(h / 2) * w + w / 2] & 0xffffff),
                 "letterbox differs from focus");
         SetWindowPos(window, nullptr, 0, 0, 960, 540, SWP_NOMOVE | SWP_NOZORDER);
@@ -115,6 +120,35 @@ int main(int argc, char **argv) {
         for (auto pixel : pixels)
             require((pixel & 255) > 240 && ((pixel >> 8) & 255) < 3 && ((pixel >> 16) & 255) < 3,
                     "subrect or snapshot ownership mismatch");
+        require(keyed->AcquireSync(0, 0) == S_OK, "republish key");
+        keyed->ReleaseSync(1);
+        require(channel.lock(), "rolled frame lock");
+        auto roll = vrst::axis_angle({0, 0, 1}, .7);
+        channel.data()->frame.sequence++;
+        channel.data()->frame.display_time += 16666667;
+        channel.data()->frame.views[0].orientation[2] = float(roll.z);
+        channel.data()->frame.views[0].orientation[3] = float(roll.w);
+        channel.data()->ready = 1;
+        channel.unlock();
+        require(renderer.consume(channel), "consume rolled frame");
+        options.stabilize = true;
+        options.smoothing = 0;
+        options.horizon_lock = 100;
+        options.mirror_limit = 0;
+        renderer.reset();
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "zero mirror draw");
+        require((pixels[0] & 0xffffff) == 0, "zero mirror limit must black outside source");
+        options.mirror_limit = 10;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "limited mirror draw");
+        require(((pixels[0] >> 8) & 255) > 240, "ten percent mirror must cover known six percent overrun");
+        options.mirror_limit = 1;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "small mirror draw");
+        require((pixels[0] & 0xffffff) == 0, "overrun beyond mirror limit must be black");
+        options = Options{};
+        options.crop = 0;
+        options.stabilize = false;
+        options.output_width = 1280;
+        options.output_height = 720;
         // Replacing the GPU generation may fail before its first acquisition.
         // Old pose metadata must not survive destruction of the matching image.
         require(channel.lock(), "replacement lock");
@@ -156,6 +190,27 @@ int main(int argc, char **argv) {
                 "window capture must preserve SDR colors");
         require(!renderer.consume_window(window_image.Get(), 4000000000ULL, options),
                 "repeated window timestamp must not advance tracking");
+        for (unsigned y = 0; y < 288; ++y)
+            for (unsigned x = 0; x < 512; ++x)
+                window_pixels[y * 512 + x] = 0xff000000u | ((x * 255 / 511) << 16) | ((y * 255 / 287) << 8);
+        ComPtr<ID3D11DeviceContext> capture_context;
+        renderer.device()->GetImmediateContext(&capture_context);
+        capture_context->UpdateSubresource(window_image.Get(), 0, nullptr, window_pixels.data(), 512 * 4, 0);
+        processed = renderer.consume_window(window_image.Get(), 4100000000ULL, options);
+        for (int i = 0; i < 200 && !processed; ++i) {
+            Sleep(1);
+            processed = renderer.consume_window(nullptr, 0, options);
+        }
+        options.crop_left = 10;
+        options.crop_right = 20;
+        options.crop_top = 5;
+        options.crop_bottom = 15;
+        options.aspect = 1;
+        require(processed && renderer.draw(options, false) && renderer.readback(pixels, w, h),
+                "asymmetric image crop draw");
+        auto cropped = pixels[(h / 2) * w + w / 2];
+        require(std::abs(int(cropped & 255) - 114) <= 2 && std::abs(int((cropped >> 8) & 255) - 114) <= 2,
+                "image crop must move sampled center to (45%,45%) without stretching");
         renderer.source_changed();
         require(!renderer.has_frame(), "window source change must discard pending history");
         std::cout << "Native GPU: window analysis/color, quad composition, resize, subrect bounds, keyed "

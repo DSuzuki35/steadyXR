@@ -10,7 +10,15 @@ namespace vrst::preview {
 struct Options {
     double smoothing{40}, crop{10};
     bool mirror{true}, stabilize{true};
+    double crop_left{}, crop_right{}, crop_top{}, crop_bottom{};
+    double aspect{16. / 9.};
+    unsigned output_width{3840}, output_height{2160};
+    double horizon_lock{}, mirror_limit{10};
 };
+struct FramingRegion {
+    double left{}, right{1}, top{}, bottom{1};
+};
+FramingRegion framing_region(double source_aspect, const Options &);
 struct Composition {
     bool valid{};
     Warp warp{};
