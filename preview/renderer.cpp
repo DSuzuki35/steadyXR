@@ -17,7 +17,7 @@ constexpr char shader[] = R"(
 cbuffer Params : register(b0) {
  float4 inputFov, outputFov, correction, focusFov, focusCorrection;
  float4 rect0, rect1, clamp0, clamp1, flags;
- float4 imageRowX, imageRowY, imageMode;
+ float4 imageRowX, imageRowY, imageMode, mirrorStyle;
 };
 Texture2D contextImage : register(t0);
 Texture2D focusImage : register(t1);
@@ -32,28 +32,51 @@ float2 project(float3 ray,float4 fov) {
  float2 t=ray.xy/max(.05,-ray.z);
  return float2((t.x-fov.x)/(fov.y-fov.x),(fov.z-t.y)/(fov.z-fov.w));
 }
+float3 contextSample(float2 uv) {
+ return contextImage.Sample(linearClamp,clamp(rect0.xy+uv*rect0.zw,clamp0.xy,clamp0.zw)).rgb;
+}
+float3 mirrorColor(float2 uv,float2 originalUV) {
+ float3 color=contextSample(uv);
+ float2 over=max(max(-originalUV,originalUV-1),0);
+ float distance=max(over.x,over.y);
+ // Original pixels stay exact. Extra taps are used only in reflected areas.
+ [branch] if(mirrorStyle.x<=0 || distance<=0) return color;
+ float seam=smoothstep(0,max(.0001,min(.03,imageMode.y*.5)),distance);
+ float amount=mirrorStyle.x*seam;
+ float2 radius=mirrorStyle.yz*(18*amount);
+ float3 blurred=color*.4;
+ blurred+=contextSample(uv+float2(radius.x,radius.y))*.15;
+ blurred+=contextSample(uv+float2(-radius.x,radius.y))*.15;
+ blurred+=contextSample(uv+float2(radius.x,-radius.y))*.15;
+ blurred+=contextSample(uv-radius)*.15;
+ color=lerp(color,blurred,amount)*(1-.18*amount);
+ // Feather the last part of the allowed reflection into the black border.
+ float edge=smoothstep(imageMode.y*(1-.12*mirrorStyle.x),imageMode.y,distance);
+ return color*(1-edge);
+}
 float4 PS(Varying v):SV_TARGET {
  if (imageMode.x>.5) {
    float3 at=float3(v.uv,1);
    float2 uv=float2(dot(imageRowX.xyz,at),dot(imageRowY.xyz,at));
+   float2 originalUV=uv;
    if (flags.x>.5) {
      if(any(uv < -imageMode.y)||any(uv > 1+imageMode.y))return float4(0,0,0,1);
      uv=1-abs(1-2*frac(uv*.5));
    }
    else if(any(uv<0)||any(uv>1))return float4(0,0,0,1);
-   return float4(contextImage.Sample(linearClamp,clamp(uv,clamp0.xy,clamp0.zw)).rgb,1);
+   return float4(mirrorColor(uv,originalUV),1);
  }
  float3 targetRay=float3(lerp(outputFov.x,outputFov.y,v.uv.x),lerp(outputFov.z,outputFov.w,v.uv.y),-1);
  float3 ray=rotateQ(correction,targetRay);
  float2 uv=project(ray,inputFov);
+ float2 originalUV=uv;
  bool outside=any(uv<0)||any(uv>1)||ray.z>=-.05;
  if (flags.x>.5) {
    if(ray.z>=-.05||any(uv < -imageMode.y)||any(uv > 1+imageMode.y))return float4(0,0,0,1);
    uv=1-abs(1-2*frac(uv*.5));
  }
  else if (outside) return float4(0,0,0,1);
- float2 sampleUV=clamp(rect0.xy+uv*rect0.zw,clamp0.xy,clamp0.zw);
- float4 color=contextImage.Sample(linearClamp,sampleUV);
+ float4 color=float4(mirrorColor(uv,originalUV),1);
  if (flags.y>.5 && !outside) {
    float3 focusRay=rotateQ(focusCorrection,targetRay);
    float2 focusUV=project(focusRay,focusFov);
@@ -71,7 +94,7 @@ float4 Downsample(Varying v):SV_TARGET { return contextImage.Sample(linearClamp,
 struct Params {
     float input[4], output[4], correction[4], focus[4], focus_correction[4];
     float rect0[4], rect1[4], clamp0[4], clamp1[4], flags[4];
-    float image_row_x[4], image_row_y[4], image_mode[4];
+    float image_row_x[4], image_row_y[4], image_mode[4], mirror_style[4];
 };
 void put(float *to, Projection p) {
     to[0] = float(p.left);
@@ -822,6 +845,11 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
         Params p{};
         p.image_mode[1] =
             float(std::isfinite(options.mirror_limit) ? std::clamp(options.mirror_limit, 0., 50.) / 100 : 0.);
+        p.mirror_style[0] =
+            float(std::isfinite(options.mirror_softness) ? std::clamp(options.mirror_softness, 0., 100.) / 100
+                                                         : 0.);
+        p.mirror_style[1] = 1.f / std::max(1, r.frame.views[0].rect_width);
+        p.mirror_style[2] = 1.f / std::max(1, r.frame.views[0].rect_height);
         if (r.window_mode) {
             Settings settings;
             settings.stabilization_crop = options.crop;

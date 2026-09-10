@@ -1,4 +1,6 @@
 #include "renderer.hpp"
+#include <algorithm>
+#include <cmath>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <fstream>
@@ -24,6 +26,7 @@ int main(int argc, char **argv) {
         Renderer renderer;
         require(renderer.attach(window), "native renderer initialize/shader compilation");
         Options options;
+        options.mirror_softness = 0; // Legacy mirror tests compare the exact unsoftened image.
         options.crop = 0;
         options.stabilize = false;
         require(renderer.demo(0, true) && renderer.draw(options, false), "quad demo draw");
@@ -154,6 +157,79 @@ int main(int argc, char **argv) {
         options.mirror_limit = 10;
         require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "limited mirror draw");
         require(((pixels[0] >> 8) & 255) > 240, "ten percent mirror must cover known six percent overrun");
+        const auto unsoftened = pixels;
+        options.mirror_softness = 70;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "soft mirror draw");
+        require(((pixels[0] >> 8) & 255) < ((unsoftened[0] >> 8) & 255) - 10 &&
+                    ((pixels[0] >> 8) & 255) > 100,
+                "softened mirror must be subtly darker away from the seam");
+        require(pixels[(h / 2) * w + w / 2] == unsoftened[(h / 2) * w + w / 2],
+                "soft mirrors must leave the original image interior untouched");
+        // A textured fixture distinguishes real softening from darkening alone.
+        require(keyed->AcquireSync(0, 0) == S_OK, "textured mirror producer key");
+        std::uint32_t noise = 12345;
+        for (auto &pixel : input) {
+            noise = noise * 1664525u + 1013904223u;
+            const auto gray = noise >> 24;
+            pixel = 0xff000000u | gray | (gray << 8) | (gray << 16);
+        }
+        context->UpdateSubresource(texture.Get(), 0, nullptr, input.data(), 512 * 4, 0);
+        context->Flush();
+        keyed->ReleaseSync(1);
+        require(channel.lock(), "textured mirror frame lock");
+        channel.data()->frame.sequence++;
+        channel.data()->frame.display_time += 16666667;
+        const auto textured_frame = channel.data()->frame;
+        channel.data()->ready = 1;
+        channel.unlock();
+        require(renderer.consume(channel), "consume textured mirror fixture");
+        options.mirror_softness = 0;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "legacy textured mirror");
+        const auto sharp = pixels;
+        options.mirror_softness = 100;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "soft textured mirror");
+        FrameStabilizer mirror_geometry;
+        const auto projection = mirror_geometry.update(textured_frame, options).warp;
+        double sharp_sum = 0, soft_sum = 0, sharp_square = 0, soft_square = 0;
+        unsigned mirror_count = 0, seam_count = 0, interior_count = 0;
+        for (unsigned y = 0; y < h; ++y)
+            for (unsigned x = 0; x < w; ++x) {
+                auto ray = vrst::rotate(
+                    projection.correction,
+                    {projection.output.left +
+                         (projection.output.right - projection.output.left) * (x + .5) / w,
+                     projection.output.up + (projection.output.down - projection.output.up) * (y + .5) / h,
+                     -1});
+                const double u = (ray.x / -ray.z - projection.input.left) /
+                                 (projection.input.right - projection.input.left);
+                const double v =
+                    (projection.input.up - ray.y / -ray.z) / (projection.input.up - projection.input.down);
+                const double distance = std::max({-u, u - 1, -v, v - 1});
+                const auto index = std::size_t(y) * w + x;
+                const double a = sharp[index] & 255, b = pixels[index] & 255;
+                if (distance < -.02) {
+                    require(sharp[index] == pixels[index],
+                            "mirror softness must preserve every interior pixel");
+                    ++interior_count;
+                } else if (distance > 0 && distance < .0005) {
+                    require(std::abs(a - b) <= 3,
+                            "soft mirror transition must meet the original without a seam");
+                    ++seam_count;
+                } else if (distance > .035 && distance < .07) {
+                    sharp_sum += a;
+                    soft_sum += b;
+                    sharp_square += a * a;
+                    soft_square += b * b;
+                    ++mirror_count;
+                }
+            }
+        require(interior_count > 1000 && seam_count > 20 && mirror_count > 100,
+                "fixture must exercise interior, seam and mirror region");
+        const double sharp_variance = sharp_square / mirror_count - std::pow(sharp_sum / mirror_count, 2);
+        const double soft_variance = soft_square / mirror_count - std::pow(soft_sum / mirror_count, 2);
+        require(soft_variance < sharp_variance * .65,
+                "soft mirror must reduce texture contrast beyond darkening alone");
+        options.mirror_softness = 0;
         options.mirror_limit = 1;
         require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "small mirror draw");
         require((pixels[0] & 0xffffff) == 0, "overrun beyond mirror limit must be black");

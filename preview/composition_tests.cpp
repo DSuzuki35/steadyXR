@@ -31,6 +31,24 @@ Frame frame(std::uint64_t sequence, double angle = 0) {
 }
 int main() {
     try {
+        Options comfort;
+        comfort.crop_left = 7.5;
+        comfort.crop_right = 12;
+        comfort.crop_top = 3;
+        comfort.crop_bottom = 4;
+        comfort.aspect = 21. / 9.;
+        comfort.output_width = 2560;
+        comfort.output_height = 1080;
+        comfort.stabilize = comfort.mirror = comfort.adaptive_horizon = false;
+        apply_stream_comfort(comfort);
+        check(comfort.smoothing == 60 && comfort.horizon_lock == 50 && comfort.crop == 12 &&
+                  comfort.mirror_limit == 12 && comfort.mirror_softness == 70 && comfort.stabilize &&
+                  comfort.mirror && comfort.adaptive_horizon,
+              "Stream Comfort must apply the complete intended stabilization preset");
+        check(comfort.crop_left == 7.5 && comfort.crop_right == 12 && comfort.crop_top == 3 &&
+                  comfort.crop_bottom == 4 && comfort.aspect == 21. / 9. && comfort.output_width == 2560 &&
+                  comfort.output_height == 1080,
+              "Stream Comfort must preserve custom framing and output dimensions");
         Options framing;
         framing.crop_left = 10;
         framing.crop_right = 20;

@@ -1,4 +1,4 @@
-# Horizon Lock VR Preview 0.5.1
+# Horizon Lock VR Preview 0.5.2
 
 0.5.0 adds a dark native control panel and an embedded application icon. The PNG and Windows ICO are also included beside the EXE. Existing settings migrate when upgrading the ready-to-use package.
 
@@ -47,3 +47,11 @@ If **Windows capture shutdown stalled** appears after quickly closing a source, 
 Keep each preview directory intact. Settings are in preview.ini beside the EXE. The --demo option shows synthetic content. Automated tests cover GPU output, resolution, crop/aspect, horizon, mirror limits, settings, fullscreen, capture lifecycle and OpenXR ownership. Driving quality and GPU cost still depend on the live setup.
 
 OpenXR performance: the viewer polls for GPU-ready frames independently of the selected capture rate and copies only the selected eye subrect. This avoids a second frame-rate gate and reduces GPU copy bandwidth for side-by-side stereo textures. The selected FPS remains a target; actual output depends on game frame rate and available GPU time.
+
+## Stream Comfort and softer mirrored borders
+
+**Stream Comfort** applies 60% smoothing, 50% horizon lock with Adaptive curve, 12% crop reserve, a 12% mirror limit and 70% mirror softness. Stabilization and mirroring are enabled. It keeps your source, eye, FPS, custom edge crops, aspect, output resolution and monitor. In image mode, the horizon setting is saved for OpenXR but has no effect on image stabilization.
+
+Fine-tune any slider after applying the preset. **Undo preset** restores the stabilization tuning from before the first preset click in this app session, including if you apply it repeatedly. Subsequent framing/output changes are kept. The current tuning is saved between launches; the temporary undo snapshot is not.
+
+**Mirror softness** ranges from 0–100% (default 60%). Zero restores the sharp legacy reflection. Higher values progressively soften and slightly darken the reflection outside the source image, with a smooth transition at the original image edge and a fade to black at the mirror limit. Original image pixels stay untouched. Both OpenXR and image capture use the effect. The extra four texture samples apply only to mirrored regions; live GPU cost depends on the visible border area.

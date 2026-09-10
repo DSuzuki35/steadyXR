@@ -10,6 +10,16 @@ Projection projection(const View &v) {
     return {v.fov[0], v.fov[1], v.fov[2], v.fov[3]};
 }
 } // namespace
+void apply_stream_comfort(Options &options) {
+    options.smoothing = 60;
+    options.horizon_lock = 50;
+    options.adaptive_horizon = true;
+    options.crop = 12;
+    options.mirror = true;
+    options.mirror_limit = 12;
+    options.mirror_softness = 70;
+    options.stabilize = true;
+}
 FramingRegion framing_region(double source_aspect, const Options &options) {
     const auto edge = [](double v) { return std::isfinite(v) ? std::clamp(v, 0., 45.) / 100 : 0.; };
     FramingRegion r{edge(options.crop_left), 1 - edge(options.crop_right), edge(options.crop_top),

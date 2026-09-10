@@ -203,7 +203,7 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         RECT version{890, 28, 1009, 59};
         fill(dc, version, field);
         SetTextColor(dc, accent);
-        DrawTextW(dc, L"PREVIEW  0.5.1", -1, &version, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        DrawTextW(dc, L"PREVIEW  0.5.2", -1, &version, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         SelectObject(dc, old);
         if (message == WM_PAINT)
             EndPaint(window, &ps);

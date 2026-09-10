@@ -20,7 +20,8 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               crop_id = 107, mirror_id = 108, eye_id = 109, fps_id = 110, bypass_id = 111, mode_id = 112,
               source_id = 113, refresh_id = 114, left_id = 115, right_id = 116, top_id = 117, bottom_id = 118,
               horizon_id = 119, mirror_limit_id = 120, aspect_id = 121, width_id = 122, height_id = 123,
-              apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127;
+              apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127,
+              mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130;
 constexpr wchar_t registry_key[] = L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit";
 std::wstring decimal(double value) {
     wchar_t text[32]{};
@@ -31,7 +32,7 @@ struct App {
     HWND controls{}, output{}, status{}, smooth_label{}, crop_label{}, smooth{}, crop{}, mirror{}, bypass{},
         eye{}, fps{}, pause{}, mode{}, source{}, trims[4]{}, trim_labels[4]{}, horizon{}, horizon_label{},
         mirror_limit{}, mirror_limit_label{}, aspect{}, output_width{}, output_height{}, auto_fullscreen{},
-        monitor{}, adaptive_horizon{};
+        monitor{}, adaptive_horizon{}, mirror_softness{}, mirror_softness_label{};
     HFONT font{};
     Theme theme;
     Channel channel;
@@ -43,6 +44,8 @@ struct App {
     bool window_mode{true};
     std::uint64_t last_capture_start{};
     Options options;
+    Options before_comfort;
+    bool can_undo_comfort{};
     bool paused{}, demo{}, fullscreen{}, dirty{true}, quit{}, timer_resolution{};
     bool start_fullscreen{true};
     unsigned aspect_numerator{16}, aspect_denominator{9};
@@ -145,6 +148,7 @@ struct App {
         write(L"HorizonTenths", int(options.horizon_lock * 10 + .5));
         write(L"AdaptiveHorizon", options.adaptive_horizon);
         write(L"MirrorLimitTenths", int(options.mirror_limit * 10 + .5));
+        write(L"MirrorSoftnessTenths", int(options.mirror_softness * 10 + .5));
         write(L"OutputWidth", options.output_width);
         write(L"OutputHeight", options.output_height);
         write(L"AspectNumerator", aspect_numerator);
@@ -173,6 +177,7 @@ struct App {
         options.horizon_lock = value(L"HorizonTenths", 0, 0, 1000) / 10.;
         options.adaptive_horizon = value(L"AdaptiveHorizon", 1, 0, 1) != 0;
         options.mirror_limit = value(L"MirrorLimitTenths", 100, 0, 500) / 10.;
+        options.mirror_softness = value(L"MirrorSoftnessTenths", 600, 0, 1000) / 10.;
         options.output_width = value(L"OutputWidth", 3840, 320, 7680);
         options.output_height = value(L"OutputHeight", 2160, 180, 4320);
         aspect_numerator = value(L"AspectNumerator", 16, 1, 10000);
@@ -384,6 +389,25 @@ struct App {
         dirty = true;
         return true;
     }
+    void set_tuning(const Options &tuning) {
+        options.smoothing = tuning.smoothing;
+        options.crop = tuning.crop;
+        options.horizon_lock = tuning.horizon_lock;
+        options.adaptive_horizon = tuning.adaptive_horizon;
+        options.mirror = tuning.mirror;
+        options.mirror_limit = tuning.mirror_limit;
+        options.mirror_softness = tuning.mirror_softness;
+        options.stabilize = tuning.stabilize;
+        SendMessageW(smooth, TBM_SETPOS, TRUE, LPARAM(options.smoothing * 10 + .5));
+        SendMessageW(crop, TBM_SETPOS, TRUE, LPARAM(options.crop * 10 + .5));
+        SendMessageW(horizon, TBM_SETPOS, TRUE, LPARAM(options.horizon_lock * 10 + .5));
+        SendMessageW(mirror_limit, TBM_SETPOS, TRUE, LPARAM(options.mirror_limit * 10 + .5));
+        SendMessageW(mirror_softness, TBM_SETPOS, TRUE, LPARAM(options.mirror_softness * 10 + .5));
+        SendMessageW(mirror, BM_SETCHECK, options.mirror ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessageW(adaptive_horizon, BM_SETCHECK, options.adaptive_horizon ? BST_CHECKED : BST_UNCHECKED,
+                     0);
+        SendMessageW(bypass, BM_SETCHECK, options.stabilize ? BST_UNCHECKED : BST_CHECKED, 0);
+    }
     void labels() {
         SetWindowTextW(smooth_label, (L"Smoothing: " + decimal(options.smoothing) + L" %").c_str());
         SetWindowTextW(crop_label, (L"Crop reserve: " + decimal(options.crop) + L" %").c_str());
@@ -401,9 +425,13 @@ struct App {
         SetWindowTextW(horizon_label, (L"Horizon lock: " + decimal(options.horizon_lock) + L" %").c_str());
         SetWindowTextW(mirror_limit_label,
                        (L"Mirror limit: " + decimal(options.mirror_limit) + L" %").c_str());
+        SetWindowTextW(mirror_softness_label,
+                       (L"Mirror softness: " + decimal(options.mirror_softness) + L" %").c_str());
         EnableWindow(horizon, !window_mode);
         EnableWindow(adaptive_horizon, !window_mode);
         EnableWindow(mirror_limit, options.mirror);
+        EnableWindow(mirror_softness, options.mirror);
+        EnableWindow(GetDlgItem(controls, undo_comfort_id), can_undo_comfort);
     }
     void update_status() {
         std::wstring text;
@@ -575,12 +603,30 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         app->options.crop_bottom = SendMessageW(app->trims[3], TBM_GETPOS, 0, 0) / 10.;
         app->options.horizon_lock = SendMessageW(app->horizon, TBM_GETPOS, 0, 0) / 10.;
         app->options.mirror_limit = SendMessageW(app->mirror_limit, TBM_GETPOS, 0, 0) / 10.;
+        app->options.mirror_softness = SendMessageW(app->mirror_softness, TBM_GETPOS, 0, 0) / 10.;
         app->labels();
         app->save();
         app->dirty = true;
         return 0;
     case WM_COMMAND:
         switch (LOWORD(w)) {
+        case comfort_id: {
+            if (!app->can_undo_comfort)
+                app->before_comfort = app->options;
+            auto tuning = app->options;
+            apply_stream_comfort(tuning);
+            app->set_tuning(tuning);
+            app->can_undo_comfort = true;
+            app->setup_message = L"Stream Comfort applied. Fine-tune any slider to taste.";
+            break;
+        }
+        case undo_comfort_id:
+            if (app->can_undo_comfort) {
+                app->set_tuning(app->before_comfort);
+                app->can_undo_comfort = false;
+                app->setup_message = L"Previous stabilization settings restored.";
+            }
+            break;
         case apply_id:
             app->apply_output();
             break;
@@ -727,7 +773,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.5.1",
+    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.5.2",
                                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 100, 100, 1050,
                                      855, nullptr, nullptr, instance, nullptr);
     state.output =
@@ -791,7 +837,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     for (const wchar_t *value : {L"30 FPS", L"60 FPS", L"90 FPS"})
         SendMessageW(state.fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value));
     SendMessageW(state.fps, CB_SETCURSEL, state.rate == 30 ? 0 : state.rate == 60 ? 1 : 2, 0);
-    state.status = child(state.controls, L"STATIC", L"", 0, 22, 478, 596, 245);
+    state.status = child(state.controls, L"STATIC", L"", 0, 22, 478, 596, 190);
+    child(state.controls, L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 22, 668, 290, 34, comfort_id);
+    child(state.controls, L"BUTTON", L"Undo preset", BS_PUSHBUTTON, 326, 668, 290, 34, undo_comfort_id);
     child(state.controls, L"STATIC", L"FRAMING / OUTPUT", 0, 655, 18, 360, 28);
     const double trim_values[] = {state.options.crop_left, state.options.crop_right, state.options.crop_top,
                                   state.options.crop_bottom};
@@ -814,7 +862,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                  state.options.adaptive_horizon ? BST_CHECKED : BST_UNCHECKED, 0);
     state.mirror_limit =
         slider(mirror_limit_id, 385, state.options.mirror_limit, 500, state.mirror_limit_label);
-    child(state.controls, L"STATIC", L"Beyond mirror limit: black. Arrow keys: 0.1%.", 0, 655, 444, 370, 24);
+    state.mirror_softness_label = child(state.controls, L"STATIC", L"", 0, 655, 448, 185, 24);
+    state.mirror_softness =
+        child(state.controls, TRACKBAR_CLASSW, L"", TBS_HORZ, 845, 443, 162, 30, mirror_softness_id);
+    SendMessageW(state.mirror_softness, TBM_SETRANGE, TRUE, MAKELPARAM(0, 1000));
+    SendMessageW(state.mirror_softness, TBM_SETPOS, TRUE, LPARAM(state.options.mirror_softness * 10 + .5));
+    SendMessageW(state.mirror_softness, TBM_SETLINESIZE, 0, 1);
+    SendMessageW(state.mirror_softness, TBM_SETPAGESIZE, 0, 10);
     child(state.controls, L"STATIC", L"Aspect ratio", 0, 655, 479, 120, 24);
     state.aspect = child(state.controls, L"COMBOBOX", L"", CBS_DROPDOWN | CBS_HASSTRINGS | WS_VSCROLL, 790,
                          475, 216, 200, aspect_id);
@@ -940,6 +994,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             SendMessageW(state.trims[i], TBM_SETPOS, TRUE, trims[i]);
         SendMessageW(state.horizon, TBM_SETPOS, TRUE, 425);
         SendMessageW(state.mirror_limit, TBM_SETPOS, TRUE, 78);
+        SendMessageW(state.mirror_softness, TBM_SETPOS, TRUE, 635);
         SendMessageW(state.controls, WM_HSCROLL, 0, reinterpret_cast<LPARAM>(state.trims[0]));
         SetWindowTextW(state.output_width, L"1920");
         SetWindowTextW(state.output_height, L"1080");
@@ -967,10 +1022,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                    std::abs(restored.options.crop_bottom - 8.9) < 1e-8 &&
                    std::abs(restored.options.horizon_lock - 42.5) < 1e-8 &&
                    std::abs(restored.options.mirror_limit - 7.8) < 1e-8 &&
+                   std::abs(restored.options.mirror_softness - 63.5) < 1e-8 &&
                    restored.options.output_width == 1920 && restored.options.output_height == 1080 &&
                    restored.aspect_numerator == 21 && restored.aspect_denominator == 9 &&
                    !restored.start_fullscreen && !restored.options.adaptive_horizon;
         }
+        const auto before_preset = state.options;
+        SendMessageW(state.controls, WM_COMMAND, comfort_id, 0);
+        SendMessageW(state.controls, WM_COMMAND, comfort_id, 0); // Reapplying retains the original undo.
+        okay = okay && state.can_undo_comfort && state.options.smoothing == 60 &&
+               state.options.horizon_lock == 50 && state.options.mirror_softness == 70 &&
+               SendMessageW(state.mirror_softness, TBM_GETPOS, 0, 0) == 700 &&
+               state.options.output_width == before_preset.output_width &&
+               state.options.crop_left == before_preset.crop_left;
+        state.options.crop_left = 2; // A later framing adjustment is not undone by the tuning preset.
+        SendMessageW(state.trims[0], TBM_SETPOS, TRUE, 20);
+        SendMessageW(state.controls, WM_COMMAND, undo_comfort_id, 0);
+        okay = okay && !state.can_undo_comfort && state.options.crop_left == 2 &&
+               state.options.smoothing == before_preset.smoothing &&
+               state.options.mirror_softness == before_preset.mirror_softness &&
+               state.options.horizon_lock == before_preset.horizon_lock &&
+               state.options.adaptive_horizon == before_preset.adaptive_horizon;
         RECT initial{}, expanded{}, restored{};
         trace << "settings=" << okay << '\n';
         GetWindowRect(state.output, &initial);

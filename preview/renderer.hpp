@@ -15,7 +15,9 @@ struct Options {
     unsigned output_width{3840}, output_height{2160};
     double horizon_lock{}, mirror_limit{10};
     bool adaptive_horizon{true};
+    double mirror_softness{60};
 };
+void apply_stream_comfort(Options &);
 struct FramingRegion {
     double left{}, right{1}, top{}, bottom{1};
 };
