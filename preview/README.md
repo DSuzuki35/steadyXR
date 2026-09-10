@@ -1,4 +1,4 @@
-# Horizon Lock VR Preview 0.5.0
+# Horizon Lock VR Preview 0.5.1
 
 0.5.0 adds a dark native control panel and an embedded application icon. The PNG and Windows ICO are also included beside the EXE. Existing settings migrate when upgrading the ready-to-use package.
 
@@ -17,7 +17,7 @@ The new viewer works with the installed 0.4.0 layer. **No connection reinstall o
 - **Crop left / right / top / bottom:** independently trim 0–45% per side, in 0.1% steps. Arrow keys adjust one step.
 - **Crop reserve:** additional stabilization margin, separate from framing crop. Aspect fitting may trim the remaining image further.
 - **Smoothing:** movement smoothing with 0.1% precision, separate from horizon leveling.
-- **Horizon lock (OpenXR):** 0% preserves normal smoothed head roll; 100% levels roll using the upright Y-axis hemisphere of the submitted OpenXR layer space. This also supports iRacing poses whose upright direction is -Y. Look normally ahead when starting the preview or pressing Reset preview; the upright hemisphere is retained until reset. Intermediate values remove the corresponding fraction of head roll while preserving viewing direction. It fades near straight up/down, where a level horizon is undefined. Default: 0%. Inactive in image mode or when stabilization is disabled.
+- **Horizon lock (OpenXR):** 0% preserves normal smoothed head roll; 100% levels roll using the upright Y-axis hemisphere of the submitted OpenXR layer space. This also supports iRacing poses whose upright direction is -Y. Look normally ahead when starting the preview or pressing Reset preview; the upright hemisphere is retained until reset. With **Adaptive curve** enabled (default), small tilts are suppressed more strongly while larger tilts retain some natural movement. At 50% strength, a 5° head tilt leaves about 0.5° and a 20° tilt leaves about 6.9° (away from vertical viewing). The response is continuous with no hard dead zone. Disable Adaptive curve to restore the previous linear response. Both modes preserve viewing direction. It fades near straight up/down, where a level horizon is undefined. Default: 0%. Inactive in image mode or when stabilization is disabled.
 - **Mirror edges:** fill exposed borders with reflected source content.
 - **Mirror limit:** maximum extension per source axis, as a percentage of source width/height. Default 10%; range 0–50%. Beyond the limit: black. Increase crop reserve or mirror limit if exposed edges appear. Mirroring does not reconstruct scenery.
 - **Disable stabilization:** compare the captured image while capture continues.

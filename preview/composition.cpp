@@ -75,8 +75,19 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
         options.horizon_lock > 0) {
         const auto right = rotate(effective_target, {1, 0, 0}), up = rotate(effective_target, {0, 1, 0});
         const double fade = std::clamp((std::hypot(up.y, right.y) - .05) / .20, 0., 1.);
-        const double roll = std::atan2(horizon_up_sign_ * right.y, horizon_up_sign_ * up.y) *
-                            std::clamp(options.horizon_lock, 0., 100.) / 100 * fade;
+        const double tilt = std::atan2(horizon_up_sign_ * right.y, horizon_up_sign_ * up.y);
+        const double remaining = 1 - std::clamp(options.horizon_lock, 0., 100.) / 100;
+        double response = remaining;
+        if (options.adaptive_horizon) {
+            // Suppress small tilts strongly, then continuously approach the
+            // familiar linear response on larger movements. The rational blend
+            // has no threshold or dead zone; sign and slider endpoints survive.
+            constexpr double knee = 15 * pi / 180;
+            const double blend = tilt * tilt / (tilt * tilt + knee * knee);
+            const double gentle = remaining * remaining * remaining;
+            response *= gentle + (1 - gentle) * blend;
+        }
+        const double roll = tilt * (1 - response) * fade;
         effective_target =
             normalized(multiply(axis_angle(rotate(effective_target, {0, 0, -1}), roll), effective_target));
         result.warp.correction =

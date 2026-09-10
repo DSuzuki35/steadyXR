@@ -20,7 +20,7 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               crop_id = 107, mirror_id = 108, eye_id = 109, fps_id = 110, bypass_id = 111, mode_id = 112,
               source_id = 113, refresh_id = 114, left_id = 115, right_id = 116, top_id = 117, bottom_id = 118,
               horizon_id = 119, mirror_limit_id = 120, aspect_id = 121, width_id = 122, height_id = 123,
-              apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126;
+              apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127;
 constexpr wchar_t registry_key[] = L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit";
 std::wstring decimal(double value) {
     wchar_t text[32]{};
@@ -31,7 +31,7 @@ struct App {
     HWND controls{}, output{}, status{}, smooth_label{}, crop_label{}, smooth{}, crop{}, mirror{}, bypass{},
         eye{}, fps{}, pause{}, mode{}, source{}, trims[4]{}, trim_labels[4]{}, horizon{}, horizon_label{},
         mirror_limit{}, mirror_limit_label{}, aspect{}, output_width{}, output_height{}, auto_fullscreen{},
-        monitor{};
+        monitor{}, adaptive_horizon{};
     HFONT font{};
     Theme theme;
     Channel channel;
@@ -143,6 +143,7 @@ struct App {
         write(L"CropTopTenths", int(options.crop_top * 10 + .5));
         write(L"CropBottomTenths", int(options.crop_bottom * 10 + .5));
         write(L"HorizonTenths", int(options.horizon_lock * 10 + .5));
+        write(L"AdaptiveHorizon", options.adaptive_horizon);
         write(L"MirrorLimitTenths", int(options.mirror_limit * 10 + .5));
         write(L"OutputWidth", options.output_width);
         write(L"OutputHeight", options.output_height);
@@ -170,6 +171,7 @@ struct App {
         options.crop_top = value(L"CropTopTenths", 0, 0, 450) / 10.;
         options.crop_bottom = value(L"CropBottomTenths", 0, 0, 450) / 10.;
         options.horizon_lock = value(L"HorizonTenths", 0, 0, 1000) / 10.;
+        options.adaptive_horizon = value(L"AdaptiveHorizon", 1, 0, 1) != 0;
         options.mirror_limit = value(L"MirrorLimitTenths", 100, 0, 500) / 10.;
         options.output_width = value(L"OutputWidth", 3840, 320, 7680);
         options.output_height = value(L"OutputHeight", 2160, 180, 4320);
@@ -396,11 +398,11 @@ struct App {
         for (unsigned i = 0; i < 4; ++i)
             SetWindowTextW(trim_labels[i],
                            (std::wstring(names[i]) + L": " + decimal(values[i]) + L" %").c_str());
-        SetWindowTextW(horizon_label,
-                       (L"Horizon lock (OpenXR): " + decimal(options.horizon_lock) + L" %").c_str());
+        SetWindowTextW(horizon_label, (L"Horizon lock: " + decimal(options.horizon_lock) + L" %").c_str());
         SetWindowTextW(mirror_limit_label,
                        (L"Mirror limit: " + decimal(options.mirror_limit) + L" %").c_str());
         EnableWindow(horizon, !window_mode);
+        EnableWindow(adaptive_horizon, !window_mode);
         EnableWindow(mirror_limit, options.mirror);
     }
     void update_status() {
@@ -639,6 +641,10 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         case bypass_id:
             app->options.stabilize = SendMessageW(app->bypass, BM_GETCHECK, 0, 0) != BST_CHECKED;
             break;
+        case adaptive_horizon_id:
+            app->options.adaptive_horizon =
+                SendMessageW(app->adaptive_horizon, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            break;
         case eye_id:
             if (HIWORD(w) == CBN_SELCHANGE) {
                 app->selected_eye = unsigned(SendMessageW(app->eye, CB_GETCURSEL, 0, 0));
@@ -721,7 +727,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.5.0",
+    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.5.1",
                                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 100, 100, 1050,
                                      855, nullptr, nullptr, instance, nullptr);
     state.output =
@@ -801,6 +807,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     for (unsigned i = 0; i < 4; ++i)
         state.trims[i] = slider(left_id + i, 55 + i * 65, trim_values[i], 450, state.trim_labels[i]);
     state.horizon = slider(horizon_id, 320, state.options.horizon_lock, 1000, state.horizon_label);
+    MoveWindow(state.horizon_label, 655, 400, 190, 24, FALSE);
+    state.adaptive_horizon = child(state.controls, L"BUTTON", L"Adaptive curve", BS_AUTOCHECKBOX, 850, 318,
+                                   157, 26, adaptive_horizon_id);
+    SendMessageW(state.adaptive_horizon, BM_SETCHECK,
+                 state.options.adaptive_horizon ? BST_CHECKED : BST_UNCHECKED, 0);
     state.mirror_limit =
         slider(mirror_limit_id, 385, state.options.mirror_limit, 500, state.mirror_limit_label);
     child(state.controls, L"STATIC", L"Beyond mirror limit: black. Arrow keys: 0.1%.", 0, 655, 444, 370, 24);
@@ -894,7 +905,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             IsWindow(GetDlgItem(state.controls, 115)) &&
             GetDlgItemInt(state.controls, 122, nullptr, FALSE) == 3840 &&
             GetDlgItemInt(state.controls, 123, nullptr, FALSE) == 2160 &&
-            SendDlgItemMessageW(state.controls, 125, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            SendDlgItemMessageW(state.controls, 125, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+            SendDlgItemMessageW(state.controls, adaptive_horizon_id, BM_GETCHECK, 0, 0) == BST_CHECKED;
         state.source_window = state.output;
         state.source_pid = GetCurrentProcessId() + 1;
         const bool rejected_stale =
@@ -942,6 +954,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SetWindowTextW(state.aspect, L"21:9");
         state.setup_message.clear();
         state.start_fullscreen = false;
+        SendMessageW(state.adaptive_horizon, BM_SETCHECK, BST_UNCHECKED, 0);
+        SendMessageW(state.controls, WM_COMMAND, adaptive_horizon_id, 0);
         state.save();
         {
             App restored;
@@ -955,7 +969,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                    std::abs(restored.options.mirror_limit - 7.8) < 1e-8 &&
                    restored.options.output_width == 1920 && restored.options.output_height == 1080 &&
                    restored.aspect_numerator == 21 && restored.aspect_denominator == 9 &&
-                   !restored.start_fullscreen;
+                   !restored.start_fullscreen && !restored.options.adaptive_horizon;
         }
         RECT initial{}, expanded{}, restored{};
         trace << "settings=" << okay << '\n';

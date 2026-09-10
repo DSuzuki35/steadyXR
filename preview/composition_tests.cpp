@@ -51,6 +51,7 @@ int main() {
             v.orientation[3] = float(source.w);
         }
         Options level;
+        level.adaptive_horizon = false;
         level.horizon_lock = 100;
         FrameStabilizer ls;
         auto leveled = ls.update(rolled, level);
@@ -91,6 +92,7 @@ int main() {
         for (double tilt : {-.15, .15}) {
             FrameStabilizer inverted;
             Options strength;
+            strength.adaptive_horizon = false;
             strength.smoothing = 0;
             const auto basis = axis_angle({0, 0, 1}, pi);
             const auto neutral = multiply(basis, base);
@@ -121,6 +123,7 @@ int main() {
         const auto actual = normalized(Quat{.617033, -.0105413, .784674, .0587049});
         FrameStabilizer live;
         Options live_options;
+        live_options.adaptive_horizon = false;
         live_options.smoothing = 0;
         live_options.horizon_lock = 100;
         const auto live_result = live.update(posed(1, actual), live_options);
@@ -151,6 +154,49 @@ int main() {
         check(angle_between(deferred.update(posed(2, actual), live_options).warp.correction,
                             live_result.warp.correction) < 1e-6,
               "horizon selection must recover when head returns from vertical");
+        auto residual = [&](double degrees, double strength, bool adaptive, bool inverted = false) {
+            FrameStabilizer filter;
+            Options tuning;
+            tuning.smoothing = 0;
+            tuning.horizon_lock = strength;
+            tuning.adaptive_horizon = adaptive;
+            auto neutral = inverted ? axis_angle({0, 0, 1}, pi) : Quat{};
+            filter.update(posed(1, neutral), tuning);
+            auto tilted = multiply(neutral, axis_angle({0, 0, 1}, degrees * pi / 180));
+            const auto result = filter.update(posed(2, tilted), tuning);
+            const auto relative = multiply(conjugate(neutral), multiply(tilted, result.warp.correction));
+            auto right = rotate(relative, {1, 0, 0});
+            return std::atan2(right.y, right.x) * 180 / pi;
+        };
+        check(std::abs(residual(5, 50, true) - .53125) < 1e-5,
+              "adaptive half strength should leave only about half a degree of a small five degree tilt");
+        check(std::abs(residual(20, 50, true) - 6.85) < 1e-5,
+              "adaptive curve should retain some natural movement for a larger tilt");
+        for (bool inverted : {false, true}) {
+            for (double tilt : {.01, 1., 5., 10., 20., 45., 80.}) {
+                double previous = tilt;
+                for (int strength = 0; strength <= 100; ++strength) {
+                    const double current = residual(tilt, strength, true, inverted);
+                    check(current >= -1e-5 && current <= previous + 1e-5,
+                          "increasing adaptive strength must never reverse or amplify roll");
+                    check(std::abs(current + residual(-tilt, strength, true, inverted)) < 1e-5,
+                          "adaptive leveling must be symmetric in both layer hemispheres");
+                    previous = current;
+                }
+                check(std::abs(residual(tilt, 0, true, inverted) - tilt) < 1e-5 &&
+                          std::abs(residual(tilt, 100, true, inverted)) < 1e-5,
+                      "adaptive endpoints must preserve bypass and full lock");
+                check(std::abs(residual(tilt, 50, false, inverted) - tilt * .5) < 1e-5,
+                      "disabling adaptive curve must restore the previous linear response");
+            }
+        }
+        double previous_residual = residual(0, 50, true);
+        for (int i = 1; i <= 800; ++i) {
+            const double current = residual(i * .1, 50, true);
+            check(current > previous_residual && current - previous_residual < .1,
+                  "adaptive response must vary smoothly without a dead zone, reversal or sudden release");
+            previous_residual = current;
+        }
         auto wide = frame(3);
         wide.views[0].fov[0] = -2;
         wide.views[0].fov[1] = 2;

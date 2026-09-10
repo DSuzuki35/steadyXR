@@ -14,6 +14,7 @@ struct Options {
     double aspect{16. / 9.};
     unsigned output_width{3840}, output_height{2160};
     double horizon_lock{}, mirror_limit{10};
+    bool adaptive_horizon{true};
 };
 struct FramingRegion {
     double left{}, right{1}, top{}, bottom{1};
