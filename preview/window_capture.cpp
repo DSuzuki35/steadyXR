@@ -9,8 +9,11 @@
 #define ____FIReference_1_boolean_INTERFACE_DEFINED__
 #endif
 #include <algorithm>
+#include <atomic>
 #include <cwchar>
+#include <mutex>
 #include <sstream>
+#include <thread>
 #include <windows.graphics.capture.h>
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
@@ -40,6 +43,87 @@ template <class T> void close(ComPtr<T> &value) {
             closable->Close();
         value.Reset();
     }
+}
+// Capture shutdown may need messages on the creating UI thread. Keep it off that
+// thread, and allow only one active capture / retired resource bundle per process.
+struct ClosedSignal {
+    HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ~ClosedSignal() {
+        if (event)
+            CloseHandle(event);
+    }
+};
+using ClosedDelegate =
+    ABI::Windows::Foundation::ITypedEventHandler<Capture::GraphicsCaptureItem *, IInspectable *>;
+class ClosedHandler final : public ClosedDelegate {
+    std::atomic<ULONG> refs{1};
+    std::shared_ptr<ClosedSignal> signal;
+
+  public:
+    explicit ClosedHandler(std::shared_ptr<ClosedSignal> value) : signal(std::move(value)) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+        if (!out)
+            return E_POINTER;
+        *out = nullptr;
+        if (iid == __uuidof(IUnknown) || iid == __uuidof(IAgileObject) || iid == __uuidof(ClosedDelegate)) {
+            *out = static_cast<ClosedDelegate *>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return ++refs;
+    }
+    ULONG STDMETHODCALLTYPE Release() override {
+        ULONG left = --refs;
+        if (!left)
+            delete this;
+        return left;
+    }
+    HRESULT STDMETHODCALLTYPE Invoke(Capture::IGraphicsCaptureItem *, IInspectable *) override {
+        SetEvent(signal->event);
+        return S_OK;
+    }
+};
+struct RetiredCapture {
+    HWND window{};
+    std::shared_ptr<ClosedSignal> closed;
+    ULONGLONG started{GetTickCount64()};
+    ComPtr<Capture::IDirect3D11CaptureFramePool> pool;
+    ComPtr<Capture::IGraphicsCaptureSession> session;
+    ComPtr<Capture::IGraphicsCaptureItem> item;
+    ComPtr<Direct3D::IDirect3DDevice> winrt_device;
+    ComPtr<ID3D11Device> device;
+    std::atomic<bool> done{false};
+};
+std::mutex lifecycle_mutex;
+void *active_capture{};
+std::shared_ptr<RetiredCapture> retired_capture;
+bool cleanup_pending() {
+    std::lock_guard<std::mutex> guard(lifecycle_mutex);
+    return retired_capture && !retired_capture->done.load(std::memory_order_acquire);
+}
+std::wstring cleanup_status() {
+    std::lock_guard<std::mutex> guard(lifecycle_mutex);
+    if (retired_capture && !retired_capture->done.load(std::memory_order_acquire) &&
+        GetTickCount64() - retired_capture->started >= 5000)
+        return L"Windows capture shutdown stalled; restart Horizon Lock preview (iRacing can stay running)";
+    return L"Finishing previous capture shutdown; retrying";
+}
+bool claim_capture(void *owner) {
+    std::lock_guard<std::mutex> guard(lifecycle_mutex);
+    if ((active_capture && active_capture != owner) ||
+        (retired_capture && !retired_capture->done.load(std::memory_order_acquire)))
+        return false;
+    retired_capture.reset();
+    active_capture = owner;
+    return true;
+}
+void release_capture(void *owner) {
+    std::lock_guard<std::mutex> guard(lifecycle_mutex);
+    if (active_capture == owner)
+        active_capture = nullptr;
 }
 struct DpiScope {
     DPI_AWARENESS_CONTEXT previous{SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)};
@@ -114,11 +198,13 @@ BOOL CALLBACK enumerate(HWND window, LPARAM parameter) {
 }
 } // namespace
 struct WindowCapture::Impl {
-    bool apartment{}, active{}, suspended{};
+    bool apartment{}, active{}, suspended{}, restarting{};
     HWND window{};
     DWORD process{};
     Size size{};
     std::uint64_t last_time{};
+    std::shared_ptr<ClosedSignal> closed;
+    EventRegistrationToken closed_token{};
     std::wstring error;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -132,16 +218,52 @@ struct WindowCapture::Impl {
         if (apartment)
             RoUninitialize();
     }
+    void retire() {
+        if (!pool && !session)
+            return;
+        auto job = std::make_shared<RetiredCapture>();
+        // MinGW WRL move-assignment copies; Detach explicitly transfers ownership.
+        job->pool.Attach(pool.Detach());
+        job->session.Attach(session.Detach());
+        job->item = item;
+        job->winrt_device = winrt_device;
+        job->device = device;
+        job->window = window;
+        job->closed = closed;
+        {
+            std::lock_guard<std::mutex> guard(lifecycle_mutex);
+            retired_capture = job;
+        }
+        std::thread([job] {
+            const HRESULT init = RoInitialize(RO_INIT_MULTITHREADED);
+            // A destroyed HWND is not yet necessarily acknowledged by the capture service.
+            if (job->closed && !IsWindow(job->window))
+                WaitForSingleObject(job->closed->event, 2000);
+            // The item owns its signal-only handler until final release. Keeping it
+            // registered also covers source closure after resize or suspension.
+            close(job->pool);
+            close(job->session);
+            job->item.Reset();
+            job->winrt_device.Reset();
+            job->device.Reset();
+            if (SUCCEEDED(init))
+                RoUninitialize();
+            job->done.store(true, std::memory_order_release);
+        }).detach();
+    }
     void stop() {
-        close(session);
-        close(pool);
+        active = false;
+        suspended = false;
+        restarting = false;
+        retire();
+        release_capture(this);
+        closed.reset();
+        closed_token = {};
         item.Reset();
         winrt_device.Reset();
         output.Reset();
         context.Reset();
         device.Reset();
-        active = false;
-        suspended = false;
         window = nullptr;
         last_time = 0;
     }
@@ -152,8 +274,12 @@ struct WindowCapture::Impl {
         stop();
         return false;
     }
-    bool create_pool() {
-        HRESULT hr = item->get_Size(&size);
+    bool create_pool(const Size *desired = nullptr) {
+        HRESULT hr = S_OK;
+        if (desired)
+            size = *desired;
+        else
+            hr = item->get_Size(&size);
         if (FAILED(hr) || size.Width <= 0 || size.Height <= 0)
             return fail(L"Window has no capturable area", FAILED(hr) ? hr : E_INVALIDARG);
         ComPtr<Capture::IDirect3D11CaptureFramePoolStatics2> statics;
@@ -173,6 +299,7 @@ struct WindowCapture::Impl {
         if (FAILED(hr))
             return fail(L"Start window capture", hr);
         suspended = false;
+        restarting = false;
         return true;
     }
 };
@@ -192,6 +319,10 @@ bool WindowCapture::start(ID3D11Device *device, HWND window) {
             p.apartment = true;
         else if (hr != RPC_E_CHANGED_MODE)
             return p.fail(L"Initialize Windows capture", hr);
+    }
+    if (!claim_capture(&p)) {
+        p.error = cleanup_status();
+        return false;
     }
     p.device = device;
     p.device->GetImmediateContext(&p.context);
@@ -217,6 +348,14 @@ bool WindowCapture::start(ID3D11Device *device, HWND window) {
                                   reinterpret_cast<void **>(p.item.GetAddressOf()));
     if (FAILED(hr))
         return p.fail(L"Capture selected window", hr);
+    p.closed = std::make_shared<ClosedSignal>();
+    if (!p.closed->event)
+        return p.fail(L"Create capture closure signal", E_OUTOFMEMORY);
+    ComPtr<ClosedDelegate> handler;
+    handler.Attach(new ClosedHandler(p.closed));
+    hr = p.item->add_Closed(handler.Get(), &p.closed_token);
+    if (FAILED(hr))
+        return p.fail(L"Observe capture-window closure", hr);
     p.active = true;
     if (IsIconic(window) || !IsWindowVisible(window)) {
         p.suspended = true;
@@ -255,15 +394,21 @@ bool WindowCapture::poll(ComPtr<ID3D11Texture2D> &texture, std::uint64_t &time_n
     }
     if (IsIconic(p.window) || !IsWindowVisible(p.window)) {
         if (!p.suspended) {
-            close(p.session);
-            close(p.pool);
+            p.retire();
             p.suspended = true;
         }
         p.error = L"Preview window is minimized or hidden";
         return false;
     }
-    if (p.suspended && !p.create_pool())
-        return false;
+    if (p.suspended || p.restarting) {
+        if (cleanup_pending()) {
+            p.error = cleanup_status();
+            return false;
+        }
+        const Size desired = p.size;
+        if (!p.create_pool(p.restarting ? &desired : nullptr))
+            return false;
+    }
     HRESULT hr = p.device->GetDeviceRemovedReason();
     if (FAILED(hr))
         return p.fail(L"Capture GPU device was removed", hr);
@@ -302,9 +447,9 @@ bool WindowCapture::poll(ComPtr<ID3D11Texture2D> &texture, std::uint64_t &time_n
     if (content.Width != p.size.Width || content.Height != p.size.Height) {
         close(frame);
         p.size = content;
-        hr = p.pool->Recreate(p.winrt_device.Get(), pixel_format, 2, p.size);
-        if (FAILED(hr))
-            return p.fail(L"Resize capture frame pool", hr);
+        // A new session requests a fresh snapshot even if the resized source is static.
+        p.retire();
+        p.restarting = true;
         p.error = L"Resizing preview capture";
         return false;
     }
