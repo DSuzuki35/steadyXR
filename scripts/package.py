@@ -11,7 +11,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
 p.add_argument('--openxr', type=Path, help='Include the standalone preview and its pinned OpenXR source headers')
-p.add_argument('--version', default='0.4.2')
+p.add_argument('--version', default='0.5.0')
 p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
 stage = root / 'dist' / f'VR-Stabilizer-{a.version}-Windows-x64'
@@ -53,6 +53,8 @@ if a.openxr:
         copy(output(Path('preview') / name), Path('preview') / name)
     copy(a.build / 'preview/XR_APILAYER_HORIZONLOCK_preview.json', 'preview/XR_APILAYER_HORIZONLOCK_preview.json')
     copy(root / 'preview/README.md', 'preview/README.md')
+    for name in ['horizon-lock.ico', 'horizon-lock.png']:
+        copy(root / 'preview/assets' / name, Path('preview') / name)
     copy(root / 'Start-Preview.cmd', 'Start-Preview.cmd')
     for name in ['include/openxr/openxr.h', 'include/openxr/openxr_platform.h',
                  'include/openxr/openxr_platform_defines.h', 'include/openxr/openxr_loader_negotiation.h',

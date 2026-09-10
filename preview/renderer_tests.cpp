@@ -33,6 +33,19 @@ int main(int argc, char **argv) {
         require(w == 3840 && h == 2160, "default rendering must be exactly 4K");
         auto center = pixels[(h / 2) * w + w / 2];
         auto side = pixels[(h / 2) * w + w / 8];
+        require(renderer.draw(options, true), "present live frame before capture stalls");
+        require(renderer.draw(options, true, L"Waiting for OpenXR capture…") &&
+                    renderer.readback(pixels, w, h),
+                "present waiting frame through the GPU swapchain");
+        unsigned ink = 0;
+        for (auto pixel : pixels)
+            if (pixel & 0xffffff)
+                ++ink;
+        require(ink > 100 && ink < w * h / 20 && (pixels[0] & 0xffffff) == 0,
+                "waiting output must be black with a small visible text label");
+        require(renderer.draw(options, true) && renderer.readback(pixels, w, h),
+                "resume live output after waiting");
+        require(pixels[(h / 2) * w + w / 2] == center, "waiting screen must not alter retained live image");
         require(((center >> 8) & 255) > ((center) & 255) + 80, "foveal inset must replace context at center");
         require(((side >> 16) & 255) > ((side >> 8) & 255), "outside inset must keep context");
         if (argc > 1) {

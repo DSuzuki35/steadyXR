@@ -111,6 +111,8 @@ struct Renderer::Impl {
     ComPtr<ID3D11Texture2D> output;
     ComPtr<ID3D11RenderTargetView> output_target;
     ComPtr<ID3D11ShaderResourceView> output_view;
+    ComPtr<ID3D11ShaderResourceView> waiting_view;
+    std::wstring waiting_label;
     unsigned output_width{}, output_height{};
     ComPtr<ID3D11VertexShader> vs;
     ComPtr<ID3D11PixelShader> ps;
@@ -170,6 +172,8 @@ struct Renderer::Impl {
         back.Reset();
         output_view.Reset();
         output_target.Reset();
+        waiting_view.Reset();
+        waiting_label.clear();
         output.Reset();
         output_width = output_height = 0;
         sampler.Reset();
@@ -321,6 +325,63 @@ struct Renderer::Impl {
         }
         output_width = w;
         output_height = h;
+        return true;
+    }
+    bool make_waiting(const wchar_t *label) {
+        if (waiting_view && waiting_label == label)
+            return true;
+        constexpr int width = 512, height = 64;
+        HDC dc = CreateCompatibleDC(nullptr);
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        void *pixels{};
+        auto bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+        if (!dc || !bitmap) {
+            if (bitmap)
+                DeleteObject(bitmap);
+            if (dc)
+                DeleteDC(dc);
+            return fail(L"Waiting screen text");
+        }
+        auto old = SelectObject(dc, bitmap);
+        RECT area{0, 0, width, height};
+        FillRect(dc, &area, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        auto font =
+            CreateFontW(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        auto old_font = SelectObject(dc, font);
+        SetTextColor(dc, RGB(160, 166, 176));
+        SetBkMode(dc, TRANSPARENT);
+        DrawTextW(dc, label, -1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        GdiFlush();
+        for (int i = 0; i < width * height; ++i)
+            static_cast<std::uint32_t *>(pixels)[i] |= 0xff000000;
+        D3D11_TEXTURE2D_DESC d{};
+        d.Width = width;
+        d.Height = height;
+        d.MipLevels = d.ArraySize = 1;
+        d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        d.SampleDesc.Count = 1;
+        d.Usage = D3D11_USAGE_IMMUTABLE;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA input{pixels, width * 4, 0};
+        ComPtr<ID3D11Texture2D> texture;
+        HRESULT hr = device->CreateTexture2D(&d, &input, &texture);
+        waiting_view.Reset();
+        if (SUCCEEDED(hr))
+            hr = device->CreateShaderResourceView(texture.Get(), nullptr, &waiting_view);
+        SelectObject(dc, old_font);
+        SelectObject(dc, old);
+        DeleteObject(font);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+        if (FAILED(hr))
+            return fail(L"Waiting screen texture", hr);
+        waiting_label = label;
         return true;
     }
     bool make_local(unsigned i, const D3D11_TEXTURE2D_DESC &input) {
@@ -723,13 +784,41 @@ bool Renderer::demo(double seconds, bool quad) {
     return true;
 }
 
-bool Renderer::draw(const Options &options, bool present) {
+bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting_text) {
     auto &r = *impl_;
     if (!r.device || !r.swap || !r.resize() || !r.resize_output(options))
         return false;
-    const float clear[4] = {.005f, .009f, .016f, 1};
+    const float clear[4] = {waiting_text ? 0.f : .005f, waiting_text ? 0.f : .009f,
+                            waiting_text ? 0.f : .016f, 1};
     r.context->ClearRenderTargetView(r.output_target.Get(), clear);
-    if (r.frame.view_count) {
+    if (waiting_text) {
+        if (!r.make_waiting(waiting_text))
+            return false;
+        // Use the same GPU output path as live frames. GDI painting over a
+        // flip-model swapchain cannot reliably replace a previously presented frame.
+        const float scale = std::min(float(r.width) / r.output_width, float(r.height) / r.output_height);
+        const float text_scale = std::min(1.f / std::max(.01f, scale), float(r.output_width) / 512);
+        D3D11_VIEWPORT vp{(r.output_width - 512 * text_scale) / 2,
+                          (r.output_height - 64 * text_scale) / 2,
+                          512 * text_scale,
+                          64 * text_scale,
+                          0,
+                          1};
+        r.context->RSSetViewports(1, &vp);
+        auto *target = r.output_target.Get();
+        r.context->OMSetRenderTargets(1, &target, nullptr);
+        r.context->IASetInputLayout(nullptr);
+        r.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        r.context->VSSetShader(r.vs.Get(), nullptr, 0);
+        r.context->PSSetShader(r.downsample.Get(), nullptr, 0);
+        auto *sampler = r.sampler.Get();
+        r.context->PSSetSamplers(0, 1, &sampler);
+        auto *view = r.waiting_view.Get();
+        r.context->PSSetShaderResources(0, 1, &view);
+        r.context->Draw(3, 0);
+        ID3D11ShaderResourceView *empty{};
+        r.context->PSSetShaderResources(0, 1, &empty);
+    } else if (r.frame.view_count) {
         Params p{};
         p.image_mode[1] =
             float(std::isfinite(options.mirror_limit) ? std::clamp(options.mirror_limit, 0., 50.) / 100 : 0.);

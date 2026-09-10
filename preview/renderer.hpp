@@ -45,7 +45,7 @@ class Renderer {
     bool consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, const Options &);
     void source_changed();
     bool demo(double seconds, bool quad = true);
-    bool draw(const Options &, bool present = true);
+    bool draw(const Options &, bool present = true, const wchar_t *waiting_text = nullptr);
     void reset();
     std::wstring error() const;
     bool has_frame() const;

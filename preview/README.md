@@ -1,4 +1,8 @@
-# Horizon Lock VR Preview 0.4.2
+# Horizon Lock VR Preview 0.5.0
+
+0.5.0 adds a dark native control panel and an embedded application icon. The PNG and Windows ICO are also included beside the EXE. Existing settings migrate when upgrading the ready-to-use package.
+
+When no new frame arrives for two seconds, the output becomes a plain black screen with “Waiting for OpenXR capture…” (or “Waiting for window capture…” in image mode). The next received frame restores the live preview automatically. Deliberate pause retains the last image. The waiting screen uses the GPU presentation path and does not recenter or alter the headset.
 
 Standalone gaming-PC preview with OpenXR pose stabilization or existing-window capture. The headset image is unchanged. No OBS or video encoder is required on the gaming PC.
 

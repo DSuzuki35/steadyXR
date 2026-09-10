@@ -1,6 +1,7 @@
 #define UNICODE
 #define _UNICODE
 #include "renderer.hpp"
+#include "theme.hpp"
 #include "window_capture.hpp"
 #include <algorithm>
 #include <cmath>
@@ -32,6 +33,7 @@ struct App {
         mirror_limit{}, mirror_limit_label{}, aspect{}, output_width{}, output_height{}, auto_fullscreen{},
         monitor{};
     HFONT font{};
+    Theme theme;
     Channel channel;
     Renderer renderer;
     WindowCapture capture;
@@ -51,6 +53,10 @@ struct App {
     std::wstring directory, ini, setup_message;
     std::uint64_t start_ms{}, last_received_ms{}, last_sequence{}, fps_frames{}, fps_start{};
     double measured_fps{};
+    bool waiting(std::uint64_t now) const {
+        return !renderer.has_frame() ||
+               (!paused && last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000);
+    }
     bool registered(bool any_version = false) const {
         HKEY key{};
         if (RegOpenKeyExW(HKEY_CURRENT_USER, registry_key, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
@@ -500,9 +506,11 @@ HWND child(HWND parent, const wchar_t *kind, const wchar_t *label, DWORD style, 
            int id = 0) {
     if (std::wcscmp(kind, L"STATIC") != 0)
         style |= WS_TABSTOP;
-    auto result = CreateWindowExW(0, kind, label, WS_CHILD | WS_VISIBLE | style, x, y, w, h, parent,
+    const bool heading = !std::wcscmp(kind, L"STATIC") && y == 18;
+    style = app->theme.style(kind, style);
+    auto result = CreateWindowExW(0, kind, label, WS_CHILD | WS_VISIBLE | style, x, y + 80, w, h, parent,
                                   reinterpret_cast<HMENU>(INT_PTR(id)), GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(result, WM_SETFONT, reinterpret_cast<WPARAM>(app->font), TRUE);
+    app->theme.control(result, kind, heading);
     return result;
 }
 LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
@@ -536,26 +544,13 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        auto dc = BeginPaint(window, &ps);
-        if (!app->renderer.has_frame()) {
-            RECT rect{};
-            GetClientRect(window, &rect);
-            FillRect(dc, &rect, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-            SetTextColor(dc, RGB(225, 231, 240));
-            SetBkMode(dc, TRANSPARENT);
-            SelectObject(dc, app->font);
-            rect.top = std::max<LONG>(20, (rect.bottom - 80) / 2);
-            DrawTextW(
-                dc,
-                app->window_mode
-                    ? L"Horizon Lock VR\nWaiting for the source window ...\nChoose a window in the control "
-                      L"panel."
-                    : L"Horizon Lock VR\nWaiting for OpenXR ...\nInstall the connection and restart iRacing"
-                      L".",
-                -1, &rect, DT_CENTER | DT_WORDBREAK);
-        }
+        PAINTSTRUCT ps{};
+        BeginPaint(window, &ps);
         EndPaint(window, &ps);
+        if (app->waiting(GetTickCount64()))
+            app->renderer.draw(app->options, true,
+                               app->window_mode ? L"Waiting for window capture…"
+                                                : L"Waiting for OpenXR capture…");
         app->dirty = true;
         return 0;
     }
@@ -565,6 +560,9 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
 LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (!app)
         return DefWindowProcW(window, message, w, l);
+    LRESULT themed{};
+    if (app->theme.message(window, message, w, l, themed))
+        return themed;
     switch (message) {
     case WM_HSCROLL:
         app->options.smoothing = SendMessageW(app->smooth, TBM_GETPOS, 0, 0) / 10.;
@@ -708,12 +706,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.start_ms = state.fps_start = GetTickCount64();
     INITCOMMONCONTROLSEX common{sizeof(common), ICC_BAR_CLASSES};
     InitCommonControlsEx(&common);
-    state.font =
-        CreateFontW(-17, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                    CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    state.theme.initialize();
+    state.font = state.theme.body;
     WNDCLASSW wc{};
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = state.theme.icon;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszClassName = L"HorizonLockControls";
     wc.lpfnWndProc = controls_proc;
@@ -723,12 +721,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.4.2",
+    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.5.0",
                                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 100, 100, 1050,
-                                     775, nullptr, nullptr, instance, nullptr);
+                                     855, nullptr, nullptr, instance, nullptr);
     state.output =
         CreateWindowExW(0, L"HorizonLockOutput", L"Horizon Lock VR – Clean Preview", WS_OVERLAPPEDWINDOW, 800,
                         120, 976, 579, nullptr, nullptr, instance, nullptr);
+    state.theme.titlebar(state.controls);
+    state.theme.titlebar(state.output);
     const auto channel_name =
         self_test ? L"Local\\HorizonLockPreview-UI-test-" + std::to_wstring(GetCurrentProcessId())
                   : std::wstring(default_channel);
@@ -737,7 +737,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         CloseHandle(singleton);
         return 1;
     }
-    child(state.controls, L"STATIC", L"Stabilized preview", 0, 22, 18, 610, 28);
+    child(state.controls, L"STATIC", L"CAPTURE / STABILIZATION", 0, 22, 18, 610, 28);
     state.mode = child(state.controls, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL, 22,
                        54, 595, 180, mode_id);
     SendMessageW(state.mode, CB_ADDSTRING, 0,
@@ -786,7 +786,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SendMessageW(state.fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value));
     SendMessageW(state.fps, CB_SETCURSEL, state.rate == 30 ? 0 : state.rate == 60 ? 1 : 2, 0);
     state.status = child(state.controls, L"STATIC", L"", 0, 22, 478, 596, 245);
-    child(state.controls, L"STATIC", L"Framing and output", 0, 655, 18, 360, 28);
+    child(state.controls, L"STATIC", L"FRAMING / OUTPUT", 0, 655, 18, 360, 28);
     const double trim_values[] = {state.options.crop_left, state.options.crop_right, state.options.crop_top,
                                   state.options.crop_bottom};
     auto slider = [&](int id, int y, double value, int maximum, HWND &label) {
@@ -868,13 +868,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.capture.stop();
         DestroyWindow(state.output);
         DestroyWindow(state.controls);
-        DeleteObject(state.font);
         DeleteFileW(state.ini.c_str());
         CloseHandle(singleton);
         app = nullptr;
         return okay ? 0 : 2;
     }
     if (self_test) {
+        if (std::wstring(command).find(L"--show-controls") != std::wstring::npos) {
+            ShowWindow(state.controls, SW_SHOW);
+            const auto until = GetTickCount64() + 120000;
+            MSG msg{};
+            while (!state.quit && GetTickCount64() < until) {
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    if (!IsDialogMessageW(state.controls, &msg)) {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            }
+            ShowWindow(state.controls, SW_HIDE);
+        }
         std::ofstream trace(std::filesystem::path(state.directory + L"\\preview-ui-check.txt"));
         const bool display_controls =
             IsWindow(GetDlgItem(state.controls, 115)) &&
@@ -890,6 +904,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SendMessageW(state.controls, WM_COMMAND, pause_id, 0);
         bool okay = display_controls && rejected_stale && state.paused && state.options.smoothing == 65 &&
                     state.renderer.demo(0) && state.renderer.draw(state.options, false);
+        okay = okay && state.theme.icon && state.theme.small_icon;
+        // A stalled source clears the output after two seconds and recovers on
+        // the very next frame; a deliberate pause retains the current image.
+        state.last_received_ms = 10000;
+        state.paused = false;
+        okay = okay && !state.waiting(11999) && state.waiting(12000);
+        state.last_received_ms = 12001;
+        okay = okay && !state.waiting(12001);
+        state.paused = true;
+        okay = okay && !state.waiting(15000);
+        state.paused = false;
+        state.window_mode = false;
+        state.last_received_ms = 1;
+        state.paused = true;
+        state.window_mode = true;
+        state.last_received_ms = 0;
+        state.labels();
         trace << "initial=" << okay << '\n';
         // Fine-grained controls persist exactly; invalid edits cannot partially resize output.
         const int trims[] = {123, 45, 67, 89};
@@ -950,7 +981,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         okay = save_controls(state.controls, state.directory + L"\\preview-controls-test.bmp") && okay;
         DestroyWindow(state.output);
         DestroyWindow(state.controls);
-        DeleteObject(state.font);
         DeleteFileW(state.ini.c_str());
         CloseHandle(singleton);
         app = nullptr;
@@ -964,6 +994,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.update_status();
     std::uint64_t last_status = 0, last_heartbeat = 0;
     double next_frame = double(GetTickCount64());
+    bool was_waiting = false;
+    std::uint64_t last_waiting_paint{};
     MSG msg{};
     while (!state.quit) {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -1004,15 +1036,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 state.last_received_ms = now;
                 ++state.fps_frames;
             }
-            if ((received || state.dirty) && state.renderer.has_frame())
+            if ((received || state.dirty) && !state.waiting(now))
                 state.renderer.draw(state.options);
             state.dirty = false;
             if (!submitted_feed)
                 next_frame = std::max(next_frame + 1000. / state.rate, double(now));
-        } else if (state.dirty && state.renderer.has_frame() && IsWindowVisible(state.output) &&
+        } else if (state.dirty && !state.waiting(now) && IsWindowVisible(state.output) &&
                    !IsIconic(state.output)) {
             state.renderer.draw(state.options);
             state.dirty = false;
+        }
+        const bool waiting = state.waiting(now);
+        // Retry at a low cadence while idle: nonblocking Present may encounter
+        // a full swapchain queue on the first transition away from live video.
+        if (waiting && IsWindowVisible(state.output) && !IsIconic(state.output) &&
+            (!was_waiting || now - last_waiting_paint >= 250)) {
+            state.renderer.draw(state.options, true,
+                                state.window_mode ? L"Waiting for window capture…"
+                                                  : L"Waiting for OpenXR capture…");
+            last_waiting_paint = now;
+        }
+        if (waiting != was_waiting) {
+            InvalidateRect(state.output, nullptr, FALSE);
+            was_waiting = waiting;
         }
         const DWORD delay = !state.active() ? 50
                             : submitted_feed
@@ -1032,7 +1078,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.capture.stop();
     state.save();
     DestroyWindow(state.output);
-    DeleteObject(state.font);
     CloseHandle(singleton);
     app = nullptr;
     return 0;
