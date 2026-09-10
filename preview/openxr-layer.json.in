@@ -1,0 +1,11 @@
+{
+  "file_format_version": "1.0.0",
+  "api_layer": {
+    "name": "XR_APILAYER_HORIZONLOCK_preview",
+    "library_path": ".\\horizonlock-openxr-layer.dll",
+    "api_version": "1.1",
+    "implementation_version": "1",
+    "description": "Horizon Lock VR standalone D3D11 preview capture",
+    "disable_environment": "DISABLE_HORIZONLOCK_PREVIEW"
+  }
+}
