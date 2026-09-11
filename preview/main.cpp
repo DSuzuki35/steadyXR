@@ -1,10 +1,12 @@
 #define UNICODE
 #define _UNICODE
 #include "advanced.hpp"
+#include "build_expiry.hpp"
 #include "connection.hpp"
 #include "presets.hpp"
 #include "render_settings.hpp"
 #include "renderer.hpp"
+#include "settings_path.hpp"
 #include "theme.hpp"
 #include "window_capture.hpp"
 #include <algorithm>
@@ -76,7 +78,7 @@ struct App {
     Options options;
     Options before_comfort;
     bool can_undo_comfort{};
-    bool paused{}, demo{}, fullscreen{}, dirty{true}, quit{}, timer_resolution{};
+    bool paused{}, demo{}, fullscreen{}, dirty{true}, quit{}, timer_resolution{}, expired{};
     bool start_fullscreen{true}, diagnostic{}, compatible_connection{};
     unsigned aspect_numerator{16}, aspect_denominator{9};
     std::wstring monitor_name;
@@ -125,19 +127,37 @@ struct App {
         layer_editor_process = execute.hProcess;
     }
     bool waiting(std::uint64_t now) const {
-        return !renderer.has_frame() ||
+        return expired || !renderer.has_frame() ||
                (!paused && last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000);
+    }
+    const wchar_t *waiting_text() const {
+        return expired       ? L"Build expired. Please install a newer SteadyXR build."
+               : window_mode ? L"Waiting for window capture…"
+                             : L"Waiting for OpenXR capture…";
+    }
+    void refresh_expiry() {
+        if (!expired && build_expired()) {
+            expired = true;
+            dirty = true;
+            heartbeat();
+            labels();
+            InvalidateRect(output, nullptr, FALSE);
+        }
     }
     bool registered(bool any_version = false) const {
         return compatible_connection || layer_installed(directory, any_version);
     }
     void resolve_connection() {
         const auto installed =
-            diagnostic ? std::optional<std::wstring>{} : compatible_layer_directory(directory);
+            diagnostic ? std::optional<std::wstring>{} : compatible_layer_settings_path(directory);
         compatible_connection = installed.has_value();
-        render_ini = installed ? *installed + L"\\preview.ini" : ini;
+        render_ini = installed ? *installed : ini;
     }
     void connection(bool enable) {
+        if (enable && expired) {
+            setup_message = L"This build expired. Install a newer SteadyXR build to enable capture.";
+            return;
+        }
         if (enable && compatible_connection) {
             setup_message = L"Compatible OpenXR connection already installed.";
             return;
@@ -261,7 +281,7 @@ struct App {
             rate = 60;
     }
     bool active() const {
-        return !paused && IsWindowVisible(output) && !IsIconic(output);
+        return !expired && !paused && IsWindowVisible(output) && !IsIconic(output);
     }
     void restart_source() {
         capture.stop();
@@ -477,7 +497,7 @@ struct App {
             return {};
         }
         if (!save()) {
-            setup_message = L"Could not save current settings. Check access to preview.ini, then retry.";
+            setup_message = L"Could not save current settings. Check access to SteadyXR.ini, then retry.";
             update_status();
             return {};
         }
@@ -580,7 +600,7 @@ struct App {
         EnableWindow(GetDlgItem(controls, refresh_id), window_mode);
         EnableWindow(eye, TRUE);
         SetWindowTextW(eye_label, window_mode ? L"Profile" : L"Eye");
-        EnableWindow(GetDlgItem(controls, setup_id), !window_mode);
+        EnableWindow(GetDlgItem(controls, setup_id), !window_mode && !expired);
         SetWindowTextW(GetDlgItem(controls, setup_id),
                        registered(true) && !registered() ? L"Upgrade connection" : L"Install connection");
         const double values[] = {options.crop_left, options.crop_right, options.crop_top,
@@ -601,6 +621,14 @@ struct App {
         EnableWindow(GetDlgItem(controls, undo_comfort_id), can_undo_comfort);
     }
     void update_status() {
+        if (expired) {
+            const auto message = std::wstring(L"This SteadyXR build has expired.\r\nValid until: ") +
+                                 build_expiry_text() +
+                                 L"\r\nPlease install a newer build to resume the preview.\r\nYour settings "
+                                 L"are retained. The OpenXR layer editor remains available.";
+            SetWindowTextW(status, message.c_str());
+            return;
+        }
         std::wstring text;
         if (demo)
             text = L"DEMO – synthetic test image, not an iRacing image.\r\n";
@@ -762,9 +790,7 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         BeginPaint(window, &ps);
         EndPaint(window, &ps);
         if (app->waiting(GetTickCount64()))
-            app->renderer.draw(app->options, true,
-                               app->window_mode ? L"Waiting for window capture…"
-                                                : L"Waiting for OpenXR capture…");
+            app->renderer.draw(app->options, true, app->waiting_text());
         app->dirty = true;
         return 0;
     }
@@ -948,11 +974,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     App state;
     app = &state;
     state.diagnostic = self_test;
+    state.expired = build_expired();
     state.demo = std::wstring(command).find(L"--demo") != std::wstring::npos;
     wchar_t path[32768]{};
     GetModuleFileNameW(nullptr, path, 32768);
     state.directory = std::filesystem::path(path).parent_path().wstring();
-    state.ini = state.directory + L"\\preview.ini";
+    state.ini = state.directory + L"\\SteadyXR.ini";
+    DWORD migration_error{};
+    if (!self_test && !migrate_preview_settings(state.directory, migration_error)) {
+        const auto message =
+            L"Could not migrate settings to SteadyXR.ini. Existing settings were kept. Windows error " +
+            std::to_wstring(migration_error);
+        MessageBoxW(nullptr, message.c_str(), L"SteadyXR", MB_ICONERROR);
+        CloseHandle(singleton);
+        return 1;
+    }
     if (self_test)
         state.ini =
             state.directory + L"\\preview-selftest-" + std::to_wstring(GetCurrentProcessId()) + L".ini";
@@ -976,8 +1012,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
+    const auto control_title = std::wstring(L"SteadyXR – Preview 0.7.0 | Expires ") + build_expiry_text();
     state.controls =
-        CreateWindowExW(0, L"HorizonLockControls", L"SteadyXR – Preview 0.7.0",
+        CreateWindowExW(0, L"HorizonLockControls", control_title.c_str(),
                         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, 100, 100,
                         1050, 855, nullptr, nullptr, instance, nullptr);
     state.output = CreateWindowExW(0, L"HorizonLockOutput", L"SteadyXR – Clean Preview", WS_OVERLAPPEDWINDOW,
@@ -1212,6 +1249,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         okay = okay && !state.waiting(12001);
         state.paused = true;
         okay = okay && !state.waiting(15000);
+        state.expired = true;
+        okay = okay && state.waiting(15000) && !state.active() &&
+               std::wstring(state.waiting_text()).find(L"Build expired") != std::wstring::npos;
+        state.heartbeat();
+        if (state.channel.lock()) {
+            okay = okay && state.channel.data()->paused == 1;
+            state.channel.unlock();
+        } else
+            okay = false;
+        state.update_status();
+        wchar_t expired_status[512]{};
+        GetWindowTextW(state.status, expired_status, 512);
+        okay = okay && std::wstring(expired_status).find(L"has expired") != std::wstring::npos;
+        okay = okay && state.renderer.draw(state.options, true, state.waiting_text());
+        state.expired = false;
         state.paused = false;
         state.window_mode = false;
         state.last_received_ms = 1;
@@ -1474,6 +1526,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             last_heartbeat = now;
         }
         if (now - last_status >= 500) {
+            state.refresh_expiry();
             if (state.layer_editor_process &&
                 WaitForSingleObject(state.layer_editor_process, 0) == WAIT_OBJECT_0) {
                 CloseHandle(state.layer_editor_process);
@@ -1515,9 +1568,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         // a full swapchain queue on the first transition away from live video.
         if (waiting && IsWindowVisible(state.output) && !IsIconic(state.output) &&
             (!was_waiting || now - last_waiting_paint >= 250)) {
-            state.renderer.draw(state.options, true,
-                                state.window_mode ? L"Waiting for window capture…"
-                                                  : L"Waiting for OpenXR capture…");
+            state.renderer.draw(state.options, true, state.waiting_text());
             last_waiting_paint = now;
         }
         if (waiting != was_waiting) {

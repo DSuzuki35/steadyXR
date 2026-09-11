@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Package previously built Windows binaries; never silently build or publish."""
 import argparse
+from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import shutil
 import zipfile
+from preview_delivery import previous_viewer_settings
 
 root = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser()
@@ -49,11 +51,12 @@ for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd'
     copy(root / name, name)
 copy(a.openvr / 'LICENSE', 'licenses/OpenVR-LICENSE.txt')
 if a.openxr:
-    for name in ['horizonlock-preview.exe', 'horizonlock-openxr-layer.dll']:
+    for name in ['SteadyXR.exe', 'SteadyXR-OpenXR.dll']:
         copy(output(Path('preview') / name), Path('preview') / name)
-    copy(a.build / 'preview/XR_APILAYER_HORIZONLOCK_preview.json', 'preview/XR_APILAYER_HORIZONLOCK_preview.json')
+    copy(a.build / 'preview/XR_APILAYER_STEADYXR_preview.json', 'preview/XR_APILAYER_STEADYXR_preview.json')
+    copy(a.build / 'preview/steadyxr-build.json', 'preview/SteadyXR-build.json')
     copy(root / 'preview/README.md', 'preview/README.md')
-    for name in ['horizon-lock.ico', 'horizon-lock.png']:
+    for name in ['SteadyXR.ico', 'SteadyXR.png']:
         copy(root / 'preview/assets' / name, Path('preview') / name)
     copy(root / 'Start-Preview.cmd', 'Start-Preview.cmd')
     copy(root / 'Start-Layer-Editor.cmd', 'Start-Layer-Editor.cmd')
@@ -102,8 +105,20 @@ source_sum.write_text(f'{hashlib.sha256(source_archive.read_bytes()).hexdigest()
 if a.delivery_dir:
     delivery = a.delivery_dir.resolve()
     delivery.mkdir(parents=True, exist_ok=True)
+    # Same-version corrections retain the complete prior binary/source package together.
+    archive_files = (archive, archive_sum, source_archive, source_sum)
+    replaced = any((delivery / item.name).is_file() and
+                   (delivery / item.name).read_bytes() != item.read_bytes() for item in archive_files)
+    if replaced:
+        backup = delivery / 'Previous-packages' / (
+            f'SteadyXR-{a.version}-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f'))
+        backup.mkdir(parents=True, exist_ok=False)
+        for item in archive_files:
+            previous = delivery / item.name
+            if previous.is_file():
+                shutil.copy2(previous, backup / item.name)
     # Copy only project files. Preserve previous ZIPs and any user-added files.
-    for item in (archive, archive_sum, source_archive, source_sum):
+    for item in archive_files:
         destination = delivery / item.name
         if item.resolve() != destination:
             shutil.copy2(item, destination)
@@ -113,20 +128,19 @@ if a.delivery_dir:
     for name in ['Start-Tracking.cmd', 'Start-Delay-Check.cmd']:
         shutil.copy2(stage / name, delivery / 'Gaming-PC' / name)
     if a.openxr:
-        preview_folder = delivery / 'Gaming-PC' / f'Preview-{a.version}'
+        preview_folder = delivery / 'Gaming-PC' / f'SteadyXR-{a.version}'
         shutil.copytree(stage / 'preview', preview_folder, dirs_exist_ok=True)
         # Keep the user's working OpenXR mode and tuning across viewer upgrades.
         # Do not register or replace their active OpenXR layer.
-        if not (preview_folder / 'preview.ini').exists():
-            settings = [item for item in (delivery / 'Gaming-PC').glob('Preview-*/preview.ini')
-                        if item.is_file() and item.parent != preview_folder]
+        if not (preview_folder / 'SteadyXR.ini').exists():
+            settings = previous_viewer_settings(delivery / 'Gaming-PC', preview_folder)
             if settings:
-                shutil.copy2(max(settings, key=lambda item: item.stat().st_mtime), preview_folder / 'preview.ini')
+                shutil.copy2(settings, preview_folder / 'SteadyXR.ini')
         (delivery / 'Gaming-PC/Start-Preview.cmd').write_text(
-            '@echo off\nstart "" "%~dp0Preview-' + a.version + '\\horizonlock-preview.exe"\n', encoding='ascii')
+            '@echo off\nstart "" "%~dp0SteadyXR-' + a.version + '\\SteadyXR.exe"\n', encoding='ascii')
         (delivery / 'Gaming-PC/Start-Layer-Editor.cmd').write_text(
             '@echo off\nstart "" "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
-            '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0Preview-' +
+            '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0SteadyXR-' +
             a.version + '\\layers\\LayerEditor.ps1"\n', encoding='ascii')
         shutil.copy2(stage / 'preview/README.md', delivery / 'Gaming-PC/Preview-Guide.md')
         shutil.copy2(stage / 'preview/README.md', delivery / 'Gaming-PC/Preview-Anleitung.md')

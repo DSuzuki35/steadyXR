@@ -1,14 +1,19 @@
 #include "connection.hpp"
+#include "settings_path.hpp"
 #include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
 #include <utility>
 #include <vector>
+#include <wincrypt.h>
 
 namespace vrst::preview {
 namespace {
-constexpr wchar_t manifest[] = L"XR_APILAYER_HORIZONLOCK_preview.json";
+constexpr wchar_t manifest[] = L"XR_APILAYER_STEADYXR_preview.json";
+constexpr wchar_t legacy_manifest[] = L"XR_APILAYER_HORIZONLOCK_preview.json";
+constexpr wchar_t capture_dll[] = L"SteadyXR-OpenXR.dll";
+constexpr wchar_t legacy_capture_dll[] = L"horizonlock-openxr-layer.dll";
 struct Entry {
     std::wstring name;
     DWORD value;
@@ -21,6 +26,13 @@ bool same_path(const std::wstring &a, const std::wstring &b) {
 bool file_present(const std::filesystem::path &path) {
     std::error_code ec;
     return std::filesystem::is_regular_file(path, ec);
+}
+bool legacy_entry(const Entry &entry) {
+    return _wcsicmp(std::filesystem::path(entry.name).filename().c_str(), legacy_manifest) == 0;
+}
+std::filesystem::path registered_dll(const Entry &entry) {
+    return std::filesystem::path(entry.name).parent_path() /
+           (legacy_entry(entry) ? legacy_capture_dll : capture_dll);
 }
 bool same_file_contents(const std::filesystem::path &a, const std::filesystem::path &b) {
     std::error_code ec;
@@ -44,6 +56,41 @@ bool same_file_contents(const std::filesystem::path &a, const std::filesystem::p
     }
     return left.eof() && right.eof();
 }
+bool trusted_legacy_file(const std::filesystem::path &path) {
+    // This released 0.6.1/0.7.0 capture build shares the current IPC format but reads preview.ini.
+    // Read and hash it without loading or executing any DLL from the registered directory.
+    constexpr std::array<BYTE, 32> trusted_sha256{
+        0x66, 0xF1, 0x4B, 0xB5, 0xD7, 0xF9, 0x15, 0xAB, 0xEB, 0xC3, 0x87, 0x8E, 0xDB, 0x8F, 0xD7, 0x24,
+        0x2B, 0xFF, 0x38, 0x33, 0xD5, 0xFC, 0x3A, 0x94, 0xA0, 0x23, 0x1F, 0x9A, 0xCB, 0x86, 0x38, 0x28};
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return false;
+    HCRYPTPROV provider{};
+    if (!CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+        return false;
+    HCRYPTHASH hash{};
+    if (!CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)) {
+        CryptReleaseContext(provider, 0);
+        return false;
+    }
+    bool okay = true;
+    std::array<char, 64 * 1024> buffer{};
+    while (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        if (input.gcount() > 0 && !CryptHashData(hash, reinterpret_cast<const BYTE *>(buffer.data()),
+                                                 static_cast<DWORD>(input.gcount()), 0)) {
+            okay = false;
+            break;
+        }
+    }
+    std::array<BYTE, 32> digest{};
+    DWORD size = static_cast<DWORD>(digest.size());
+    okay = okay && input.eof() && CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &size, 0) &&
+           size == digest.size() && digest == trusted_sha256;
+    CryptDestroyHash(hash);
+    CryptReleaseContext(provider, 0);
+    return okay;
+}
 LONG entries(HKEY key, std::vector<Entry> &out) {
     for (DWORD index = 0;; ++index) {
         wchar_t name[32768]{};
@@ -53,8 +100,9 @@ LONG entries(HKEY key, std::vector<Entry> &out) {
             return ERROR_SUCCESS;
         if (result != ERROR_SUCCESS)
             return result;
+        const auto filename = std::filesystem::path(name).filename();
         if (type != REG_DWORD || size != sizeof(DWORD) ||
-            _wcsicmp(std::filesystem::path(name).filename().c_str(), manifest) != 0)
+            (_wcsicmp(filename.c_str(), manifest) != 0 && _wcsicmp(filename.c_str(), legacy_manifest) != 0))
             continue;
         DWORD value = 1;
         result = RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<BYTE *>(&value), &size);
@@ -86,8 +134,7 @@ LayerRegistryRoots registry_roots(const wchar_t *registry) {
     return {nullptr, nullptr, HKEY_CURRENT_USER, registry};
 }
 bool usable(const Entry &entry) {
-    return entry.value == 0 && file_present(entry.name) &&
-           file_present(std::filesystem::path(entry.name).parent_path() / L"horizonlock-openxr-layer.dll");
+    return entry.value == 0 && file_present(entry.name) && file_present(registered_dll(entry));
 }
 std::optional<Entry> effective_entry(const LayerRegistryRoots &roots) {
     // Match the loader's discovery order. A later duplicate cannot choose the settings file.
@@ -110,7 +157,7 @@ LONG write(HKEY key, const std::wstring &name, DWORD value) {
 bool layer_installed(const std::wstring &directory, bool any_version, const LayerRegistryRoots &roots) {
     const auto entry = effective_entry(roots);
     return entry &&
-           (any_version || same_path(entry->name, (std::filesystem::path(directory) / manifest).wstring()));
+           (any_version || same_path(std::filesystem::path(entry->name).parent_path().wstring(), directory));
 }
 bool machine_layer_installed(const std::wstring &directory, bool any_version) {
     return machine_layer_installed(directory, any_version, LayerRegistryRoots{});
@@ -120,26 +167,34 @@ bool machine_layer_installed(const std::wstring &directory, bool any_version,
     std::vector<Entry> found;
     if (read_scope(roots.machine_hive, roots.machine_key, found) != ERROR_SUCCESS)
         return false;
-    const auto path = (std::filesystem::path(directory) / manifest).wstring();
     return std::any_of(found.begin(), found.end(), [&](const Entry &entry) {
-        return entry.value == 0 && (any_version || same_path(entry.name, path));
+        return entry.value == 0 &&
+               (any_version ||
+                same_path(std::filesystem::path(entry.name).parent_path().wstring(), directory));
     });
 }
 std::optional<std::wstring> compatible_layer_directory(const std::wstring &directory,
                                                        const LayerRegistryRoots &roots) {
+    const auto settings = compatible_layer_settings_path(directory, roots);
+    return settings ? std::optional<std::wstring>{std::filesystem::path(*settings).parent_path().wstring()}
+                    : std::nullopt;
+}
+std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &directory,
+                                                           const LayerRegistryRoots &roots) {
     const auto entry = effective_entry(roots);
     if (!entry)
         return std::nullopt;
     const auto registered_directory = std::filesystem::path(entry->name).parent_path().lexically_normal();
-    if (same_file_contents(std::filesystem::path(directory) / L"horizonlock-openxr-layer.dll",
-                           registered_directory / L"horizonlock-openxr-layer.dll"))
-        return registered_directory.wstring();
+    const auto dll = registered_dll(*entry);
+    if (same_file_contents(std::filesystem::path(directory) / capture_dll, dll))
+        return capture_settings_path(registered_directory.wstring());
+    if (legacy_entry(*entry) && trusted_legacy_file(dll))
+        return (registered_directory / L"preview.ini").wstring();
     return std::nullopt;
 }
 LONG set_layer_connection(const std::wstring &directory, bool enable, const LayerRegistryRoots &roots) {
     const auto path = (std::filesystem::path(directory) / manifest).wstring();
-    if (enable && (!file_present(path) ||
-                   !file_present(std::filesystem::path(directory) / L"horizonlock-openxr-layer.dll")))
+    if (enable && (!file_present(path) || !file_present(std::filesystem::path(directory) / capture_dll)))
         return ERROR_FILE_NOT_FOUND;
     std::vector<Entry> machine_entries;
     auto result = read_scope(roots.machine_hive, roots.machine_key, machine_entries);
@@ -185,6 +240,10 @@ bool layer_installed(const std::wstring &directory, bool any_version, const wcha
 std::optional<std::wstring> compatible_layer_directory(const std::wstring &directory,
                                                        const wchar_t *registry) {
     return compatible_layer_directory(directory, registry_roots(registry));
+}
+std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &directory,
+                                                           const wchar_t *registry) {
+    return compatible_layer_settings_path(directory, registry_roots(registry));
 }
 LONG set_layer_connection(const std::wstring &directory, bool enable, const wchar_t *registry) {
     return set_layer_connection(directory, enable, registry_roots(registry));

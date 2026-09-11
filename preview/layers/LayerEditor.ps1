@@ -34,7 +34,7 @@ function Get-LayerDetails($value, $group) {
         }
         $result.Name = $layer.name -replace '^XR_APILAYER_', ''
         $result.TechnicalName = $layer.name
-        if ($layer.name -eq 'XR_APILAYER_HORIZONLOCK_preview') { $result.Name = 'SteadyXR (Horizon Lock)' }
+        if ($layer.name -eq 'XR_APILAYER_HORIZONLOCK_preview') { $result.Name = 'SteadyXR' }
         $result.Description = [string]$layer.description
         $result.Library = if ([IO.Path]::IsPathRooted($layer.library_path)) { $layer.library_path } else {
             [IO.Path]::GetFullPath((Join-Path (Split-Path $value.Name -Parent) $layer.library_path))
@@ -76,7 +76,7 @@ if ($SelfTest) {
     $script:store = New-Object SteadyXR.RegistryStore($script:fixturePath, $true)
     $fixtureKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($script:fixturePath + '\Implicit')
     foreach ($entryName in @('Motion Compensation', 'Example Overlay', 'SteadyXR')) {
-        $filename = if ($entryName -eq 'SteadyXR') { 'XR_APILAYER_HORIZONLOCK_preview.json' } else { $entryName + '.json' }
+        $filename = if ($entryName -eq 'SteadyXR') { 'XR_APILAYER_STEADYXR_preview.json' } else { $entryName + '.json' }
         $manifest = Join-Path $script:fixtureDirectory $filename
         $technical = if ($entryName -eq 'SteadyXR') { 'XR_APILAYER_HORIZONLOCK_preview' } else { 'XR_APILAYER_TEST_' + $entryName.Replace(' ', '_') }
         @{ file_format_version = '1.0.0'; api_layer = @{ name = $technical; library_path = '.\fixture.dll'; description = 'Private editor test fixture'; disable_environment = 'STEADYXR_PRIVATE_TEST_DISABLE' } } |
@@ -93,8 +93,8 @@ $versionDirectory = Split-Path $PSScriptRoot -Parent
 $script:backupDirectory = if ($SelfTest) { Join-Path $script:fixtureDirectory 'backups' } else {
     Join-Path (Split-Path $versionDirectory -Parent) 'Layer-Backups'
 }
-$script:ownManifest = Join-Path $versionDirectory 'XR_APILAYER_HORIZONLOCK_preview.json'
-if ($SelfTest) { $script:ownManifest = Join-Path $script:fixtureDirectory 'XR_APILAYER_HORIZONLOCK_preview.json' }
+$script:ownManifest = Join-Path $versionDirectory 'XR_APILAYER_STEADYXR_preview.json'
+if ($SelfTest) { $script:ownManifest = Join-Path $script:fixtureDirectory 'XR_APILAYER_STEADYXR_preview.json' }
 $script:undoBefore = $null
 $script:undoExpected = $null
 $script:lastBackup = ''
@@ -133,8 +133,8 @@ $script:form.ClientSize = New-Object Drawing.Size(1120, 780)
 $script:form.MinimumSize = New-Object Drawing.Size(1080, 790)
 $script:form.StartPosition = 'CenterScreen'
 $script:form.AutoScaleMode = 'Dpi'
-$icon = Join-Path $versionDirectory 'horizon-lock.ico'
-if (-not (Test-Path -LiteralPath $icon)) { $icon = Join-Path $versionDirectory 'assets\horizon-lock.ico' }
+$icon = Join-Path $versionDirectory 'SteadyXR.ico'
+if (-not (Test-Path -LiteralPath $icon)) { $icon = Join-Path $versionDirectory 'assets\SteadyXR.ico' }
 if (Test-Path -LiteralPath $icon) { $script:form.Icon = New-Object Drawing.Icon($icon) }
 
 function Add-Label([string]$caption, [int]$x, [int]$y, [int]$width, [int]$height) {
@@ -261,7 +261,9 @@ function Update-Actions {
     $script:admin.Enabled = -not $script:isAdmin -and -not $script:pending -and -not $SelfTest
     $ownExists = $false
     foreach ($group in $script:draft) { foreach ($value in $group.Values) {
-        if ($value.Name.Replace('/', '\').EndsWith('\XR_APILAYER_HORIZONLOCK_preview.json', [StringComparison]::OrdinalIgnoreCase)) { $ownExists = $true }
+        foreach ($ownFilename in @('XR_APILAYER_STEADYXR_preview.json', 'XR_APILAYER_HORIZONLOCK_preview.json')) {
+            if ($value.Name.Replace('/', '\').EndsWith(('\' + $ownFilename), [StringComparison]::OrdinalIgnoreCase)) { $ownExists = $true }
+        }
     } }
     $script:register.Enabled = $script:is64Bit -and -not $ownExists -and (Test-Path -LiteralPath $script:ownManifest -PathType Leaf)
 }
@@ -424,6 +426,10 @@ if ($SelfTest) {
         Undo-Plan
         if (-not $script:store.Same($original, $script:store.Read($true))) { throw 'Undo removal failed.' }
         if ($script:register.Enabled) { throw 'Already registered SteadyXR must not be duplicated.' }
+        $script:draft[0].Values[2].Name = Join-Path $script:fixtureDirectory 'XR_APILAYER_HORIZONLOCK_preview.json'
+        Render-Layers 2
+        if ($script:register.Enabled) { throw 'Legacy Horizon Lock registration must prevent a duplicate.' }
+        Discard-Plan
         Render-Layers 2; Remove-Layer
         if (-not $script:register.Enabled) { throw 'Missing SteadyXR registration must be offered.' }
         Register-OwnLayer

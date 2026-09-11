@@ -1,6 +1,7 @@
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_NO_PROTOTYPES
+#include "build_expiry_test_clock.hpp"
 #include "render_settings.hpp"
 #include "transport.hpp"
 #include <atomic>
@@ -299,10 +300,10 @@ XrResult XRAPI_CALL fake_gipa(XrInstance, const char *name, PFN_xrVoidFunction *
     ENTRY("xrDestroySession", fake_destroy_session)
     ENTRY("xrCreateSwapchain", fake_create_swapchain)
     ENTRY("xrDestroySwapchain", fake_destroy_swapchain)
-    ENTRY("xrEnumerateSwapchainImages", fake_enumerate) ENTRY("xrAcquireSwapchainImage", fake_acquire)
-        ENTRY("xrWaitSwapchainImage", fake_wait_image) ENTRY("xrReleaseSwapchainImage", fake_release)
-            ENTRY("xrWaitFrame", fake_wait_frame) ENTRY("xrEndFrame", fake_end)
-                ENTRY("xrPollEvent", fake_poll) *out = nullptr;
+    ENTRY("xrEnumerateSwapchainImages", fake_enumerate)
+    ENTRY("xrAcquireSwapchainImage", fake_acquire) ENTRY("xrWaitSwapchainImage", fake_wait_image)
+        ENTRY("xrReleaseSwapchainImage", fake_release) ENTRY("xrWaitFrame", fake_wait_frame)
+            ENTRY("xrEndFrame", fake_end) ENTRY("xrPollEvent", fake_poll) *out = nullptr;
     return XR_ERROR_FUNCTION_UNSUPPORTED;
 }
 template <class T> T fn(PFN_xrGetInstanceProcAddr g, const char *name) {
@@ -459,10 +460,14 @@ void check_render_hooks(const XrNegotiateApiLayerRequest &request, const XrInsta
         }
         // Settings are an instance snapshot: editing the file cannot change a running game's FOV.
         set(L"Enabled", L"0");
+        test_clock::unix_seconds = UINT64_MAX;
         CHECK(locate(session, &info, &state, 5, &count, views) == XR_SUCCESS);
         CHECK(std::abs(std::tan(views[0].fov.angleRight) - (canted ? 1.6f : 1.2f)) < 1e-6f);
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 5, &count, recommendations) == XR_SUCCESS);
+        CHECK(recommendations[0].recommendedImageRectWidth == 2200);
         CHECK(fn<PFN_xrDestroySession>(g, "xrDestroySession")(session) == XR_SUCCESS);
         CHECK(fn<PFN_xrDestroyInstance>(g, "xrDestroyInstance")(instance) == XR_SUCCESS);
+        test_clock::unix_seconds = 1;
         CHECK(request.createApiLayerInstance(&ci, &chain, &actual) == XR_SUCCESS);
         CHECK(fn<PFN_xrCreateSession>(g, "xrCreateSession")(instance, &si, &session) == XR_SUCCESS);
         CHECK(locate(session, &info, &state, 5, &count, views) == XR_SUCCESS);
@@ -554,6 +559,64 @@ void check_render_hooks(const XrNegotiateApiLayerRequest &request, const XrInsta
           XR_SUCCESS);
     mask_available = true;
     asymmetric_runtime = false;
+}
+void check_expired_render(const XrNegotiateApiLayerRequest &request, const XrInstanceCreateInfo &ci,
+                          const XrApiLayerCreateInfo &chain, const std::wstring &ini) {
+    CHECK(GetPrivateProfileIntW(L"Render", L"Enabled", 0, ini.c_str()) == 1);
+    test_clock::unix_seconds = UINT64_MAX;
+    const auto g = request.getInstanceProcAddr;
+    for (bool canted : {false, true}) {
+        asymmetric_runtime = canted;
+        XrInstance actual{};
+        CHECK(request.createApiLayerInstance(&ci, &chain, &actual) == XR_SUCCESS);
+        CHECK(actual == instance);
+        XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO};
+        CHECK(fn<PFN_xrCreateSession>(g, "xrCreateSession")(instance, &si, &session) == XR_SUCCESS);
+        XrViewLocateInfo info{XR_TYPE_VIEW_LOCATE_INFO};
+        info.viewConfigurationType = canted ? quad_views : XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+        XrViewState state{XR_TYPE_VIEW_STATE};
+        locate_arg = &info;
+        state_arg = &state;
+        XrView views[4]{};
+        uint32_t count{};
+        auto locate = fn<PFN_xrLocateViews>(g, "xrLocateViews");
+        CHECK(locate(session, &info, &state, 4, &count, views) == XR_SUCCESS);
+        CHECK(count == (canted ? 4u : 2u));
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto expected = runtime_view(i);
+            CHECK(!std::memcmp(&views[i], &expected, sizeof(expected)));
+        }
+        view_result = XR_ERROR_RUNTIME_FAILURE;
+        CHECK(locate(session, &info, &state, 4, &count, views) == XR_ERROR_RUNTIME_FAILURE);
+        view_result = XR_SUCCESS;
+        XrViewConfigurationView recommendations[4]{};
+        CHECK(fn<PFN_xrEnumerateViewConfigurationViews>(g, "xrEnumerateViewConfigurationViews")(
+                  instance, 77, info.viewConfigurationType, 4, &count, recommendations) == XR_SUCCESS);
+        CHECK(recommendations[0].recommendedImageRectWidth == 2000);
+        CHECK(recommendations[1].recommendedImageRectWidth == 2000);
+        XrVisibilityMaskKHR mask{XR_TYPE_VISIBILITY_MASK_KHR};
+        CHECK(fn<PFN_xrGetVisibilityMaskKHR>(g, "xrGetVisibilityMaskKHR")(
+                  session, info.viewConfigurationType, 0, XR_VISIBILITY_MASK_TYPE_LINE_LOOP_KHR, &mask) ==
+              XR_SUCCESS);
+        CHECK(mask.vertexCountOutput == 3 && mask.indexCountOutput == 3);
+        XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};
+        XrFrameState frame_state{XR_TYPE_FRAME_STATE};
+        CHECK(fn<PFN_xrWaitFrame>(g, "xrWaitFrame")(session, &wait, &frame_state) == XR_SUCCESS);
+        CHECK(frame_state.predictedDisplayTime == 123456);
+        XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
+        submitted = &end;
+        const auto previous_calls = end_calls;
+        end_result = XR_ERROR_RUNTIME_FAILURE;
+        CHECK(fn<PFN_xrEndFrame>(g, "xrEndFrame")(session, &end) == XR_ERROR_RUNTIME_FAILURE);
+        CHECK(end_calls == previous_calls + 1);
+        end_calls = previous_calls;
+        end_result = XR_SUCCESS;
+        submitted = nullptr;
+        CHECK(fn<PFN_xrDestroySession>(g, "xrDestroySession")(session) == XR_SUCCESS);
+        CHECK(fn<PFN_xrDestroyInstance>(g, "xrDestroyInstance")(instance) == XR_SUCCESS);
+    }
+    asymmetric_runtime = false;
+    test_clock::unix_seconds = 1;
 }
 void check_render_settings(const std::wstring &ini) {
     const auto defaults = read_render_settings(ini);
@@ -722,6 +785,7 @@ int main(int argc, char **) {
     CHECK(SetEnvironmentVariableW(L"HORIZONLOCK_PREVIEW_SETTINGS", temp_file));
     check_render_settings(temp_file);
     check_render_hooks(request, ci, chain, temp_file);
+    check_expired_render(request, ci, chain, temp_file);
     XrInstance actual{};
     CHECK(request.createApiLayerInstance(&ci, &chain, &actual) == XR_SUCCESS);
     CHECK(actual == instance);
@@ -1000,6 +1064,17 @@ int main(int argc, char **) {
     check_pixels(viewer.data()->frame.views[0], true);
     viewer.data()->ready = 0;
     viewer.unlock();
+    // Expiry clears a pending preview and suppresses GPU work while all runtime calls still progress.
+    frame(true);
+    test_clock::unix_seconds = UINT64_MAX;
+    before = gpu_copies;
+    frame(false);
+    CHECK(gpu_copies == before);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->status_code == 6);
+    CHECK(viewer.data()->render_enabled == 1); // The running instance retains its render snapshot.
+    viewer.unlock();
+    test_clock::unix_seconds = 1;
     CHECK(fn<PFN_xrDestroySession>(g, "xrDestroySession")(session) ==
           XR_SUCCESS); // A recreated session uses a new identity and generation, even if runtime handles
                        // repeat.
@@ -1049,6 +1124,7 @@ int main(int argc, char **) {
     std::puts(
         "PASS: render settings round-trip/clamping; stereo/canted quad render expansion; resolution caps; "
         "count-only/failed calls; masks/types/runtime validation; startup snapshot; active settings/eye IPC; "
+        "expired instance forwarding/native FOV; active FOV retention; zero-copy expiry; "
         "transport validation; before-release pixels; quad/array/rect; unchanged calls/results; "
         "pause; backpressure; failed release; invalid bounds; reference epoch; MSAA stereo; producer "
         "exclusivity; zero-copy inactive/paused/backpressure/rate-limit; stale reconnect; "

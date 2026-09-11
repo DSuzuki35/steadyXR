@@ -2,9 +2,9 @@ SteadyXR - Version 0.7.0
 
 GAMING PC - STANDALONE PREVIEW
 Run Gaming-PC\Start-Preview.cmd after closing the previous preview app.
-Existing settings are copied if the new version has no preview.ini.
+The app is in Gaming-PC\SteadyXR-0.7.0: SteadyXR.exe and SteadyXR.ini. Existing settings are copied unchanged if SteadyXR.ini is missing.
 From a working 0.6.0/0.6.1: only restart the preview app; iRacing can stay running.
-Keep the previous Preview folder if its identical OpenXR layer is still registered.
+Keep previous Preview folders while their compatible OpenXR layer is registered. The new DLL is named SteadyXR-OpenXR.dll; the old working connection is still recognized.
 For first setup or a pre-0.6 layer: select OpenXR pose capture, click
 Upgrade connection (or Install connection), then restart iRacing once.
 Delivery does not change your registration or runtime automatically.
@@ -52,3 +52,12 @@ The receiver is part of the OBS filter.
 
 Complete binary ZIP, matching source ZIP and SHA-256 checksums are here.
 Previous versioned packages are preserved.
+
+Same-version filename correction: still 0.7.0. Earlier copies of this version's
+binary/source ZIPs and checksums are retained in Previous-packages.
+
+BUILD VALIDITY
+This build expires 30 days after its UTC build time, shown in the window title
+and SteadyXR-build.json. After expiry the preview stops capture and shows a
+black Build expired screen. Install a newer build to resume; settings are kept.
+The layer editor remains available. Existing VR sessions keep their projection.

@@ -24,6 +24,12 @@ std::optional<std::wstring> compatible_layer_directory(const std::wstring &direc
                                                        const wchar_t *registry = layer_registry_key);
 std::optional<std::wstring> compatible_layer_directory(const std::wstring &directory,
                                                        const LayerRegistryRoots &roots);
+// Return settings only if the first enabled usable DLL is compatible: current builds use SteadyXR.ini,
+// while the exact trusted legacy capture build still reads its adjacent preview.ini.
+std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &directory,
+                                                          const wchar_t *registry = layer_registry_key);
+std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &directory,
+                                                          const LayerRegistryRoots &roots);
 LONG set_layer_connection(const std::wstring &directory, bool enable,
                           const wchar_t *registry = layer_registry_key);
 LONG set_layer_connection(const std::wstring &directory, bool enable, const LayerRegistryRoots &roots);

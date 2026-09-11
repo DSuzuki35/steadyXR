@@ -1,5 +1,5 @@
 #include <windows.h>
-101 ICON "assets/horizon-lock.ico"
+101 ICON "assets/SteadyXR.ico"
 1 VERSIONINFO
 FILEVERSION 0,7,0,0
 PRODUCTVERSION 0,7,0,0

@@ -2,7 +2,9 @@
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_NO_PROTOTYPES
+#include "build_expiry.hpp"
 #include "render_settings.hpp"
+#include "settings_path.hpp"
 #include "transport.hpp"
 #include <algorithm>
 #include <array>
@@ -71,9 +73,10 @@ struct Instance {
     PROC(DestroySession)
     PROC(LocateViews)
     PROC(EnumerateViewConfigurationViews)
-    PROC(GetVisibilityMaskKHR) PROC(CreateSwapchain) PROC(DestroySwapchain) PROC(EnumerateSwapchainImages)
-        PROC(AcquireSwapchainImage) PROC(WaitSwapchainImage) PROC(ReleaseSwapchainImage) PROC(WaitFrame)
-            PROC(EndFrame) PROC(PollEvent)
+    PROC(GetVisibilityMaskKHR)
+    PROC(CreateSwapchain)
+    PROC(DestroySwapchain) PROC(EnumerateSwapchainImages) PROC(AcquireSwapchainImage) PROC(WaitSwapchainImage)
+        PROC(ReleaseSwapchainImage) PROC(WaitFrame) PROC(EndFrame) PROC(PollEvent)
 #undef PROC
 };
 struct Output {
@@ -174,6 +177,13 @@ bool eligible(Session &s, Shared &shared, std::uint64_t now) {
     if (shared.producer_pid && shared.producer_pid != GetCurrentProcessId() &&
         process_alive(shared.producer_pid))
         return false;
+    if (build_expired()) {
+        shared.ready = 0;
+        if (s.connected)
+            invalidate(s);
+        status(shared, s, 6, L"Preview build expired");
+        return false;
+    }
     if (!s.device) {
         status(shared, s, 2, L"Unsupported graphics backend: D3D11 required");
         return false;
@@ -775,12 +785,13 @@ XrResult XRAPI_CALL layer_gipa(XrInstance handle, const char *name, PFN_xrVoidFu
     HOOK("xrCreateSession", layer_create_session)
     HOOK("xrDestroySession", layer_destroy_session)
     HOOK("xrCreateSwapchain", layer_create_swapchain)
-    HOOK("xrDestroySwapchain", layer_destroy_swapchain) HOOK("xrAcquireSwapchainImage", layer_acquire)
-        HOOK("xrWaitSwapchainImage", layer_wait_image) HOOK("xrReleaseSwapchainImage", layer_release)
-            HOOK("xrWaitFrame", layer_wait_frame) HOOK("xrEndFrame", layer_end_frame)
-                HOOK("xrPollEvent", layer_poll)
+    HOOK("xrDestroySwapchain", layer_destroy_swapchain)
+    HOOK("xrAcquireSwapchainImage", layer_acquire)
+    HOOK("xrWaitSwapchainImage", layer_wait_image) HOOK("xrReleaseSwapchainImage", layer_release)
+        HOOK("xrWaitFrame", layer_wait_frame) HOOK("xrEndFrame", layer_end_frame)
+            HOOK("xrPollEvent", layer_poll)
 #undef HOOK
-                    auto it = instances.find(handle);
+                auto it = instances.find(handle);
     auto next = it == instances.end() ? global_next : it->second->gipa;
     if (next)
         return next(handle, name, out);
@@ -824,20 +835,26 @@ XrResult XRAPI_CALL layer_create_instance(const XrInstanceCreateInfo *info, cons
                     path.resize(copied);
                     const auto separator = path.find_last_of(L"\\/");
                     if (separator != std::wstring::npos)
-                        settings_path = path.substr(0, separator + 1) + L"preview.ini";
+                        settings_path = capture_settings_path(path.substr(0, separator));
                 }
             }
         }
         instance->render = read_render_settings(settings_path);
+        // Preserve each active instance's FOV snapshot. Only newly created instances
+        // disable expansion at expiry, so the running game's viewport never jumps.
+        if (build_expired())
+            instance->render.enabled = false;
 #define LOAD(n) instance->gipa(*out, "xr" #n, reinterpret_cast<PFN_xrVoidFunction *>(&instance->n));
         LOAD(DestroyInstance)
         LOAD(CreateSession)
         LOAD(DestroySession)
         LOAD(LocateViews)
         LOAD(EnumerateViewConfigurationViews)
-        LOAD(GetVisibilityMaskKHR) LOAD(CreateSwapchain) LOAD(DestroySwapchain) LOAD(EnumerateSwapchainImages)
-            LOAD(AcquireSwapchainImage) LOAD(WaitSwapchainImage) LOAD(ReleaseSwapchainImage) LOAD(WaitFrame)
-                LOAD(EndFrame) LOAD(PollEvent)
+        LOAD(GetVisibilityMaskKHR)
+        LOAD(CreateSwapchain)
+        LOAD(DestroySwapchain) LOAD(EnumerateSwapchainImages) LOAD(AcquireSwapchainImage)
+            LOAD(WaitSwapchainImage) LOAD(ReleaseSwapchainImage) LOAD(WaitFrame) LOAD(EndFrame)
+                LOAD(PollEvent)
 #undef LOAD
                     MultiByteToWideChar(CP_UTF8, 0, info->applicationInfo.applicationName, -1,
                                         instance->application, 128);

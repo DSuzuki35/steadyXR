@@ -18,7 +18,7 @@ The local v0.3.4 Windows test package uses LLVM-MinGW with static runtime librar
 
 Horizon Lock VR is now **SteadyXR**. The new **OpenXR layers…** editor lists 64-bit and 32-bit registrations, their status, runtime, manifest and DLL paths. Stage enable/disable, unregister and order changes, then Apply with a verified backup. Undo and Restore backup are included. System-wide changes use a separately elevated editor; the preview stays unelevated. Reordering stays within the loader's registry groups, and explicit layer order belongs to the game/environment.
 
-Preview tuning, presets and the existing capture layer remain compatible with 0.6.1. The update itself changes no OpenXR registrations. See [the preview guide](preview/README.md) for setup and details.
+The completed rename keeps version 0.7.0 and ships SteadyXR.exe, SteadyXR.ini and SteadyXR-OpenXR.dll. Existing settings migrate without overwriting newer tuning; the previously delivered compatible capture DLL is still recognized. Old registered directories remain in place. The update itself changes no OpenXR registrations. See [the preview guide](preview/README.md) for setup and details.
 
 ## Standalone gaming-PC preview (new in 0.4.0)
 
