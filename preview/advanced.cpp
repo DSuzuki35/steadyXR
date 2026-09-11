@@ -135,9 +135,9 @@ struct AdvancedSettings::Impl {
         RECT r{0, 0, 744, 754};
         const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
         AdjustWindowRectEx(&r, style, FALSE, WS_EX_CONTROLPARENT);
-        window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName,
-                                 L"Horizon Lock VR — Render & edge settings", style, 135, 120,
-                                 r.right - r.left, r.bottom - r.top, parent, nullptr, cls.hInstance, this);
+        window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"SteadyXR — Render & edge settings",
+                                 style, 135, 120, r.right - r.left, r.bottom - r.top, parent, nullptr,
+                                 cls.hInstance, this);
         if (!window)
             return;
         theme->titlebar(window);

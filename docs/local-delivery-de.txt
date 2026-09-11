@@ -1,16 +1,29 @@
-Horizon Lock VR - Version 0.6.1
+SteadyXR - Version 0.7.0
 
 GAMING PC - STANDALONE PREVIEW
 Run Gaming-PC\Start-Preview.cmd after closing the previous preview app.
 Existing settings are copied if the new version has no preview.ini.
-From a working 0.6.0: only restart the preview app; iRacing can stay running.
-Keep Preview-0.6.0 if its identical OpenXR layer is still registered.
+From a working 0.6.0/0.6.1: only restart the preview app; iRacing can stay running.
+Keep the previous Preview folder if its identical OpenXR layer is still registered.
 For first setup or a pre-0.6 layer: select OpenXR pose capture, click
 Upgrade connection (or Install connection), then restart iRacing once.
 Delivery does not change your registration or runtime automatically.
 Window capture still needs no game restart or connection.
 
-New: Presets... with Natural, Stream Comfort, Strong Leveling and your own
+NEW IN 0.7.0 - STEADYXR AND OPENXR LAYERS
+Horizon Lock VR is now SteadyXR. Your settings and presets are retained.
+Open OpenXR layers... in the preview or Gaming-PC\Start-Layer-Editor.cmd.
+Inspect installed 64/32-bit layers, status, runtime and file paths.
+Enable/disable, remove a registration, or move implicit layers within their
+registry group. Changes are staged until Apply changes; plugin files stay put.
+Apply creates a verified backup in Gaming-PC\Layer-Backups. Undo last apply
+and Restore backup... are available. Restart the OpenXR game after changes.
+Administrator editor... is required for system-wide edits; the preview stays
+unelevated. Opening the editor changes nothing. Register SteadyXR is available
+if its registration is absent. The legacy technical layer name is retained.
+Configured status does not prove what an already-running game loaded.
+
+Presets... includes Natural, Stream Comfort, Strong Leveling and your own
 complete presets. Save new, Load, Overwrite selected and Delete are available.
 User presets live in Gaming-PC\Presets and survive version upgrades.
 All settings are included, including both eyes and pending render drafts.

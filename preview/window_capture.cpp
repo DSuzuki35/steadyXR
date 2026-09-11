@@ -108,7 +108,7 @@ std::wstring cleanup_status() {
     std::lock_guard<std::mutex> guard(lifecycle_mutex);
     if (retired_capture && !retired_capture->done.load(std::memory_order_acquire) &&
         GetTickCount64() - retired_capture->started >= 5000)
-        return L"Windows capture shutdown stalled; restart Horizon Lock preview (iRacing can stay running)";
+        return L"Windows capture shutdown stalled; restart SteadyXR Preview (iRacing can stay running)";
     return L"Finishing previous capture shutdown; retrying";
 }
 bool claim_capture(void *owner) {

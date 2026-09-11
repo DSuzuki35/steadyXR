@@ -1,20 +1,24 @@
-# HorizonLock VR
+# SteadyXR
 
-An OBS effect filter that stabilizes a capture-card picture on your stream PC. Choose **SteamVR pose** with optional horizon leveling, **Image-based microjitter** using the picture alone, or **Hybrid** combining pose with residual image cleanup. The pose mode includes a lightweight tracking sender for the gaming PC.
+SteadyXR creates a stabilized, stream-ready VR preview on your gaming PC without OBS. Capture submitted OpenXR eye images with their poses, or stabilize an existing game window. Horizon leveling, extra rendered scenery, asymmetric framing, soft mirrored borders and complete presets help tune the output for viewers.
+
+The package also includes the original OBS effect filter for stabilizing a capture-card picture on the stream PC. Its **SteamVR pose**, **Image-based microjitter** and **Hybrid** modes remain available, with a lightweight tracking sender for pose mode.
 
 The filter appears as **VR Stabilizer** in OBS. Windows downloads include both components and complete source code.
 
 Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
 
-Version **0.6.1 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
+Version **0.7.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
 
-For pose mode, SteamVR must be supplying headset tracking. Native Pimax OpenXR without SteamVR needs a future tracking provider; it is not included in this release. Image mode works independently of the runtime because it analyzes the captured video.
+For the OBS filter's pose mode, SteamVR must be supplying headset tracking. The standalone preview's OpenXR capture does not require this sender and can use native OpenXR runtimes. Image mode works independently of the runtime because it analyzes the captured video.
 
 The local v0.3.4 Windows test package uses LLVM-MinGW with static runtime libraries. Twelve automated suites cover core math, image motion, per-axis smoothing/crop, calibration and collection, timing displays, the native sender window, sender math, launcher failures and real UDP integration. Version 0.3.3 fixes a SteamVR startup crash in the MinGW sender by retrieving the eye transform through Valve's C function table. Native OBS GPU/module tests exercise SDR sources, full 4K output and bounded 480×270 analysis. Synthetic results do not guarantee racing-footage quality; the live Dream Air / Elgato / iRacing / LMU setup still needs validation. The published v0.3.0 package uses Visual Studio binaries from [GitHub's build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
 
-## Preview 0.6.1
+## SteadyXR 0.7.0
 
-The standalone preview now has **Presets…** with Natural, Stream Comfort, Strong Leveling and complete named user presets. This update fixes disappearing slider tracks and makes Y offset use the captured pixels hidden by stabilization reserves. Existing per-eye OpenXR render extension and asymmetric crop remain available in **Render / edges…**. A working 0.6.0 connection is reused without restarting the game; changing the render extension still requires the next game launch. See [the preview guide](preview/README.md) for setup and details.
+Horizon Lock VR is now **SteadyXR**. The new **OpenXR layers…** editor lists 64-bit and 32-bit registrations, their status, runtime, manifest and DLL paths. Stage enable/disable, unregister and order changes, then Apply with a verified backup. Undo and Restore backup are included. System-wide changes use a separately elevated editor; the preview stays unelevated. Reordering stays within the loader's registry groups, and explicit layer order belongs to the game/environment.
+
+Preview tuning, presets and the existing capture layer remain compatible with 0.6.1. The update itself changes no OpenXR registrations. See [the preview guide](preview/README.md) for setup and details.
 
 ## Standalone gaming-PC preview (new in 0.4.0)
 

@@ -1,4 +1,4 @@
-# Horizon Lock VR icon
+# SteadyXR icon
 
 Original application artwork generated for this project with OpenAI image generation on 2026-09-10. The source PNG retains its transparency.
 

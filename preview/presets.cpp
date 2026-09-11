@@ -118,7 +118,7 @@ bool PresetStore::valid_snapshot(const std::string &bytes, std::wstring &error) 
             break;
         remaining.remove_prefix(end + 1);
     }
-    return fail(error, L"This file is not a Horizon Lock preset: the Preview section is missing.");
+    return fail(error, L"This file is not a SteadyXR preset: the Preview section is missing.");
 }
 std::vector<std::wstring> PresetStore::list(std::wstring &error) const {
     error.clear();
@@ -371,9 +371,9 @@ struct PresetsDialog::Impl {
         GetWindowRect(parent, &owner);
         const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
         AdjustWindowRectEx(&r, style, FALSE, WS_EX_CONTROLPARENT);
-        window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"Horizon Lock VR \u2014 Presets",
-                                 style, owner.left + 40, owner.top + 40, r.right - r.left, r.bottom - r.top,
-                                 parent, nullptr, cls.hInstance, this);
+        window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"SteadyXR \u2014 Presets", style,
+                                 owner.left + 40, owner.top + 40, r.right - r.left, r.bottom - r.top, parent,
+                                 nullptr, cls.hInstance, this);
         if (!window)
             return;
         theme->titlebar(window);

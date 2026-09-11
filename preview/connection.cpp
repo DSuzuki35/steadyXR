@@ -3,6 +3,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <utility>
 #include <vector>
 
 namespace vrst::preview {
@@ -46,76 +47,112 @@ bool same_file_contents(const std::filesystem::path &a, const std::filesystem::p
 LONG entries(HKEY key, std::vector<Entry> &out) {
     for (DWORD index = 0;; ++index) {
         wchar_t name[32768]{};
-        DWORD length = 32768, value = 1, size = sizeof(value), type = 0;
-        const auto result =
-            RegEnumValueW(key, index, name, &length, nullptr, &type, reinterpret_cast<BYTE *>(&value), &size);
+        DWORD length = 32768, size = 0, type = 0;
+        auto result = RegEnumValueW(key, index, name, &length, nullptr, &type, nullptr, &size);
         if (result == ERROR_NO_MORE_ITEMS)
             return ERROR_SUCCESS;
         if (result != ERROR_SUCCESS)
             return result;
-        if (type == REG_DWORD && size == sizeof(value) &&
-            _wcsicmp(std::filesystem::path(name).filename().c_str(), manifest) == 0)
+        if (type != REG_DWORD || size != sizeof(DWORD) ||
+            _wcsicmp(std::filesystem::path(name).filename().c_str(), manifest) != 0)
+            continue;
+        DWORD value = 1;
+        result = RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<BYTE *>(&value), &size);
+        if (result == ERROR_FILE_NOT_FOUND)
+            continue;
+        if (result != ERROR_SUCCESS)
+            return result;
+        if (type == REG_DWORD && size == sizeof(value))
             out.push_back({name, value});
     }
+}
+LONG read_scope(HKEY hive, const wchar_t *registry, std::vector<Entry> &out) {
+    if (!hive || !registry)
+        return ERROR_SUCCESS;
+    HKEY key{};
+    auto result = RegOpenKeyExW(hive, registry, 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key);
+    if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND)
+        return ERROR_SUCCESS;
+    if (result != ERROR_SUCCESS)
+        return result;
+    result = entries(key, out);
+    RegCloseKey(key);
+    return result;
+}
+LayerRegistryRoots registry_roots(const wchar_t *registry) {
+    // Legacy private-subkey callers never inspect or modify the real machine registry.
+    if (registry && _wcsicmp(registry, layer_registry_key) == 0)
+        return {};
+    return {nullptr, nullptr, HKEY_CURRENT_USER, registry};
+}
+bool usable(const Entry &entry) {
+    return entry.value == 0 && file_present(entry.name) &&
+           file_present(std::filesystem::path(entry.name).parent_path() / L"horizonlock-openxr-layer.dll");
+}
+std::optional<Entry> effective_entry(const LayerRegistryRoots &roots) {
+    // Match the loader's discovery order. A later duplicate cannot choose the settings file.
+    for (const auto &scope :
+         {std::pair{roots.machine_hive, roots.machine_key}, std::pair{roots.user_hive, roots.user_key}}) {
+        std::vector<Entry> found;
+        if (read_scope(scope.first, scope.second, found) != ERROR_SUCCESS)
+            return std::nullopt;
+        for (const auto &entry : found)
+            if (usable(entry))
+                return entry;
+    }
+    return std::nullopt;
 }
 LONG write(HKEY key, const std::wstring &name, DWORD value) {
     return RegSetValueExW(key, name.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&value),
                           sizeof(value));
 }
 } // namespace
-bool layer_installed(const std::wstring &directory, bool any_version, const wchar_t *registry) {
-    HKEY key{};
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, registry, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
-        return false;
+bool layer_installed(const std::wstring &directory, bool any_version, const LayerRegistryRoots &roots) {
+    const auto entry = effective_entry(roots);
+    return entry &&
+           (any_version || same_path(entry->name, (std::filesystem::path(directory) / manifest).wstring()));
+}
+bool machine_layer_installed(const std::wstring &directory, bool any_version) {
+    return machine_layer_installed(directory, any_version, LayerRegistryRoots{});
+}
+bool machine_layer_installed(const std::wstring &directory, bool any_version,
+                             const LayerRegistryRoots &roots) {
     std::vector<Entry> found;
-    const auto result = entries(key, found);
-    RegCloseKey(key);
-    if (result != ERROR_SUCCESS)
+    if (read_scope(roots.machine_hive, roots.machine_key, found) != ERROR_SUCCESS)
         return false;
     const auto path = (std::filesystem::path(directory) / manifest).wstring();
-    for (const auto &entry : found)
-        if (entry.value == 0 && (any_version || same_path(entry.name, path)) && file_present(entry.name) &&
-            file_present(std::filesystem::path(entry.name).parent_path() / L"horizonlock-openxr-layer.dll"))
-            return true;
-    return false;
+    return std::any_of(found.begin(), found.end(), [&](const Entry &entry) {
+        return entry.value == 0 && (any_version || same_path(entry.name, path));
+    });
 }
 std::optional<std::wstring> compatible_layer_directory(const std::wstring &directory,
-                                                       const wchar_t *registry) {
-    const auto requested_directory = std::filesystem::path(directory).lexically_normal();
-    const auto requested_dll = requested_directory / L"horizonlock-openxr-layer.dll";
-    if (!file_present(requested_dll))
+                                                       const LayerRegistryRoots &roots) {
+    const auto entry = effective_entry(roots);
+    if (!entry)
         return std::nullopt;
-    HKEY key{};
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, registry, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
-        return std::nullopt;
-    std::vector<Entry> found;
-    const auto result = entries(key, found);
-    RegCloseKey(key);
-    if (result != ERROR_SUCCESS)
-        return std::nullopt;
-    std::optional<std::wstring> fallback;
-    for (const auto &entry : found) {
-        const auto registered_manifest = std::filesystem::path(entry.name);
-        const auto registered_directory = registered_manifest.parent_path().lexically_normal();
-        const auto registered_dll = registered_directory / L"horizonlock-openxr-layer.dll";
-        if (entry.value != 0 || !file_present(registered_manifest) || !file_present(registered_dll) ||
-            !same_file_contents(requested_dll, registered_dll))
-            continue;
-        if (same_path(registered_directory.wstring(), requested_directory.wstring()))
-            return registered_directory.wstring();
-        if (!fallback)
-            fallback = registered_directory.wstring();
-    }
-    return fallback;
+    const auto registered_directory = std::filesystem::path(entry->name).parent_path().lexically_normal();
+    if (same_file_contents(std::filesystem::path(directory) / L"horizonlock-openxr-layer.dll",
+                           registered_directory / L"horizonlock-openxr-layer.dll"))
+        return registered_directory.wstring();
+    return std::nullopt;
 }
-LONG set_layer_connection(const std::wstring &directory, bool enable, const wchar_t *registry) {
+LONG set_layer_connection(const std::wstring &directory, bool enable, const LayerRegistryRoots &roots) {
     const auto path = (std::filesystem::path(directory) / manifest).wstring();
     if (enable && (!file_present(path) ||
                    !file_present(std::filesystem::path(directory) / L"horizonlock-openxr-layer.dll")))
         return ERROR_FILE_NOT_FOUND;
+    std::vector<Entry> machine_entries;
+    auto result = read_scope(roots.machine_hive, roots.machine_key, machine_entries);
+    if (result != ERROR_SUCCESS)
+        return result;
+    if (std::any_of(machine_entries.begin(), machine_entries.end(),
+                    [](const Entry &entry) { return entry.value == 0; }))
+        return ERROR_ACCESS_DENIED;
+    if (!roots.user_hive || !roots.user_key)
+        return ERROR_INVALID_PARAMETER;
     HKEY key{};
-    auto result = RegCreateKeyExW(HKEY_CURRENT_USER, registry, 0, nullptr, 0, KEY_QUERY_VALUE | KEY_SET_VALUE,
-                                  nullptr, &key, nullptr);
+    result = RegCreateKeyExW(roots.user_hive, roots.user_key, 0, nullptr, 0,
+                             KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &key, nullptr);
     if (result != ERROR_SUCCESS)
         return result;
     std::vector<Entry> before;
@@ -141,5 +178,15 @@ LONG set_layer_connection(const std::wstring &directory, bool enable, const wcha
     }
     RegCloseKey(key);
     return result;
+}
+bool layer_installed(const std::wstring &directory, bool any_version, const wchar_t *registry) {
+    return layer_installed(directory, any_version, registry_roots(registry));
+}
+std::optional<std::wstring> compatible_layer_directory(const std::wstring &directory,
+                                                       const wchar_t *registry) {
+    return compatible_layer_directory(directory, registry_roots(registry));
+}
+LONG set_layer_connection(const std::wstring &directory, bool enable, const wchar_t *registry) {
+    return set_layer_connection(directory, enable, registry_roots(registry));
 }
 } // namespace vrst::preview

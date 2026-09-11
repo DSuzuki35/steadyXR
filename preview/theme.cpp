@@ -195,7 +195,7 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, text);
         RECT title{94, 14, 700, 48};
-        DrawTextW(dc, L"Horizon Lock VR", -1, &title, DT_SINGLELINE);
+        DrawTextW(dc, L"SteadyXR", -1, &title, DT_SINGLELINE);
         SelectObject(dc, body);
         SetTextColor(dc, muted);
         RECT tagline{96, 49, 790, 75};
@@ -203,7 +203,7 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         RECT version{890, 28, 1009, 59};
         fill(dc, version, field);
         SetTextColor(dc, accent);
-        DrawTextW(dc, L"PREVIEW  0.6.1", -1, &version, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        DrawTextW(dc, L"PREVIEW  0.7.0", -1, &version, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         SelectObject(dc, old);
         if (message == WM_PAINT)
             EndPaint(window, &ps);

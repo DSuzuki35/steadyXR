@@ -26,7 +26,7 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               horizon_id = 119, mirror_limit_id = 120, aspect_id = 121, width_id = 122, height_id = 123,
               apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127,
               mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130, advanced_id = 131,
-              presets_id = 132;
+              presets_id = 132, layers_id = 133;
 constexpr UINT_PTR save_timer = 4101;
 std::wstring executable_path(DWORD pid) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -63,6 +63,7 @@ struct App {
     Theme theme;
     AdvancedSettings advanced;
     PresetsDialog presets;
+    HANDLE layer_editor_process{};
     Channel channel;
     Renderer renderer;
     WindowCapture capture;
@@ -85,6 +86,44 @@ struct App {
     std::wstring directory, ini, render_ini, setup_message;
     std::uint64_t start_ms{}, last_received_ms{}, last_sequence{}, fps_frames{}, fps_start{};
     double measured_fps{};
+    ~App() {
+        if (layer_editor_process)
+            CloseHandle(layer_editor_process);
+    }
+    void refresh_editor_connection() {
+        const auto old_ini = render_ini;
+        resolve_connection();
+        if (old_ini != render_ini)
+            advanced.reload(render_ini);
+        labels();
+        update_status();
+    }
+    void open_layer_editor() {
+        if (diagnostic)
+            return;
+        wchar_t system[MAX_PATH]{};
+        GetSystemDirectoryW(system, MAX_PATH);
+        const auto executable = std::wstring(system) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
+        const auto script = directory + L"\\layers\\LayerEditor.ps1";
+        const auto arguments =
+            L"-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + script + L"\"";
+        SHELLEXECUTEINFOW execute{sizeof(execute)};
+        execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+        execute.hwnd = controls;
+        execute.lpFile = executable.c_str();
+        execute.lpParameters = arguments.c_str();
+        execute.nShow = SW_HIDE;
+        std::error_code file_error;
+        if (!std::filesystem::is_regular_file(script, file_error) || !ShellExecuteExW(&execute)) {
+            setup_message =
+                L"Could not open the layer editor. Keep the layers folder beside the preview app.";
+            update_status();
+            return;
+        }
+        if (layer_editor_process)
+            CloseHandle(layer_editor_process);
+        layer_editor_process = execute.hProcess;
+    }
     bool waiting(std::uint64_t now) const {
         return !renderer.has_frame() ||
                (!paused && last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000);
@@ -103,13 +142,18 @@ struct App {
             setup_message = L"Compatible OpenXR connection already installed.";
             return;
         }
+        if (!diagnostic && machine_layer_installed(directory, true)) {
+            setup_message = L"System-wide connection: use the layer editor to change its registration.";
+            open_layer_editor();
+            return;
+        }
         const auto result = set_layer_connection(directory, enable);
         if (result == ERROR_SUCCESS) {
             resolve_connection();
             advanced.reload(render_ini);
         }
         setup_message = result == ERROR_SUCCESS
-                            ? (enable ? L"0.6 connection installed. Restart iRacing to use it."
+                            ? (enable ? L"OpenXR connection installed. Restart iRacing to use it."
                                       : L"Connection removed. This takes effect after restarting the game.")
                             : L"Could not change the connection. Windows error " + std::to_wstring(result);
     }
@@ -573,7 +617,7 @@ struct App {
             if (!capture.error().empty())
                 text += capture.error() + L"\r\n";
         } else {
-            text = registered() ? L"OpenXR 0.6 connection installed.\r\n"
+            text = registered() ? L"Compatible OpenXR connection installed.\r\n"
                    : registered(true)
                        ? L"Older layer installed: click Upgrade connection, then restart iRacing.\r\n"
                        : L"Install the connection, then restart iRacing.\r\n";
@@ -734,6 +778,10 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (app->theme.message(window, message, w, l, themed))
         return themed;
     switch (message) {
+    case WM_ACTIVATE:
+        if (LOWORD(w) != WA_INACTIVE && app->status && app->output)
+            app->refresh_editor_connection();
+        break;
     case WM_TIMER:
         if (w == save_timer) {
             app->save();
@@ -761,6 +809,9 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             return 0;
         case presets_id:
             app->presets.open();
+            return 0;
+        case layers_id:
+            app->open_layer_editor();
             return 0;
         case comfort_id: {
             app->builtin(BuiltinPreset::stream_comfort);
@@ -926,19 +977,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
     state.controls =
-        CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.6.1",
+        CreateWindowExW(0, L"HorizonLockControls", L"SteadyXR – Preview 0.7.0",
                         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, 100, 100,
                         1050, 855, nullptr, nullptr, instance, nullptr);
-    state.output =
-        CreateWindowExW(0, L"HorizonLockOutput", L"Horizon Lock VR – Clean Preview", WS_OVERLAPPEDWINDOW, 800,
-                        120, 976, 579, nullptr, nullptr, instance, nullptr);
+    state.output = CreateWindowExW(0, L"HorizonLockOutput", L"SteadyXR – Clean Preview", WS_OVERLAPPEDWINDOW,
+                                   800, 120, 976, 579, nullptr, nullptr, instance, nullptr);
     state.theme.titlebar(state.controls);
     state.theme.titlebar(state.output);
     const auto channel_name =
         self_test ? L"Local\\HorizonLockPreview-UI-test-" + std::to_wstring(GetCurrentProcessId())
                   : std::wstring(default_channel);
     if (!state.controls || !state.output || !state.channel.open(true, channel_name)) {
-        MessageBoxW(nullptr, L"Could not start the preview.", L"Horizon Lock VR", MB_ICONERROR);
+        MessageBoxW(nullptr, L"Could not start the preview.", L"SteadyXR", MB_ICONERROR);
         CloseHandle(singleton);
         return 1;
     }
@@ -992,9 +1042,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SendMessageW(state.fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value));
     SendMessageW(state.fps, CB_SETCURSEL, state.rate == 30 ? 0 : state.rate == 60 ? 1 : 2, 0);
     state.status = child(state.controls, L"STATIC", L"", 0, 22, 478, 596, 190);
-    child(state.controls, L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 22, 668, 190, 34, comfort_id);
-    child(state.controls, L"BUTTON", L"Undo tuning", BS_PUSHBUTTON, 225, 668, 190, 34, undo_comfort_id);
-    child(state.controls, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 428, 668, 188, 34, presets_id);
+    child(state.controls, L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 22, 668, 145, 34, comfort_id);
+    child(state.controls, L"BUTTON", L"Undo tuning", BS_PUSHBUTTON, 177, 668, 129, 34, undo_comfort_id);
+    child(state.controls, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 316, 668, 115, 34, presets_id);
+    child(state.controls, L"BUTTON", L"OpenXR layers…", BS_PUSHBUTTON, 441, 668, 175, 34, layers_id);
     child(state.controls, L"STATIC", L"FRAMING / OUTPUT", 0, 655, 18, 360, 28);
     const double trim_values[] = {state.options.crop_left, state.options.crop_right, state.options.crop_top,
                                   state.options.crop_bottom};
@@ -1148,8 +1199,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SendMessageW(state.smooth, TBM_SETPOS, TRUE, 650);
         SendMessageW(state.controls, WM_HSCROLL, 0, reinterpret_cast<LPARAM>(state.smooth));
         SendMessageW(state.controls, WM_COMMAND, pause_id, 0);
-        bool okay = display_controls && rejected_stale && state.paused && state.options.smoothing == 65 &&
-                    state.renderer.demo(0) && state.renderer.draw(state.options, false);
+        bool okay = display_controls && IsWindow(GetDlgItem(state.controls, layers_id)) && rejected_stale &&
+                    state.paused && state.options.smoothing == 65 && state.renderer.demo(0) &&
+                    state.renderer.draw(state.options, false);
         okay = okay && state.theme.icon && state.theme.small_icon;
         // A stalled source clears the output after two seconds and recovers on
         // the very next frame; a deliberate pause retains the current image.
@@ -1422,6 +1474,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             last_heartbeat = now;
         }
         if (now - last_status >= 500) {
+            if (state.layer_editor_process &&
+                WaitForSingleObject(state.layer_editor_process, 0) == WAIT_OBJECT_0) {
+                CloseHandle(state.layer_editor_process);
+                state.layer_editor_process = nullptr;
+                state.refresh_editor_connection();
+            }
             if (now - state.fps_start >= 1000) {
                 state.measured_fps = state.fps_frames * 1000. / double(now - state.fps_start);
                 state.fps_start = now;

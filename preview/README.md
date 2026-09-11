@@ -1,4 +1,6 @@
-# Horizon Lock VR Preview 0.6.1
+# SteadyXR Preview 0.7.0
+
+Horizon Lock VR is now **SteadyXR**. Version 0.7.0 adds an on-demand **OpenXR layers…** editor with staged changes, backups and restore. Existing settings, presets and the capture layer stay compatible with 0.6.1.
 
 0.6.1 fixes disappearing sliders and makes Y offset use hidden stabilization reserves as well as aspect-ratio crop. It adds three tuning presets and named complete presets. Slider adjustments remain live; automatic settings writes are deferred until dragging settles.
 
@@ -10,11 +12,31 @@ Standalone gaming-PC preview with OpenXR pose stabilization or existing-window c
 
 ## Upgrade from a working OpenXR preview
 
-Close only the previous Horizon Lock preview app, then run **Gaming-PC/Start-Preview.cmd**. Existing preview.ini settings are copied to the new version when it has no settings yet. OpenXR mode and previous tuning are retained; new settings use their defaults.
+Close only the previous preview app, then run **Gaming-PC/Start-Preview.cmd**. Existing preview.ini settings are copied to the new version when it has no settings yet. OpenXR mode and previous tuning are retained; new settings use their defaults.
 
-**Upgrading from a working 0.6.0:** only restart the preview app. 0.6.1 reuses an enabled registered layer when its DLL is byte-identical to the bundled layer. Keep the old preview directory: its registered DLL and adjacent render settings are still used. Explicit render saves and preset loads update that actual settings destination, so changed render expansion takes effect on the next game launch.
+**Upgrading from a working 0.6.0 or 0.6.1:** only restart the preview app. SteadyXR reuses an enabled registered layer when its DLL is byte-identical to the bundled layer. Keep the old preview directory: its registered DLL and adjacent render settings are still used. Explicit render saves and preset loads update that actual settings destination, so changed render expansion takes effect on the next game launch.
 
 **First setup or upgrading from before 0.6:** select OpenXR pose capture and click **Upgrade connection** (or **Install connection**), then restart iRacing once. This enables the current Horizon Lock layer and disables older Horizon Lock registrations for this Windows user; it leaves other API layers and the active runtime alone. Delivery itself never changes registration or restarts anything. Window capture needs no connection or game restart.
+
+## OpenXR layer editor
+
+Open **OpenXR layers…** in SteadyXR, or run **Gaming-PC/Start-Layer-Editor.cmd**. The editor runs only when opened, uses the Windows PowerShell/.NET Framework included with Windows, and performs no GPU capture. It does not load the listed third-party DLLs.
+
+The default **64-bit (iRacing)** view shows system-wide and current-user implicit registrations followed by explicit registrations. Switch to 32-bit for older applications. Select a row for its technical name, full manifest/DLL paths and environment flags. Status describes the configuration visible to the editor; it cannot prove which layers an already-running game loaded. Elevated games ignore current-user registrations. Environment flags in the game process may differ from those visible to the editor.
+
+- **Enable / Disable** changes the selected registration's flag.
+- **Remove registration** unregisters the selected entry; its files stay on disk.
+- **Move up / Move down** changes implicit discovery order within the same system/user group. System registrations precede user registrations and cannot be interleaved. Order can affect how layers interact, for example when one changes poses and another captures them. Explicit layers are requested and ordered by the game or `XR_ENABLE_API_LAYERS`, so their move buttons are disabled.
+- **Register SteadyXR** stages the bundled layer for the current user if no SteadyXR/Horizon Lock registration is listed. Existing disabled entries can be enabled instead. The legacy `XR_APILAYER_HORIZONLOCK_preview` identifier and DLL filename are intentionally retained for compatibility.
+- **Apply changes** checks for external registry changes and write access, saves a verified backup, writes the requested data/order, and reads it back. On a write failure it attempts restoration and reports whether that restoration was verified. **Discard changes** leaves the registry alone.
+- **Undo last apply** restores the previous configuration if it has not changed externally. **Restore backup…** stages a saved configuration for review and a new Apply. Select the backup's matching 32-bit/64-bit view first.
+- **Administrator editor…** opens only the editor with Windows' elevation prompt for system-wide edits. The preview does not need administrator privileges. Apply or discard any pending edits before switching.
+
+Backups live in **Gaming-PC/Layer-Backups**, outside versioned app folders. Keep this folder for recovery. Registry changes are verified but are not an operating-system transaction: avoid applying while an OpenXR game or another layer installer is starting. The editor refuses to replace keys with unexpected child keys when reordering. No runtime selection is changed. Restart the OpenXR game after applying layer changes.
+
+Opening the editor, upgrading SteadyXR or unpacking files does not register or enable anything. A missing registration is shown as missing; the current registry alone does not reveal why it was removed.
+
+Loader behavior: [Khronos OpenXR loader documentation](https://registry.khronos.org/OpenXR/specs/1.1/loader.html); [OpenXR API layer ordering guidance](https://fredemmott.com/blog/2024/11/25/best-practices-for-openxr-api-layers.html).
 
 ## Extra OpenXR scenery, asymmetric reserves and Y offset
 
@@ -66,7 +88,7 @@ This controls internal rendering. The HDMI capture-card signal still follows Win
 
 Use **Clean Preview** on the capture-card display and disable the old OBS stabilization filter for that source to avoid stabilizing twice.
 
-If **Windows capture shutdown stalled** appears after quickly closing a source, restart only Horizon Lock Preview. iRacing can remain running. Cleanup remains bounded and does not block the UI.
+If **Windows capture shutdown stalled** appears after quickly closing a source, restart only SteadyXR Preview. iRacing can remain running. Cleanup remains bounded and does not block the UI.
 
 Keep each preview directory intact. Settings are in preview.ini beside the EXE. The --demo option shows synthetic content. Automated tests cover GPU output, resolution, crop/aspect, horizon, mirror limits, settings, fullscreen, capture lifecycle and OpenXR ownership. Driving quality and GPU cost still depend on the live setup.
 

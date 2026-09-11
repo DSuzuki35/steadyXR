@@ -11,10 +11,10 @@ p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
 p.add_argument('--openxr', type=Path, help='Include the standalone preview and its pinned OpenXR source headers')
-p.add_argument('--version', default='0.6.1')
+p.add_argument('--version', default='0.7.0')
 p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
-stage = root / 'dist' / f'VR-Stabilizer-{a.version}-Windows-x64'
+stage = root / 'dist' / f'SteadyXR-{a.version}-Windows-x64'
 if stage.resolve().parent != (root / 'dist').resolve():
     raise SystemExit('Invalid package version/path')
 if stage.exists():
@@ -56,6 +56,9 @@ if a.openxr:
     for name in ['horizon-lock.ico', 'horizon-lock.png']:
         copy(root / 'preview/assets' / name, Path('preview') / name)
     copy(root / 'Start-Preview.cmd', 'Start-Preview.cmd')
+    copy(root / 'Start-Layer-Editor.cmd', 'Start-Layer-Editor.cmd')
+    for name in ['LayerEditor.ps1', 'RegistryStore.cs']:
+        copy(root / 'preview/layers' / name, Path('preview/layers') / name)
     for name in ['include/openxr/openxr.h', 'include/openxr/openxr_platform.h',
                  'include/openxr/openxr_platform_defines.h', 'include/openxr/openxr_loader_negotiation.h',
                  'LICENSE', 'LICENSES/MIT.txt']:
@@ -72,7 +75,7 @@ for directory in ['include', 'src', 'plugin', 'sender', 'preview', 'scripts', 'c
     for item in (root / directory).rglob('*'):
         if item.is_file() and '__pycache__' not in item.parts:
             copy(item, Path('source') / item.relative_to(root))
-for name in ['Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'Start-Delay-Check.cmd', 'Start-Preview.cmd']:
+for name in ['Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'Start-Delay-Check.cmd', 'Start-Preview.cmd', 'Start-Layer-Editor.cmd']:
     copy(root / name, Path('source') / name)
 checks = []
 for item in sorted(stage.rglob('*')):
@@ -89,11 +92,11 @@ with zipfile.ZipFile(archive) as z:
         raise SystemExit('ZIP integrity check failed')
 archive_sum = archive.with_suffix('.zip.sha256')
 archive_sum.write_text(f'{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n')
-source_archive = stage.parent / f'Horizon-Lock-VR-{a.version}-Source.zip'
+source_archive = stage.parent / f'SteadyXR-{a.version}-Source.zip'
 with zipfile.ZipFile(source_archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
     for item in sorted((stage / 'source').rglob('*')):
         if item.is_file():
-            z.write(item, Path(f'Horizon-Lock-VR-{a.version}-Source') / item.relative_to(stage / 'source'))
+            z.write(item, Path(f'SteadyXR-{a.version}-Source') / item.relative_to(stage / 'source'))
 source_sum = source_archive.with_suffix('.zip.sha256')
 source_sum.write_text(f'{hashlib.sha256(source_archive.read_bytes()).hexdigest()}  {source_archive.name}\n')
 if a.delivery_dir:
@@ -121,6 +124,10 @@ if a.delivery_dir:
                 shutil.copy2(max(settings, key=lambda item: item.stat().st_mtime), preview_folder / 'preview.ini')
         (delivery / 'Gaming-PC/Start-Preview.cmd').write_text(
             '@echo off\nstart "" "%~dp0Preview-' + a.version + '\\horizonlock-preview.exe"\n', encoding='ascii')
+        (delivery / 'Gaming-PC/Start-Layer-Editor.cmd').write_text(
+            '@echo off\nstart "" "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+            '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0Preview-' +
+            a.version + '\\layers\\LayerEditor.ps1"\n', encoding='ascii')
         shutil.copy2(stage / 'preview/README.md', delivery / 'Gaming-PC/Preview-Guide.md')
         shutil.copy2(stage / 'preview/README.md', delivery / 'Gaming-PC/Preview-Anleitung.md')
     shutil.copy2(root / 'docs/local-delivery-de.txt', delivery / 'LIESMICH.txt')
