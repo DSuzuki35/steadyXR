@@ -260,6 +260,13 @@ bool corners_inside(const Warp &w) {
         }
     return true;
 }
+EdgeReserve sanitize_edge_reserve(EdgeReserve edges) {
+    edges.left = safe(edges.left, 5, 0, 35);
+    edges.right = safe(edges.right, 5, 0, 35);
+    edges.top = safe(edges.top, 5, 0, 35);
+    edges.bottom = safe(edges.bottom, 5, 0, 35);
+    return edges;
+}
 Warp make_warp(std::uint32_t width, std::uint32_t height, const Settings &s, Quat correction,
                std::optional<Projection> automatic) {
     Warp w;
@@ -293,9 +300,47 @@ Warp make_warp(std::uint32_t width, std::uint32_t height, const Settings &s, Qua
     cx += safe(s.framing_x, 0, -100, 100) / 100 * ((w.input.right - w.input.left) - sx) / 2;
     cy -= safe(s.framing_y, 0, -100, 100) / 100 * ((w.input.up - w.input.down) - sy) / 2;
     w.output = {cx - sx / 2, cx + sx / 2, cy + sy / 2, cy - sy / 2};
+    if (s.edge_reserve.enabled) {
+        const auto reserve = sanitize_edge_reserve(s.edge_reserve);
+        double fit_x = 1, fit_y = 1;
+        if (s.output_16_9) {
+            const double reserved_width = iw * (1 - (reserve.left + reserve.right) / 100);
+            const double reserved_height = ih * (1 - (reserve.top + reserve.bottom) / 100);
+            const double aspect = double(w.width) / w.height;
+            fit_x = std::min(1., reserved_height * aspect / reserved_width);
+            fit_y = std::min(1., reserved_width / aspect / reserved_height);
+        }
+        // Fit any additional aspect crop in the same proportion as the requested
+        // reserves. A small left reserve must keep its preference for left scenery.
+        auto bounds = [](double low, double high, double first, double last, double fit) {
+            const double extent = high - low;
+            const double a = first / 100, b = last / 100;
+            const double extra = extent * (1 - a - b) * (1 - fit);
+            const double bias = first + last > 0 ? first / (first + last) : .5;
+            return std::array<double, 2>{low + extent * a + extra * bias,
+                                         high - extent * b - extra * (1 - bias)};
+        };
+        const auto x = bounds(w.input.left, w.input.right, reserve.left, reserve.right, fit_x);
+        const auto y = bounds(w.input.down, w.input.up, reserve.bottom, reserve.top, fit_y);
+        const double zoom = 1 - safe(s.framing_zoom, 0, 0, 40) / 100;
+        sx = (x[1] - x[0]) * zoom;
+        sy = (y[1] - y[0]) * zoom;
+        cx = (x[0] + x[1]) / 2;
+        cy = (y[0] + y[1]) / 2;
+        const double fx = safe(s.framing_x, 0, -100, 100) / 100;
+        const double fy = -safe(s.framing_y, 0, -100, 100) / 100;
+        cx += fx * (fx >= 0 ? w.input.right - cx - sx / 2 : cx - sx / 2 - w.input.left);
+        cy += fy * (fy >= 0 ? w.input.up - cy - sy / 2 : cy - sy / 2 - w.input.down);
+        w.output = {cx - sx / 2, cx + sx / 2, cy + sy / 2, cy - sy / 2};
+    }
+    limit_warp_correction(w, correction, s.mirror_edges);
+    return w;
+}
+void limit_warp_correction(Warp &w, Quat correction, bool mirror_edges) {
+    w.correction_fraction = 1;
     w.correction = valid(correction) ? normalized(correction) : Quat{};
     const auto fits = [&] {
-        if (!s.mirror_edges)
+        if (!mirror_edges)
             return corners_inside(w);
         // Reflection extends the captured image, not the eye's projection plane.
         // Keep a margin from its horizon so even extreme turns stay finite.
@@ -322,7 +367,6 @@ Warp make_warp(std::uint32_t width, std::uint32_t height, const Settings &s, Qua
         w.correction_fraction = lo;
         w.correction = slerp({}, desired, lo);
     }
-    return w;
 }
 bool ClockSync::observe(std::uint64_t t1, std::uint64_t t2, std::uint64_t t3, std::uint64_t t4) {
     if (t4 < t1 || t3 < t2)

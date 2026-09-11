@@ -203,7 +203,7 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         RECT version{890, 28, 1009, 59};
         fill(dc, version, field);
         SetTextColor(dc, accent);
-        DrawTextW(dc, L"PREVIEW  0.5.2", -1, &version, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        DrawTextW(dc, L"PREVIEW  0.6.0", -1, &version, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         SelectObject(dc, old);
         if (message == WM_PAINT)
             EndPaint(window, &ps);
@@ -253,9 +253,10 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
                 r.bottom = mid + 2;
                 fill(draw.hdc, r, border);
                 const auto maximum = SendMessageW(header->hwndFrom, TBM_GETRANGEMAX, 0, 0);
+                const auto minimum = SendMessageW(header->hwndFrom, TBM_GETRANGEMIN, 0, 0);
                 const auto value = SendMessageW(header->hwndFrom, TBM_GETPOS, 0, 0);
-                if (maximum > 0)
-                    r.right = r.left + LONG((r.right - r.left) * value / maximum);
+                if (maximum > minimum)
+                    r.right = r.left + LONG((r.right - r.left) * (value - minimum) / (maximum - minimum));
                 fill(draw.hdc, r, enabled ? accent : disabled);
             } else if (draw.dwItemSpec == TBCD_THUMB) {
                 fill(draw.hdc, r, enabled ? accent : disabled);

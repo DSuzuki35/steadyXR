@@ -1,5 +1,8 @@
 #define UNICODE
 #define _UNICODE
+#include "advanced.hpp"
+#include "connection.hpp"
+#include "render_settings.hpp"
 #include "renderer.hpp"
 #include "theme.hpp"
 #include "window_capture.hpp"
@@ -21,8 +24,7 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               source_id = 113, refresh_id = 114, left_id = 115, right_id = 116, top_id = 117, bottom_id = 118,
               horizon_id = 119, mirror_limit_id = 120, aspect_id = 121, width_id = 122, height_id = 123,
               apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127,
-              mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130;
-constexpr wchar_t registry_key[] = L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit";
+              mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130, advanced_id = 131;
 std::wstring decimal(double value) {
     wchar_t text[32]{};
     std::swprintf(text, 32, L"%.1f", value);
@@ -30,11 +32,12 @@ std::wstring decimal(double value) {
 }
 struct App {
     HWND controls{}, output{}, status{}, smooth_label{}, crop_label{}, smooth{}, crop{}, mirror{}, bypass{},
-        eye{}, fps{}, pause{}, mode{}, source{}, trims[4]{}, trim_labels[4]{}, horizon{}, horizon_label{},
-        mirror_limit{}, mirror_limit_label{}, aspect{}, output_width{}, output_height{}, auto_fullscreen{},
-        monitor{}, adaptive_horizon{}, mirror_softness{}, mirror_softness_label{};
+        eye{}, eye_label{}, fps{}, pause{}, mode{}, source{}, trims[4]{}, trim_labels[4]{}, horizon{},
+        horizon_label{}, mirror_limit{}, mirror_limit_label{}, aspect{}, output_width{}, output_height{},
+        auto_fullscreen{}, monitor{}, adaptive_horizon{}, mirror_softness{}, mirror_softness_label{};
     HFONT font{};
     Theme theme;
+    AdvancedSettings advanced;
     Channel channel;
     Renderer renderer;
     WindowCapture capture;
@@ -61,75 +64,17 @@ struct App {
                (!paused && last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000);
     }
     bool registered(bool any_version = false) const {
-        HKEY key{};
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, registry_key, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
-            return false;
-        DWORD value = 1, size = sizeof(value), type = 0;
-        const auto path = directory + L"\\XR_APILAYER_HORIZONLOCK_preview.json";
-        auto result =
-            RegQueryValueExW(key, path.c_str(), nullptr, &type, reinterpret_cast<BYTE *>(&value), &size);
-        bool found = result == ERROR_SUCCESS && type == REG_DWORD && value == 0;
-        if (any_version && !found) {
-            for (DWORD index = 0;; ++index) {
-                wchar_t name[32768]{};
-                DWORD length = 32768;
-                size = sizeof(value);
-                type = 0;
-                value = 1;
-                result = RegEnumValueW(key, index, name, &length, nullptr, &type,
-                                       reinterpret_cast<BYTE *>(&value), &size);
-                if (result == ERROR_NO_MORE_ITEMS)
-                    break;
-                if (result != ERROR_SUCCESS)
-                    continue;
-                if (type == REG_DWORD && value == 0 &&
-                    std::filesystem::path(name).filename() == L"XR_APILAYER_HORIZONLOCK_preview.json" &&
-                    GetFileAttributesW(name) != INVALID_FILE_ATTRIBUTES) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-        RegCloseKey(key);
-        return found;
+        return layer_installed(directory, any_version);
     }
     void connection(bool enable) {
-        if (enable && registered(true) && !registered()) {
-            setup_message = L"An existing Horizon Lock layer is installed and works with this preview. No "
-                            L"new connection is needed.";
-            return;
-        }
-        const auto path = directory + L"\\XR_APILAYER_HORIZONLOCK_preview.json";
-        HKEY key{};
-        LONG result;
-        if (enable && (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES ||
-                       GetFileAttributesW((directory + L"\\horizonlock-openxr-layer.dll").c_str()) ==
-                           INVALID_FILE_ATTRIBUTES)) {
-            setup_message = L"App files are missing. Please use the complete preview package.";
-            return;
-        }
-        if (enable) {
-            result = RegCreateKeyExW(HKEY_CURRENT_USER, registry_key, 0, nullptr, 0, KEY_SET_VALUE, nullptr,
-                                     &key, nullptr);
-            DWORD zero = 0;
-            if (result == ERROR_SUCCESS)
-                result = RegSetValueExW(key, path.c_str(), 0, REG_DWORD,
-                                        reinterpret_cast<const BYTE *>(&zero), sizeof(zero));
-        } else {
-            result = RegOpenKeyExW(HKEY_CURRENT_USER, registry_key, 0, KEY_SET_VALUE, &key);
-            if (result == ERROR_SUCCESS)
-                result = RegDeleteValueW(key, path.c_str());
-            if (result == ERROR_FILE_NOT_FOUND)
-                result = ERROR_SUCCESS;
-        }
-        if (key)
-            RegCloseKey(key);
+        const auto result = set_layer_connection(directory, enable);
         setup_message = result == ERROR_SUCCESS
-                            ? (enable ? L"Connection installed. Restart iRacing once to activate it."
+                            ? (enable ? L"0.6 connection installed. Restart iRacing to use it."
                                       : L"Connection removed. This takes effect after restarting the game.")
                             : L"Could not change the connection. Windows error " + std::to_wstring(result);
     }
     void save() {
+        write_edge_settings(ini, options);
         auto write = [&](const wchar_t *key, int value) {
             WritePrivateProfileStringW(L"Preview", key, std::to_wstring(value).c_str(), ini.c_str());
         };
@@ -194,6 +139,8 @@ struct App {
         monitor_name = saved_monitor;
         options.mirror = value(L"Mirror", 1, 0, 1) != 0;
         selected_eye = value(L"Eye", 0, 0, 1);
+        options.eye = selected_eye;
+        read_edge_settings(ini, options);
         rate = value(L"FPS", 60, 30, 90);
         window_mode = value(L"Mode", 0, 0, 1) == 0;
         if (rate != 30 && rate != 60 && rate != 90)
@@ -410,12 +357,18 @@ struct App {
     }
     void labels() {
         SetWindowTextW(smooth_label, (L"Smoothing: " + decimal(options.smoothing) + L" %").c_str());
-        SetWindowTextW(crop_label, (L"Crop reserve: " + decimal(options.crop) + L" %").c_str());
+        const bool separate = options.edge_reserve[std::min(selected_eye, 1u)].enabled;
+        SetWindowTextW(crop_label, separate ? L"Per-edge crop reserve"
+                                            : (L"Crop reserve: " + decimal(options.crop) + L" %").c_str());
+        EnableWindow(crop, !separate);
         SetWindowTextW(pause, paused ? L"Resume" : L"Pause / GPU comparison");
         EnableWindow(source, window_mode);
         EnableWindow(GetDlgItem(controls, refresh_id), window_mode);
-        EnableWindow(eye, !window_mode);
+        EnableWindow(eye, TRUE);
+        SetWindowTextW(eye_label, window_mode ? L"Profile" : L"Eye");
         EnableWindow(GetDlgItem(controls, setup_id), !window_mode);
+        SetWindowTextW(GetDlgItem(controls, setup_id),
+                       registered(true) && !registered() ? L"Upgrade connection" : L"Install connection");
         const double values[] = {options.crop_left, options.crop_right, options.crop_top,
                                  options.crop_bottom};
         const wchar_t *names[] = {L"Crop left", L"Crop right", L"Crop top", L"Crop bottom"};
@@ -450,8 +403,10 @@ struct App {
             if (!capture.error().empty())
                 text += capture.error() + L"\r\n";
         } else {
-            text = registered(true) ? L"OpenXR connection installed.\r\n"
-                                    : L"For a new connection: install the layer, then restart iRacing.\r\n";
+            text = registered() ? L"OpenXR 0.6 connection installed.\r\n"
+                   : registered(true)
+                       ? L"Older layer installed: click Upgrade connection, then restart iRacing.\r\n"
+                       : L"Install the connection, then restart iRacing.\r\n";
             if (channel.lock()) {
                 const auto &s = *channel.data();
                 const auto now = GetTickCount64();
@@ -460,6 +415,21 @@ struct App {
                     text = L"OpenXR feed connected.\r\n";
                     text += std::wstring(s.application, wcsnlen(s.application, 128)) + L"\r\n";
                     text += std::wstring(s.status, wcsnlen(s.status, 192)) + L"\r\n";
+                    const auto configured = read_render_settings(ini);
+                    bool pending = configured.enabled != bool(s.render_enabled);
+                    if (configured.enabled)
+                        for (unsigned eye = 0; eye < 2; ++eye)
+                            pending |= std::abs(configured.eyes[eye].left - s.render_left[eye]) > .05 ||
+                                       std::abs(configured.eyes[eye].right - s.render_right[eye]) > .05;
+                    if (pending)
+                        text += L"New render settings pending: restart the OpenXR game.\r\n";
+                    else if (setup_message.rfind(L"Render settings saved.", 0) == 0)
+                        setup_message.clear();
+                    if (s.render_enabled) {
+                        const auto eye = std::min(selected_eye, 1u);
+                        text += L"Render extension this session: L " + decimal(s.render_left[eye]) +
+                                L" %, R " + decimal(s.render_right[eye]) + L" %.\r\n";
+                    }
                 } else
                     text += L"Waiting for an OpenXR game using D3D11.\r\n";
                 channel.unlock();
@@ -482,7 +452,7 @@ struct App {
         text += L"Render: " + std::to_wstring(options.output_width) + L" x " +
                 std::to_wstring(options.output_height) + L" | Aspect: " + std::to_wstring(aspect_numerator) +
                 L":" + std::to_wstring(aspect_denominator) +
-                L"\r\nF11: fullscreen. Headset image unchanged. No OBS or encoder required.";
+                L"\r\nF11: fullscreen. No OBS or encoder required.";
         SetWindowTextW(status, text.c_str());
     }
 };
@@ -610,6 +580,9 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         return 0;
     case WM_COMMAND:
         switch (LOWORD(w)) {
+        case advanced_id:
+            app->advanced.open(app->selected_eye);
+            return 0;
         case comfort_id: {
             if (!app->can_undo_comfort)
                 app->before_comfort = app->options;
@@ -694,6 +667,7 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         case eye_id:
             if (HIWORD(w) == CBN_SELCHANGE) {
                 app->selected_eye = unsigned(SendMessageW(app->eye, CB_GETCURSEL, 0, 0));
+                app->options.eye = app->selected_eye;
                 app->renderer.reset();
             }
             break;
@@ -773,7 +747,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.5.2",
+    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.6.0",
                                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 100, 100, 1050,
                                      855, nullptr, nullptr, instance, nullptr);
     state.output =
@@ -802,6 +776,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     child(state.controls, L"BUTTON", L"Refresh", BS_PUSHBUTTON, 485, 95, 132, 29, refresh_id);
     child(state.controls, L"BUTTON", L"Install connection", BS_PUSHBUTTON, 22, 145, 210, 34, setup_id);
     child(state.controls, L"BUTTON", L"Remove connection", BS_PUSHBUTTON, 245, 145, 205, 34, remove_id);
+    child(state.controls, L"BUTTON", L"Render / edges…", BS_PUSHBUTTON, 463, 145, 154, 34, advanced_id);
     child(state.controls, L"BUTTON", L"Open preview", BS_PUSHBUTTON, 22, 195, 190, 36, show_id);
     state.pause = child(state.controls, L"BUTTON", L"Pause / GPU comparison", BS_PUSHBUTTON, 225, 195, 215,
                         36, pause_id);
@@ -825,7 +800,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     SendMessageW(state.mirror, BM_SETCHECK, state.options.mirror ? BST_CHECKED : BST_UNCHECKED, 0);
     state.bypass = child(state.controls, L"BUTTON", L"Disable stabilization (capture stays active)",
                          BS_AUTOCHECKBOX, 22, 375, 592, 28, bypass_id);
-    child(state.controls, L"STATIC", L"Eye", 0, 22, 425, 55, 25);
+    state.eye_label = child(state.controls, L"STATIC", L"Eye", 0, 22, 425, 55, 25);
     state.eye =
         child(state.controls, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 85, 420, 160, 160, eye_id);
     SendMessageW(state.eye, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Left"));
@@ -891,6 +866,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.auto_fullscreen = child(state.controls, L"BUTTON", L"Start preview in fullscreen", BS_AUTOCHECKBOX,
                                   655, 675, 350, 28, auto_fullscreen_id);
     SendMessageW(state.auto_fullscreen, BM_SETCHECK, state.start_fullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
+    state.advanced.initialize(
+        state.controls, state.theme, state.options, state.ini,
+        [&] {
+            state.labels();
+            state.save();
+            state.dirty = true;
+        },
+        [&](std::wstring message) {
+            state.setup_message = std::move(message);
+            state.update_status();
+        });
     state.list_monitors();
     if (!self_test)
         state.move_to_monitor();
@@ -945,7 +931,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             MSG msg{};
             while (!state.quit && GetTickCount64() < until) {
                 while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                    if (!IsDialogMessageW(state.controls, &msg)) {
+                    if (!state.advanced.route(msg) && !IsDialogMessageW(state.controls, &msg)) {
                         TranslateMessage(&msg);
                         DispatchMessageW(&msg);
                     }
@@ -1043,6 +1029,50 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                state.options.mirror_softness == before_preset.mirror_softness &&
                state.options.horizon_lock == before_preset.horizon_lock &&
                state.options.adaptive_horizon == before_preset.adaptive_horizon;
+        state.advanced.open(1, false);
+        const auto panel = state.advanced.handle();
+        bool advanced_ok = panel && IsWindow(panel);
+        // Per-eye margins are live and persist independently from render requests.
+        if (panel) {
+            SendMessageW(GetDlgItem(panel, AdvancedSettings::separate_id), BM_SETCHECK, BST_CHECKED, 0);
+            SendMessageW(panel, WM_COMMAND, AdvancedSettings::separate_id, 0);
+            SendMessageW(GetDlgItem(panel, AdvancedSettings::left_id), TBM_SETPOS, TRUE, 20);
+            SendMessageW(GetDlgItem(panel, AdvancedSettings::right_id), TBM_SETPOS, TRUE, 200);
+            SendMessageW(GetDlgItem(panel, AdvancedSettings::vertical_id), TBM_SETPOS, TRUE, 675);
+            SendMessageW(panel, WM_HSCROLL, 0,
+                         reinterpret_cast<LPARAM>(GetDlgItem(panel, AdvancedSettings::left_id)));
+            advanced_ok = state.options.edge_reserve[1].enabled && state.options.edge_reserve[1].left == 2 &&
+                          state.options.edge_reserve[1].right == 20 &&
+                          state.options.vertical_offset == 67.5 && !state.options.edge_reserve[0].enabled;
+            SendMessageW(panel, WM_COMMAND, AdvancedSettings::inward_id, 0);
+            advanced_ok = advanced_ok && !read_render_settings(state.ini).enabled;
+            SendMessageW(panel, WM_COMMAND, AdvancedSettings::save_render_id, 0);
+            const auto render = read_render_settings(state.ini);
+            advanced_ok = advanced_ok && render.enabled && render.eyes[0].right == 10 &&
+                          render.eyes[1].left == 10 && render.eyes[0].left == 0 && render.eyes[1].right == 0;
+            App reloaded;
+            reloaded.ini = state.ini;
+            reloaded.read();
+            advanced_ok = advanced_ok && reloaded.options.edge_reserve[1].left == 2 &&
+                          reloaded.options.edge_reserve[1].right == 20 &&
+                          reloaded.options.vertical_offset == 67.5;
+            advanced_ok =
+                save_controls(panel, state.directory + L"\\preview-advanced-test.bmp") && advanced_ok;
+        }
+        trace << "advanced=" << advanced_ok << '\n';
+        okay = okay && advanced_ok;
+        state.window_mode = true;
+        state.labels();
+        bool profile_ok = IsWindowEnabled(state.eye);
+        SendMessageW(state.eye, CB_SETCURSEL, 1, 0);
+        SendMessageW(state.controls, WM_COMMAND, MAKEWPARAM(eye_id, CBN_SELCHANGE), 0);
+        profile_ok =
+            profile_ok && state.selected_eye == 1 && state.options.eye == 1 && !IsWindowEnabled(state.crop);
+        SendMessageW(state.eye, CB_SETCURSEL, 0, 0);
+        SendMessageW(state.controls, WM_COMMAND, MAKEWPARAM(eye_id, CBN_SELCHANGE), 0);
+        profile_ok = profile_ok && state.options.eye == 0 && IsWindowEnabled(state.crop);
+        trace << "window-profile=" << profile_ok << '\n';
+        okay = okay && profile_ok;
         RECT initial{}, expanded{}, restored{};
         trace << "settings=" << okay << '\n';
         GetWindowRect(state.output, &initial);
@@ -1089,7 +1119,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 state.quit = true;
                 break;
             }
-            if (!IsDialogMessageW(state.controls, &msg)) {
+            if (!state.advanced.route(msg) && !IsDialogMessageW(state.controls, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }

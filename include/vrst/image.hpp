@@ -53,6 +53,7 @@ struct ImageWarp {
     double correction_fraction{1};
 };
 // Cropping/framing uses Settings; FOV, automatic_fov and tracking delay are ignored.
+// output_region is left/right/top/bottom within the framed output, applied before motion limiting.
 ImageWarp make_image_warp(std::uint32_t source_width, std::uint32_t source_height, const Settings &,
-                          const ImageResult &);
+                          const ImageResult &, std::array<double, 4> output_region = {0, 1, 0, 1});
 } // namespace vrst

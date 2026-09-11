@@ -324,6 +324,42 @@ int main(int argc, char **argv) {
         auto cropped = pixels[(h / 2) * w + w / 2];
         require(std::abs(int(cropped & 255) - 114) <= 2 && std::abs(int((cropped >> 8) & 255) - 114) <= 2,
                 "image crop must move sampled center to (45%,45%) without stretching");
+        options.crop_left = options.crop_right = options.crop_top = options.crop_bottom = 0;
+        options.edge_reserve[0] = {true, 2, 20, 5, 5};
+        options.edge_reserve[1] = {true, 20, 2, 5, 5};
+        options.eye = 0;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "left window reserve draw");
+        auto reserve_center = pixels[(h / 2) * w + w / 2];
+        require(std::abs(int(reserve_center & 255) - 76) <= 2,
+                "window aspect fit must visibly favor scenery beside its two-percent left reserve");
+        options.eye = 1;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "right window reserve draw");
+        reserve_center = pixels[(h / 2) * w + w / 2];
+        require(std::abs(int(reserve_center & 255) - 179) <= 2,
+                "window capture must change reserve profiles immediately with selected eye");
+        options.edge_reserve[0].enabled = options.edge_reserve[1].enabled = false;
+        options.aspect = 4;
+        options.vertical_offset = -100;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "highest window framing");
+        auto high_center = pixels[(h / 2) * w + w / 2];
+        options.vertical_offset = 100;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "lowest window framing");
+        auto low_center = pixels[(h / 2) * w + w / 2];
+        require(std::abs(int((high_center >> 8) & 255) - 57) <= 2 &&
+                    std::abs(int((low_center >> 8) & 255) - 198) <= 2,
+                "window vertical offset must select top and bottom aspect-fit scenery");
+        options.edge_reserve[1] = {true, 0, 0, 2, 20};
+        options.vertical_offset = -100;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h),
+                "highest window framing with separate reserves");
+        high_center = pixels[(h / 2) * w + w / 2];
+        options.vertical_offset = 100;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h),
+                "lowest window framing with separate reserves");
+        low_center = pixels[(h / 2) * w + w / 2];
+        require(std::abs(int((high_center >> 8) & 255) - 62) <= 2 &&
+                    std::abs(int((low_center >> 8) & 255) - 147) <= 2,
+                "window vertical offset must respect its enabled top and bottom edge reserves");
         renderer.source_changed();
         require(!renderer.has_frame(), "window source change must discard pending history");
         std::cout << "Native GPU: window analysis/color, quad composition, resize, subrect bounds, keyed "

@@ -497,7 +497,7 @@ ImageResult ImageStabilizer::process(const GrayImage &f, std::uint64_t time, con
     return done();
 }
 ImageWarp make_image_warp(std::uint32_t width, std::uint32_t height, const Settings &settings,
-                          const ImageResult &result) {
+                          const ImageResult &result, std::array<double, 4> output_region) {
     Settings framing = settings;
     framing.automatic_fov = false;
     framing.horizontal_fov = 90;
@@ -506,7 +506,9 @@ ImageWarp make_image_warp(std::uint32_t width, std::uint32_t height, const Setti
     ImageWarp out;
     out.width = base.width;
     out.height = base.height;
-    auto origin = map_uv(base, 0, 0), xr = map_uv(base, 1, 0), yr = map_uv(base, 0, 1);
+    auto origin = map_uv(base, output_region[0], output_region[2]),
+         xr = map_uv(base, output_region[1], output_region[2]),
+         yr = map_uv(base, output_region[0], output_region[3]);
     double sx = base.uv_right - base.uv_left, sy = base.uv_bottom - base.uv_top;
     ImageTransform desired = result.correction;
     if ((result.status != ImageStatus::tracking && result.status != ImageStatus::weak) || !result.width ||

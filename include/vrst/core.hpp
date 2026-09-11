@@ -79,6 +79,11 @@ class PoseHistory {
     void recompute();
 };
 
+struct EdgeReserve {
+    bool enabled{};
+    double left{5}, right{5}, top{5}, bottom{5}; // Percent of the source extent per edge.
+};
+EdgeReserve sanitize_edge_reserve(EdgeReserve);
 struct Settings {
     double horizontal_fov{100}, vertical_fov{90};
     bool automatic_fov{false};
@@ -88,6 +93,7 @@ struct Settings {
     double framing_x{0}, framing_y{0}; // -100..100, within available framing margin
     double input_left{0}, input_right{0}, input_top{0}, input_bottom{0}; // percent per edge
     bool mirror_edges{false}; // Allow correction beyond the trimmed image, filled by reflection.
+    EdgeReserve edge_reserve{};
 };
 struct Warp {
     Projection input{}, output{};
@@ -101,6 +107,8 @@ Warp make_warp(std::uint32_t width, std::uint32_t height, const Settings &settin
 // Maps final output normalized coordinates to coordinates in the original input.
 std::array<double, 2> map_uv(const Warp &warp, double u, double v);
 bool corners_inside(const Warp &warp);
+// Re-evaluate a correction after changing output framing.
+void limit_warp_correction(Warp &, Quat correction, bool mirror_edges);
 
 // Four timestamps: client sent, server received, server sent, client received.
 class ClockSync {

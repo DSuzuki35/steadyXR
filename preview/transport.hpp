@@ -5,8 +5,8 @@
 
 namespace vrst::preview {
 constexpr std::uint32_t ipc_magic = 0x50564c48;
-constexpr std::uint32_t ipc_version = 1;
-constexpr const wchar_t *default_channel = L"Local\\HorizonLockVRPreview-v1";
+constexpr std::uint32_t ipc_version = 2;
+constexpr const wchar_t *default_channel = L"Local\\HorizonLockVRPreview-v2";
 
 // All shared data is accessed under Channel's named mutex. No C++ atomics cross
 // processes. GPU textures use key 0 for the writer and key 1 for the reader.
@@ -21,7 +21,7 @@ struct Frame {
     std::uint64_t generation{}, sequence{}, session{}, reference_epoch{};
     std::int64_t display_time{};
     std::uint64_t published_ms{};
-    std::uint32_t producer_pid{}, view_count{};
+    std::uint32_t producer_pid{}, view_count{}, eye{};
     LUID adapter{};
     View views[2]{};
 };
@@ -31,6 +31,8 @@ struct Shared {
     std::uint32_t consumer_pid{}, paused{1}, eye{}, fps{60};
     std::uint64_t heartbeat_ms{};
     std::uint32_t producer_pid{}, status_code{};
+    std::uint32_t render_enabled{};
+    float render_left[2]{}, render_right[2]{}; // Active instance snapshot, in percent.
     std::uint64_t producer_heartbeat_ms{}, published_frames{}, dropped_frames{};
     wchar_t application[128]{};
     wchar_t status[192]{};

@@ -1,7 +1,8 @@
-// OpenXR implicit layer: observe submitted projections without altering runtime calls.
+// OpenXR implicit layer: optional render expansion and submitted projection capture.
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_NO_PROTOTYPES
+#include "render_settings.hpp"
 #include "transport.hpp"
 #include <algorithm>
 #include <array>
@@ -63,12 +64,16 @@ struct Instance {
     XrInstance handle{};
     PFN_xrGetInstanceProcAddr gipa{};
     wchar_t application[128]{};
+    RenderSettings render{}; // Immutable for the lifetime of this instance.
 #define PROC(n) PFN_xr##n n{};
     PROC(DestroyInstance)
     PROC(CreateSession)
     PROC(DestroySession)
-    PROC(CreateSwapchain) PROC(DestroySwapchain) PROC(EnumerateSwapchainImages) PROC(AcquireSwapchainImage)
-        PROC(WaitSwapchainImage) PROC(ReleaseSwapchainImage) PROC(WaitFrame) PROC(EndFrame) PROC(PollEvent)
+    PROC(LocateViews)
+    PROC(EnumerateViewConfigurationViews)
+    PROC(GetVisibilityMaskKHR) PROC(CreateSwapchain) PROC(DestroySwapchain) PROC(EnumerateSwapchainImages)
+        PROC(AcquireSwapchainImage) PROC(WaitSwapchainImage) PROC(ReleaseSwapchainImage) PROC(WaitFrame)
+            PROC(EndFrame) PROC(PollEvent)
 #undef PROC
 };
 struct Output {
@@ -143,6 +148,11 @@ void status(Shared &shared, Session &s, std::uint32_t code, const wchar_t *text)
     shared.producer_pid = GetCurrentProcessId();
     shared.producer_heartbeat_ms = GetTickCount64();
     shared.status_code = code;
+    shared.render_enabled = s.instance->render.enabled ? 1u : 0u;
+    for (unsigned eye = 0; eye < 2; ++eye) {
+        shared.render_left[eye] = float(s.instance->render.eyes[eye].left);
+        shared.render_right[eye] = float(s.instance->render.eyes[eye].right);
+    }
     std::wcsncpy(shared.application, s.instance->application, 127);
     shared.application[127] = 0;
     std::wcsncpy(shared.status, text, 191);
@@ -312,6 +322,7 @@ void publish(Session &s, const XrFrameEndInfo &end) {
     }
     const unsigned eye = std::min(shared.eye, 1u), count = projection->viewCount == 4 ? 2 : 1;
     Frame frame{};
+    frame.eye = eye;
     frame.view_count = count;
     frame.producer_pid = GetCurrentProcessId();
     frame.adapter = s.adapter;
@@ -415,6 +426,87 @@ void publish(Session &s, const XrFrameEndInfo &end) {
     s.limiter.published(monotonic_ns(), shared.fps);
 }
 #define STATE_LOCK std::lock_guard<std::recursive_mutex> guard(state_mutex)
+bool context_configuration(XrViewConfigurationType type) {
+    return type == XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO ||
+           type == XR_VIEW_CONFIGURATION_TYPE_PRIMARY_QUAD_VARJO;
+}
+bool expanded_eye(const Instance &instance, XrViewConfigurationType type, uint32_t eye) {
+    return instance.render.enabled && context_configuration(type) && eye < 2 &&
+           (instance.render.eyes[eye].left > 0 || instance.render.eyes[eye].right > 0);
+}
+XrResult XRAPI_CALL layer_locate_views(XrSession handle, const XrViewLocateInfo *info, XrViewState *state,
+                                       uint32_t capacity, uint32_t *count, XrView *views) {
+    STATE_LOCK;
+    auto it = sessions.find(handle);
+    if (it == sessions.end())
+        return XR_ERROR_HANDLE_INVALID;
+    const auto &instance = *it->second->instance;
+    if (!instance.LocateViews)
+        return XR_ERROR_FUNCTION_UNSUPPORTED;
+    const auto result = instance.LocateViews(handle, info, state, capacity, count, views);
+    if (XR_SUCCEEDED(result) && info && count && capacity && views && *count <= capacity)
+        for (uint32_t eye = 0; eye < std::min(*count, 2u); ++eye) {
+            if (!expanded_eye(instance, info->viewConfigurationType, eye))
+                continue;
+            auto &fov = views[eye].fov;
+            const double left = std::tan(double(fov.angleLeft)), right = std::tan(double(fov.angleRight));
+            const double width = right - left;
+            if (!std::isfinite(width) || width <= 0)
+                continue;
+            const auto &expansion = instance.render.eyes[eye];
+            if (expansion.left > 0)
+                fov.angleLeft = float(std::atan(left - width * expansion.left / 100.0));
+            if (expansion.right > 0)
+                fov.angleRight = float(std::atan(right + width * expansion.right / 100.0));
+        }
+    return result;
+}
+XrResult XRAPI_CALL layer_view_sizes(XrInstance handle, XrSystemId system, XrViewConfigurationType type,
+                                     uint32_t capacity, uint32_t *count, XrViewConfigurationView *views) {
+    STATE_LOCK;
+    auto it = instances.find(handle);
+    if (it == instances.end())
+        return XR_ERROR_HANDLE_INVALID;
+    const auto &instance = *it->second;
+    if (!instance.EnumerateViewConfigurationViews)
+        return XR_ERROR_FUNCTION_UNSUPPORTED;
+    const auto result =
+        instance.EnumerateViewConfigurationViews(handle, system, type, capacity, count, views);
+    if (XR_SUCCEEDED(result) && count && capacity && views && *count <= capacity)
+        for (uint32_t eye = 0; eye < std::min(*count, 2u); ++eye) {
+            if (!expanded_eye(instance, type, eye))
+                continue;
+            auto &view = views[eye];
+            const auto &expansion = instance.render.eyes[eye];
+            const double width =
+                double(view.recommendedImageRectWidth) * (1.0 + (expansion.left + expansion.right) / 100.0);
+            // Packing is unknown here. Limit additional pixels for possible side-by-side D3D11
+            // textures, while retaining larger native recommendations used by arrays/separate images.
+            const double requested =
+                std::max(double(view.recommendedImageRectWidth), std::min(width, 8192.0));
+            view.recommendedImageRectWidth =
+                uint32_t(std::round(std::min(requested, double(view.maxImageRectWidth))));
+        }
+    return result;
+}
+XrResult XRAPI_CALL layer_visibility_mask(XrSession handle, XrViewConfigurationType type, uint32_t eye,
+                                          XrVisibilityMaskTypeKHR kind, XrVisibilityMaskKHR *mask) {
+    STATE_LOCK;
+    auto it = sessions.find(handle);
+    if (it == sessions.end())
+        return XR_ERROR_HANDLE_INVALID;
+    const auto &instance = *it->second->instance;
+    if (!instance.GetVisibilityMaskKHR)
+        return XR_ERROR_FUNCTION_UNSUPPORTED;
+    // Preserve the runtime's validation, two-call behavior, and exact error result.
+    const auto result = instance.GetVisibilityMaskKHR(handle, type, eye, kind, mask);
+    if (XR_SUCCEEDED(result) && mask && expanded_eye(instance, type, eye)) {
+        // KHR_visibility_mask specifies zero counts for an unavailable mask, for every mask type.
+        mask->vertexCountOutput = 0;
+        mask->indexCountOutput = 0;
+    }
+    return result;
+}
 XrResult XRAPI_CALL layer_destroy_instance(XrInstance handle) {
     STATE_LOCK;
     auto it = instances.find(handle);
@@ -656,6 +748,23 @@ XrResult XRAPI_CALL layer_gipa(XrInstance handle, const char *name, PFN_xrVoidFu
     if (!name || !out)
         return XR_ERROR_VALIDATION_FAILURE;
     STATE_LOCK;
+    // Never advertise optional extension functions that the next runtime does not expose.
+    if (!std::strcmp(name, "xrLocateViews") || !std::strcmp(name, "xrEnumerateViewConfigurationViews") ||
+        !std::strcmp(name, "xrGetVisibilityMaskKHR")) {
+        auto it = instances.find(handle);
+        auto next = it == instances.end() ? global_next : it->second->gipa;
+        *out = nullptr;
+        const auto result = next ? next(handle, name, out) : XR_ERROR_FUNCTION_UNSUPPORTED;
+        if (XR_SUCCEEDED(result) && *out && it != instances.end()) {
+            if (!std::strcmp(name, "xrLocateViews"))
+                *out = reinterpret_cast<PFN_xrVoidFunction>(layer_locate_views);
+            else if (!std::strcmp(name, "xrEnumerateViewConfigurationViews"))
+                *out = reinterpret_cast<PFN_xrVoidFunction>(layer_view_sizes);
+            else
+                *out = reinterpret_cast<PFN_xrVoidFunction>(layer_visibility_mask);
+        }
+        return result;
+    }
 #define HOOK(n, f)                                                                                           \
     if (std::strcmp(name, n) == 0) {                                                                         \
         *out = reinterpret_cast<PFN_xrVoidFunction>(f);                                                      \
@@ -664,13 +773,14 @@ XrResult XRAPI_CALL layer_gipa(XrInstance handle, const char *name, PFN_xrVoidFu
     HOOK("xrGetInstanceProcAddr", layer_gipa)
     HOOK("xrDestroyInstance", layer_destroy_instance)
     HOOK("xrCreateSession", layer_create_session)
-    HOOK("xrDestroySession", layer_destroy_session) HOOK("xrCreateSwapchain", layer_create_swapchain)
-        HOOK("xrDestroySwapchain", layer_destroy_swapchain) HOOK("xrAcquireSwapchainImage", layer_acquire)
-            HOOK("xrWaitSwapchainImage", layer_wait_image) HOOK("xrReleaseSwapchainImage", layer_release)
-                HOOK("xrWaitFrame", layer_wait_frame) HOOK("xrEndFrame", layer_end_frame)
-                    HOOK("xrPollEvent", layer_poll)
+    HOOK("xrDestroySession", layer_destroy_session)
+    HOOK("xrCreateSwapchain", layer_create_swapchain)
+    HOOK("xrDestroySwapchain", layer_destroy_swapchain) HOOK("xrAcquireSwapchainImage", layer_acquire)
+        HOOK("xrWaitSwapchainImage", layer_wait_image) HOOK("xrReleaseSwapchainImage", layer_release)
+            HOOK("xrWaitFrame", layer_wait_frame) HOOK("xrEndFrame", layer_end_frame)
+                HOOK("xrPollEvent", layer_poll)
 #undef HOOK
-                        auto it = instances.find(handle);
+                    auto it = instances.find(handle);
     auto next = it == instances.end() ? global_next : it->second->gipa;
     if (next)
         return next(handle, name, out);
@@ -693,11 +803,39 @@ XrResult XRAPI_CALL layer_create_instance(const XrInstanceCreateInfo *info, cons
         auto instance = std::make_unique<Instance>();
         instance->handle = *out;
         instance->gipa = next->nextGetInstanceProcAddr;
+        std::wstring settings_path;
+        const DWORD length = GetEnvironmentVariableW(L"HORIZONLOCK_PREVIEW_SETTINGS", nullptr, 0);
+        if (length && length <= 32768) {
+            settings_path.resize(length);
+            const DWORD copied =
+                GetEnvironmentVariableW(L"HORIZONLOCK_PREVIEW_SETTINGS", settings_path.data(), length);
+            if (copied && copied < length)
+                settings_path.resize(copied);
+            else
+                settings_path.clear();
+        } else {
+            HMODULE module{};
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(layer_name), &module)) {
+                std::wstring path(32768, L'\0');
+                const DWORD copied = GetModuleFileNameW(module, path.data(), DWORD(path.size()));
+                if (copied && copied < path.size()) {
+                    path.resize(copied);
+                    const auto separator = path.find_last_of(L"\\/");
+                    if (separator != std::wstring::npos)
+                        settings_path = path.substr(0, separator + 1) + L"preview.ini";
+                }
+            }
+        }
+        instance->render = read_render_settings(settings_path);
 #define LOAD(n) instance->gipa(*out, "xr" #n, reinterpret_cast<PFN_xrVoidFunction *>(&instance->n));
         LOAD(DestroyInstance)
         LOAD(CreateSession)
         LOAD(DestroySession)
-        LOAD(CreateSwapchain) LOAD(DestroySwapchain) LOAD(EnumerateSwapchainImages)
+        LOAD(LocateViews)
+        LOAD(EnumerateViewConfigurationViews)
+        LOAD(GetVisibilityMaskKHR) LOAD(CreateSwapchain) LOAD(DestroySwapchain) LOAD(EnumerateSwapchainImages)
             LOAD(AcquireSwapchainImage) LOAD(WaitSwapchainImage) LOAD(ReleaseSwapchainImage) LOAD(WaitFrame)
                 LOAD(EndFrame) LOAD(PollEvent)
 #undef LOAD

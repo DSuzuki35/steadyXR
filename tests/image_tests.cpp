@@ -46,6 +46,38 @@ ImageSettings config() {
 }
 } // namespace
 int main() {
+    {
+        Settings framing;
+        framing.edge_reserve = {true, 2, 20, 5, 5};
+        struct Case {
+            unsigned width;
+            double sampled_width, sampled_height;
+        };
+        for (const auto &c : {Case{2000, 1560, 877.5}, Case{3000, 1600, 900}}) {
+            const auto fitted = make_image_warp(c.width, 1000, framing, {});
+            const double sampled_width = fitted.row_x[0] * c.width;
+            const double sampled_height = fitted.row_y[1] * 1000;
+            check(std::abs(sampled_width - c.sampled_width) < 1e-6 &&
+                      std::abs(sampled_height - c.sampled_height) < 1e-6 &&
+                      fitted.width * 9 == fitted.height * 16 &&
+                      std::abs(sampled_width / sampled_height -
+                               double(fitted.width) / fitted.height) < 1e-9,
+                  "separate edge reserves must fit sampled pixels to the actual 16:9 output without stretching");
+        }
+    }
+    {
+        Settings framing;
+        framing.output_16_9 = false;
+        framing.stabilization_crop = 0;
+        ImageResult result;
+        result.width = result.height = 100;
+        result.status = ImageStatus::tracking;
+        result.correction.x = 20;
+        const auto fitted = make_image_warp(100, 100, framing, result, {0, .5, 0, 1});
+        check(std::abs(fitted.row_x[2] - .2) < 1e-6 && std::abs(fitted.row_x[0] - .5) < 1e-6 &&
+                  fitted.correction_fraction == 1,
+              "final image framing supplies correction room before motion limiting");
+    }
     auto s = config();
     ImageStabilizer tracker;
     auto r = tracker.process(frame(), step, s);

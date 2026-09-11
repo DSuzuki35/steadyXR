@@ -20,7 +20,7 @@ void apply_stream_comfort(Options &options) {
     options.mirror_softness = 70;
     options.stabilize = true;
 }
-FramingRegion framing_region(double source_aspect, const Options &options) {
+FramingRegion framing_region(double source_aspect, const Options &options, EdgeReserve reserve) {
     const auto edge = [](double v) { return std::isfinite(v) ? std::clamp(v, 0., 45.) / 100 : 0.; };
     FramingRegion r{edge(options.crop_left), 1 - edge(options.crop_right), edge(options.crop_top),
                     1 - edge(options.crop_bottom)};
@@ -31,11 +31,30 @@ FramingRegion framing_region(double source_aspect, const Options &options) {
     else
         h = w * source_aspect / aspect;
     const double cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
-    return {cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2};
+    FramingRegion fitted{cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2};
+    if (reserve.enabled) {
+        reserve = sanitize_edge_reserve(reserve);
+        const double bx =
+            reserve.left + reserve.right > 0 ? reserve.left / (reserve.left + reserve.right) : .5;
+        const double by =
+            reserve.top + reserve.bottom > 0 ? reserve.top / (reserve.top + reserve.bottom) : .5;
+        const double left = r.left + (r.right - r.left - w) * bx;
+        const double top = r.top + (r.bottom - r.top - h) * by;
+        fitted = {left, left + w, top, top + h};
+    }
+    const double offset =
+        std::isfinite(options.vertical_offset) ? std::clamp(options.vertical_offset, -100., 100.) / 100 : 0.;
+    if (offset != 0) {
+        const double slack = offset < 0 ? fitted.top - r.top : r.bottom - fitted.bottom;
+        const double shift = offset * std::max(0., slack);
+        fitted.top += shift;
+        fitted.bottom += shift;
+    }
+    return fitted;
 }
 Composition FrameStabilizer::update(const Frame &frame, const Options &options) {
     Composition result;
-    if (frame.view_count < 1 || frame.view_count > 2 || frame.display_time <= 0)
+    if (frame.view_count < 1 || frame.view_count > 2 || frame.display_time <= 0 || frame.eye > 1)
         return result;
     for (unsigned i = 0; i < frame.view_count; ++i) {
         const auto &v = frame.views[i];
@@ -45,7 +64,7 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     if (frame.session != previous_.session || frame.generation != previous_.generation ||
         frame.view_count != previous_.view_count || frame.reference_epoch != previous_.reference_epoch ||
         frame.producer_pid != previous_.producer_pid || frame.sequence < previous_.sequence ||
-        frame.display_time < previous_.display_time)
+        frame.display_time < previous_.display_time || frame.eye != previous_.eye)
         reset();
     history_.set_smoothing(options.smoothing);
     if (frame.sequence != previous_.sequence || history_.size() == 0) {
@@ -68,8 +87,12 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     settings.stabilization_crop = options.crop;
     settings.mirror_edges = options.mirror;
     settings.output_16_9 = false;
+    settings.edge_reserve = options.edge_reserve[frame.eye];
     result.warp = make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
-                            options.stabilize ? pose.correction : Quat{}, projection(frame.views[0]));
+                            options.stabilize && !settings.edge_reserve.enabled ? pose.correction : Quat{},
+                            projection(frame.views[0]));
+    if (settings.edge_reserve.enabled && options.stabilize)
+        result.warp.correction = pose.correction;
     auto effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
     // Projection poses are expressed in the application's layer space, not
     // necessarily gravity-aligned runtime space. iRacing can submit an upright
@@ -104,9 +127,16 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
             normalized(multiply(conjugate(orientation(frame.views[0])), effective_target));
     }
     auto &out = result.warp.output;
-    const auto region = framing_region((out.right - out.left) / (out.up - out.down), options);
+    const auto region =
+        framing_region((out.right - out.left) / (out.up - out.down), options, settings.edge_reserve);
     const double x = out.left, y = out.up, w = out.right - out.left, h = out.down - out.up;
     out = {x + w * region.left, x + w * region.right, y + h * region.top, y + h * region.bottom};
+    if (settings.edge_reserve.enabled) {
+        // Reserve, extra framing and horizon leveling all describe the final
+        // output rays. Limit those rays, not an earlier, wider intermediate.
+        limit_warp_correction(result.warp, result.warp.correction, settings.mirror_edges);
+        effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
+    }
     result.focus_correction =
         multiply(conjugate(orientation(frame.views[frame.view_count - 1])), effective_target);
     result.valid = true;

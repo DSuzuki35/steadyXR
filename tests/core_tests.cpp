@@ -192,6 +192,71 @@ int main() {
              auto w = make_warp(1000, 1000, s, axis_angle({0, 1, 0}, .2));
              check(w.correction_fraction < .0001, "unavailable pixels requested");
          }},
+        {"edge reserves retain two percent left and twenty percent right",
+         [] {
+             Settings s;
+             s.horizontal_fov = s.vertical_fov = 90;
+             s.output_16_9 = false;
+             s.stabilization_crop = 40; // Enabled edges replace the uniform reserve.
+             s.edge_reserve = {true, 2, 20, 10, 15};
+             const auto w = make_warp(1000, 1000, s);
+             const auto a = map_uv(w, 0, 0), b = map_uv(w, 1, 1);
+             near(a[0], .02);
+             near(b[0], .8);
+             near(a[1], .1);
+             near(b[1], .85);
+         }},
+        {"asymmetric reserves limit correction against the actual available side",
+         [] {
+             Settings s;
+             s.horizontal_fov = s.vertical_fov = 90;
+             s.output_16_9 = false;
+             s.edge_reserve = {true, 2, 20, 20, 20};
+             const auto toward_left = make_warp(1000, 1000, s, axis_angle({0, 1, 0}, .12));
+             const auto toward_right = make_warp(1000, 1000, s, axis_angle({0, 1, 0}, -.12));
+             check(toward_left.correction_fraction < .2 && toward_right.correction_fraction > .99,
+                   "asymmetric reserve was centered before correction limiting");
+             check(corners_inside(toward_left) && corners_inside(toward_right), "reserve exposed black edge");
+             s.mirror_edges = true;
+             const auto reflected = make_warp(1000, 1000, s, axis_angle({0, 1, 0}, 1.3));
+             check(reflected.correction_fraction < 1, "reflected projection crossed its horizon");
+             for (double u : {0., 1.})
+                 for (double v : {0., 1.}) {
+                     const auto uv = map_uv(reflected, u, v);
+                     check(std::isfinite(uv[0]) && std::isfinite(uv[1]), "reflected reserve became nonfinite");
+                 }
+         }},
+        {"symmetric edge reserves match legacy uniform crop",
+         [] {
+             Settings s;
+             s.horizontal_fov = s.vertical_fov = 90;
+             s.framing_zoom = 12;
+             for (bool widescreen : {false, true}) {
+                 s.output_16_9 = widescreen;
+                 s.edge_reserve.enabled = false;
+                 const auto legacy = make_warp(2000, 1600, s, axis_angle({0, 1, 0}, .03));
+                 s.edge_reserve.enabled = true;
+                 const auto separate = make_warp(2000, 1600, s, axis_angle({0, 1, 0}, .03));
+                 near(separate.output.left, legacy.output.left);
+                 near(separate.output.right, legacy.output.right);
+                 near(separate.output.up, legacy.output.up);
+                 near(separate.output.down, legacy.output.down);
+                 near(separate.correction_fraction, legacy.correction_fraction);
+             }
+         }},
+        {"invalid edge values are finite defaults or clamped to thirty five percent",
+         [] {
+             Settings s;
+             s.horizontal_fov = s.vertical_fov = 90;
+             s.output_16_9 = false;
+             s.edge_reserve = {true, -10, 80, NAN, INFINITY};
+             const auto w = make_warp(1000, 1000, s);
+             const auto a = map_uv(w, 0, 0), b = map_uv(w, 1, 1);
+             near(a[0], 0);
+             near(b[0], .65);
+             near(a[1], .05);
+             near(b[1], .95);
+         }},
         {"90 to 60 selects actual source frames instead of interpolating",
          [] {
              PoseHistory h;

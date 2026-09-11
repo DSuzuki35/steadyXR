@@ -16,12 +16,15 @@ struct Options {
     double horizon_lock{}, mirror_limit{10};
     bool adaptive_horizon{true};
     double mirror_softness{60};
+    EdgeReserve edge_reserve[2]{};
+    unsigned eye{}; // Window capture profile; OpenXR uses the eye stored with its frame.
+    double vertical_offset{}; // -100 highest, +100 lowest position within aspect-fit slack.
 };
 void apply_stream_comfort(Options &);
 struct FramingRegion {
     double left{}, right{1}, top{}, bottom{1};
 };
-FramingRegion framing_region(double source_aspect, const Options &);
+FramingRegion framing_region(double source_aspect, const Options &, EdgeReserve reserve = {});
 struct Composition {
     bool valid{};
     Warp warp{};

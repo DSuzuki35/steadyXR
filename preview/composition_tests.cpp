@@ -31,6 +31,165 @@ Frame frame(std::uint64_t sequence, double angle = 0) {
 }
 int main() {
     try {
+        {
+            Options edges;
+            edges.smoothing = 0;
+            edges.aspect = 1;
+            edges.eye = 1; // The current UI eye must not reinterpret a retained left image.
+            edges.edge_reserve[0] = {true, 2, 20, 5, 5};
+            edges.edge_reserve[1] = {true, 20, 2, 5, 5};
+            auto wide = frame(1);
+            wide.views[0].fov[0] = -2;
+            wide.views[0].fov[1] = 2;
+            FrameStabilizer stabilizer;
+            const auto left = stabilizer.update(wide, edges);
+            check(left.valid && std::abs(left.warp.output.left + 1.8) < 1e-6 &&
+                      std::abs(left.warp.output.right) < 1e-6,
+                  "aspect fit must keep the captured left eye's two-percent left reserve bias");
+            auto right_frame = wide;
+            right_frame.eye = 1;
+            const auto right = stabilizer.update(right_frame, edges);
+            check(right.valid && std::abs(right.warp.output.left) < 1e-6 &&
+                      std::abs(right.warp.output.right - 1.8) < 1e-6,
+                  "captured right eye must select its own mirrored reserve profile");
+            edges.crop_left = 10;
+            edges.crop_right = 20;
+            edges.aspect = 2;
+            const auto trimmed = stabilizer.update(wide, edges).warp.output;
+            check(std::abs(trimmed.left + 1.608) < 1e-6 && std::abs(trimmed.right - .576) < 1e-6,
+                  "framing trims must remain percentages of the reserved projection");
+            edges.smoothing = 100;
+            edges.aspect = 1;
+            stabilizer.reset();
+            stabilizer.update(frame(1), edges);
+            const auto moving = stabilizer.update(frame(2, .08), edges);
+            check(angle_between(moving.warp.correction, {}) > .01, "eye reset fixture needs motion");
+            auto switched = frame(2, .08); // Same sequence/time can occur in a new eye snapshot.
+            switched.eye = 1;
+            check(angle_between(stabilizer.update(switched, edges).warp.correction, {}) < 1e-6,
+                  "eye switch must discard the other eye's smoothing history");
+            auto bad_eye = frame(3);
+            bad_eye.eye = 2;
+            check(!stabilizer.update(bad_eye, edges).valid, "invalid captured eye must not select a profile");
+        }
+        {
+            Options edges;
+            edges.smoothing = 100;
+            edges.mirror = false;
+            edges.aspect = .25;
+            edges.edge_reserve[0] = {true, 2, 20, 20, 20};
+            FrameStabilizer stabilizer;
+            stabilizer.update(frame(1), edges);
+            const auto fitted = stabilizer.update(frame(2, .4), edges);
+            check(fitted.warp.correction_fraction == 1 &&
+                      angle_between(fitted.warp.correction, {}) > .35 && corners_inside(fitted.warp),
+                  "final aspect framing must supply correction room before OpenXR motion limiting");
+            stabilizer.reset();
+            edges.smoothing = 0;
+            edges.aspect = 1;
+            edges.edge_reserve[0] = {true, 5, 5, 5, 5};
+            edges.horizon_lock = 100;
+            auto tilted = frame(1);
+            auto q = axis_angle({0, 0, 1}, pi / 4);
+            for (auto &v : tilted.views) {
+                v.orientation[2] = float(q.z);
+                v.orientation[3] = float(q.w);
+            }
+            const auto limited = stabilizer.update(tilted, edges);
+            check(limited.warp.correction_fraction > 0 && limited.warp.correction_fraction < 1 &&
+                      corners_inside(limited.warp) &&
+                      angle_between(limited.focus_correction, limited.warp.correction) < 1e-6,
+                  "horizon correction and focus view must respect final asymmetric reserve bounds");
+            edges.mirror = true;
+            edges.horizon_lock = 50;
+            q = axis_angle({0, 0, 1}, 5 * pi / 180);
+            for (auto &v : tilted.views) {
+                v.orientation[2] = float(q.z);
+                v.orientation[3] = float(q.w);
+            }
+            stabilizer.reset();
+            const auto adaptive = stabilizer.update(tilted, edges);
+            check(std::abs(angle_between(multiply(q, adaptive.warp.correction), {}) * 180 / pi -
+                           .53125) < 1e-5,
+                  "enabled reserve must retain the adaptive horizon response");
+        }
+        {
+            Options symmetric;
+            symmetric.crop_left = 10;
+            symmetric.crop_bottom = 12;
+            symmetric.vertical_offset = 30;
+            FrameStabilizer stabilizer;
+            for (double aspect : {1., 16. / 9.}) {
+                symmetric.aspect = aspect;
+                symmetric.edge_reserve[0].enabled = false;
+                const auto legacy = stabilizer.update(frame(1), symmetric).warp;
+                symmetric.edge_reserve[0].enabled = true;
+                const auto separate = stabilizer.update(frame(1), symmetric).warp;
+                for (double u : {0., 1.})
+                    for (double v : {0., 1.}) {
+                        const auto a = map_uv(legacy, u, v), b = map_uv(separate, u, v);
+                        check(std::abs(a[0] - b[0]) < 1e-9 && std::abs(a[1] - b[1]) < 1e-9,
+                              "five-percent edges must match ten-percent uniform framing");
+                    }
+            }
+            symmetric = {};
+            symmetric.edge_reserve[0] = {true, 0, 0, 0, 0};
+            const auto zero = stabilizer.update(frame(1), symmetric).warp;
+            check(std::abs(map_uv(zero, .5, .5)[0] - .5) < 1e-9 &&
+                      std::abs(map_uv(zero, .5, .5)[1] - .5) < 1e-9,
+                  "zero edge reserves must keep centered finite aspect framing");
+        }
+        {
+            Options offset;
+            offset.crop_top = 10;
+            offset.crop_bottom = 20;
+            offset.aspect = 2;
+            offset.vertical_offset = -100;
+            auto top = framing_region(1, offset);
+            offset.vertical_offset = 100;
+            auto bottom = framing_region(1, offset);
+            offset.vertical_offset = 0;
+            auto center = framing_region(1, offset);
+            check(std::abs(top.top - .1) < 1e-9 && std::abs(top.bottom - .6) < 1e-9 &&
+                      std::abs(bottom.top - .3) < 1e-9 && std::abs(bottom.bottom - .8) < 1e-9 &&
+                      std::abs(center.top - .2) < 1e-9 && std::abs(center.bottom - .7) < 1e-9,
+                  "vertical offset must move aspect framing to each trimmed boundary without zooming");
+            offset.aspect = .5;
+            offset.vertical_offset = -100;
+            top = framing_region(1, offset);
+            offset.vertical_offset = 100;
+            bottom = framing_region(1, offset);
+            check(top.top == bottom.top && top.bottom == bottom.bottom,
+                  "vertical offset must have no effect without vertical aspect slack");
+            offset = {};
+            offset.aspect = 2;
+            offset.edge_reserve[0] = {true, 0, 0, 2, 20};
+            FrameStabilizer stabilizer;
+            auto sample = [&](double value) {
+                offset.vertical_offset = value;
+                return stabilizer.update(frame(1), offset).warp;
+            };
+            const auto biased = sample(0), highest = sample(-100), lowest = sample(100);
+            check(std::abs(map_uv(biased, .5, .5)[1] - .2954545454545) < 1e-6 &&
+                      std::abs(map_uv(highest, 0, 0)[1] - .02) < 1e-6 &&
+                      std::abs(map_uv(lowest, 1, 1)[1] - .8) < 1e-6,
+                  "vertical offset must move from asymmetric base bias to each available boundary");
+            const auto midpoint = sample(50);
+            check(std::abs(map_uv(midpoint, .5, .5)[1] -
+                           (map_uv(biased, .5, .5)[1] + map_uv(lowest, .5, .5)[1]) / 2) < 1e-9 &&
+                      std::abs((highest.output.up - highest.output.down) -
+                               (lowest.output.up - lowest.output.down)) < 1e-9,
+                  "offset interpolation must be continuous and preserve zoom");
+            for (double invalid : {NAN, INFINITY}) {
+                const auto sane = sample(invalid);
+                check(std::abs(sane.output.up - biased.output.up) < 1e-9 &&
+                          std::abs(sane.output.down - biased.output.down) < 1e-9,
+                      "nonfinite vertical offset must use the unshifted framing");
+            }
+            check(std::abs(sample(-1000).output.up - highest.output.up) < 1e-9 &&
+                      std::abs(sample(1000).output.down - lowest.output.down) < 1e-9,
+                  "vertical offset must clamp within the permitted framing range");
+        }
         Options comfort;
         comfort.crop_left = 7.5;
         comfort.crop_right = 12;

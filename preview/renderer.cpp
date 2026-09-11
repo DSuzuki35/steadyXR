@@ -855,20 +855,29 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
             settings.stabilization_crop = options.crop;
             settings.mirror_edges = options.mirror;
             settings.output_16_9 = false;
+            settings.edge_reserve = sanitize_edge_reserve(options.edge_reserve[std::min(options.eye, 1u)]);
             auto result = r.image_result;
             if (!options.stabilize)
                 result.correction = {};
-            const auto warp =
-                make_image_warp(r.frame.views[0].width, r.frame.views[0].height, settings, result);
+            double source_aspect = double(r.frame.views[0].width) / r.frame.views[0].height;
+            if (settings.edge_reserve.enabled) {
+                const auto &edges = settings.edge_reserve;
+                source_aspect *= (100 - edges.left - edges.right) / (100 - edges.top - edges.bottom);
+            }
+            const auto region = framing_region(source_aspect, options, settings.edge_reserve);
+            const auto warp = make_image_warp(
+                r.frame.views[0].width, r.frame.views[0].height, settings, result,
+                settings.edge_reserve.enabled
+                    ? std::array<double, 4>{region.left, region.right, region.top, region.bottom}
+                    : std::array<double, 4>{0, 1, 0, 1});
             std::copy(warp.row_x.begin(), warp.row_x.end(), p.image_row_x);
             std::copy(warp.row_y.begin(), warp.row_y.end(), p.image_row_y);
-            const auto region =
-                framing_region(double(r.frame.views[0].width) / r.frame.views[0].height, options);
-            for (auto row : {p.image_row_x, p.image_row_y}) {
-                row[2] += float(row[0] * region.left + row[1] * region.top);
-                row[0] *= float(region.right - region.left);
-                row[1] *= float(region.bottom - region.top);
-            }
+            if (!settings.edge_reserve.enabled)
+                for (auto row : {p.image_row_x, p.image_row_y}) {
+                    row[2] += float(row[0] * region.left + row[1] * region.top);
+                    row[0] *= float(region.right - region.left);
+                    row[1] *= float(region.bottom - region.top);
+                }
             p.image_mode[0] = 1;
             rect(p.rect0, p.clamp0, r.frame.views[0]);
             p.flags[0] = options.mirror ? 1.f : 0.f;

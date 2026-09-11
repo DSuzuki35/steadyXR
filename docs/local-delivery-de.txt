@@ -1,14 +1,21 @@
-Horizon Lock VR - Version 0.4.1
+Horizon Lock VR - Version 0.6.0
 
 GAMING PC - STANDALONE PREVIEW
 Run Gaming-PC\Start-Preview.cmd after closing the previous preview app.
 Existing settings are copied if the new version has no preview.ini.
-A working 0.4.0 OpenXR layer is compatible. No reinstall or iRacing restart
-is needed for this viewer update. Keep Preview-0.4.0 while its layer is registered.
+OpenXR capture needs the 0.6 layer. Select OpenXR pose capture, click
+Upgrade connection (or Install connection), then restart iRacing.
+Delivery does not change your registration or runtime automatically.
+Window capture still needs no game restart or connection.
 
-New: four crop sliders, aspect ratio, configurable render resolution
-(default 3840x2160), horizon lock, mirror limit, automatic fullscreen and
-monitor selection. The app is in English. See Gaming-PC\Preview-Guide.md.
+New in Render / edges: per-eye extra OpenXR scenery, Both eyes inward preset,
+asymmetric stabilization reserves and a Y offset slider for the aspect crop.
+The original captured pixels stay available behind the crop for stabilization.
+Extra rendering is off by default. Save render settings, then restart the game;
+edge reserves and Y offset work immediately. GPU cost depends on your setup.
+Designed for native OpenXR and SteamVR OpenXR with SBoys3; both still need
+physical validation. See Gaming-PC\Preview-Guide.md for details.
+Default output is 3840x2160. The app is in English.
 The HDMI signal resolution still follows Windows display settings.
 Disable the old OBS stabilizer on this already stabilized source.
 

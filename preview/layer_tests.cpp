@@ -1,6 +1,7 @@
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_NO_PROTOTYPES
+#include "render_settings.hpp"
 #include "transport.hpp"
 #include <atomic>
 #include <cmath>
@@ -37,6 +38,8 @@ XrInstance instance = reinterpret_cast<XrInstance>(1);
 XrSession session = reinterpret_cast<XrSession>(2);
 XrSwapchain swapchain = reinterpret_cast<XrSwapchain>(3);
 const XrFrameEndInfo *submitted{};
+const XrCompositionLayerProjectionView *expected_submitted_views{};
+uint32_t expected_submitted_count{};
 const XrSwapchainImageReleaseInfo *release_arg{};
 XrResult release_result = XR_SUCCESS, end_result = XR_SUCCESS;
 bool check_runtime_progress{};
@@ -44,6 +47,84 @@ PFN_xrGetInstanceProcAddr layer_lookup{};
 int release_calls{}, end_calls{};
 XrSwapchainCreateInfo swap_info{};
 bool reference_event{};
+XrResult view_result = XR_SUCCESS, mask_result = XR_SUCCESS;
+bool asymmetric_runtime{}, mask_available = true;
+uint32_t recommended_width = 2000, maximum_width = 12000;
+const XrViewLocateInfo *locate_arg{};
+XrViewState *state_arg{};
+constexpr auto quad_views = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_QUAD_VARJO;
+XrView runtime_view(unsigned i) {
+    XrView v{XR_TYPE_VIEW};
+    v.pose.orientation =
+        asymmetric_runtime ? XrQuaternionf{0, .1f, 0, .994987437f} : XrQuaternionf{0, 0, 0, 1};
+    v.pose.position = {float(i) * .032f, 1.7f, -.3f};
+    v.fov = asymmetric_runtime ? XrFovf{std::atan(-.6f), std::atan(1.4f), .8f, -.7f}
+                               : XrFovf{std::atan(-1.f), std::atan(1.f), .8f, -.7f};
+    return v;
+}
+XrResult XRAPI_CALL fake_locate(XrSession, const XrViewLocateInfo *info, XrViewState *state,
+                                uint32_t capacity, uint32_t *count, XrView *views) {
+    CHECK(info == locate_arg && state == state_arg);
+    if (XR_FAILED(view_result))
+        return view_result;
+    *count = info->viewConfigurationType == quad_views ? 4 : 2;
+    if (!capacity)
+        return XR_SUCCESS;
+    if (capacity < *count)
+        return XR_ERROR_SIZE_INSUFFICIENT;
+    state->viewStateFlags = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
+    for (unsigned i = 0; i < *count; ++i) {
+        const void *next = views[i].next;
+        views[i] = runtime_view(i);
+        views[i].next = const_cast<void *>(next);
+    }
+    return XR_SUCCESS;
+}
+XrResult XRAPI_CALL fake_view_sizes(XrInstance, XrSystemId system, XrViewConfigurationType type,
+                                    uint32_t capacity, uint32_t *count, XrViewConfigurationView *views) {
+    CHECK(system == 77);
+    if (XR_FAILED(view_result))
+        return view_result;
+    *count = type == quad_views ? 4 : 2;
+    if (!capacity)
+        return XR_SUCCESS;
+    if (capacity < *count)
+        return XR_ERROR_SIZE_INSUFFICIENT;
+    for (unsigned i = 0; i < *count; ++i) {
+        views[i].recommendedImageRectWidth = recommended_width;
+        views[i].maxImageRectWidth = maximum_width;
+        views[i].recommendedImageRectHeight = 2100;
+        views[i].maxImageRectHeight = 12000;
+        views[i].recommendedSwapchainSampleCount = 1;
+        views[i].maxSwapchainSampleCount = 4;
+    }
+    return XR_SUCCESS;
+}
+XrResult XRAPI_CALL fake_mask(XrSession, XrViewConfigurationType type, uint32_t index,
+                              XrVisibilityMaskTypeKHR kind, XrVisibilityMaskKHR *mask) {
+    if (XR_FAILED(mask_result))
+        return mask_result;
+    if (type != XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO && type != quad_views)
+        return XR_ERROR_VIEW_CONFIGURATION_TYPE_UNSUPPORTED;
+    if (index >= (type == quad_views ? 4u : 2u))
+        return XR_ERROR_VALIDATION_FAILURE;
+    if (kind < XR_VISIBILITY_MASK_TYPE_HIDDEN_TRIANGLE_MESH_KHR ||
+        kind > XR_VISIBILITY_MASK_TYPE_LINE_LOOP_KHR || !mask || mask->type != XR_TYPE_VISIBILITY_MASK_KHR)
+        return XR_ERROR_VALIDATION_FAILURE;
+    mask->vertexCountOutput = mask->indexCountOutput = 3;
+    // Per KHR_visibility_mask either zero capacity makes BOTH buffers inactive.
+    if (!mask->vertexCapacityInput || !mask->indexCapacityInput)
+        return XR_SUCCESS;
+    if (!mask->vertices || !mask->indices)
+        return XR_ERROR_VALIDATION_FAILURE;
+    if (mask->vertexCapacityInput < 3 || mask->indexCapacityInput < 3)
+        return XR_ERROR_SIZE_INSUFFICIENT;
+    for (unsigned i = 0; i < 3; ++i) {
+        mask->vertices[i] = {float(i), 1};
+        mask->indices[i] = i;
+    }
+    return XR_SUCCESS;
+}
 std::uint64_t gpu_copies{};
 using CopyRegion = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, ID3D11Resource *, UINT, UINT, UINT, UINT,
                                              ID3D11Resource *, UINT, const D3D11_BOX *);
@@ -181,6 +262,13 @@ XrResult XRAPI_CALL fake_wait_frame(XrSession, const XrFrameWaitInfo *, XrFrameS
 XrResult XRAPI_CALL fake_end(XrSession, const XrFrameEndInfo *p) {
     ++end_calls;
     CHECK(p == submitted);
+    if (expected_submitted_views) {
+        CHECK(p->layerCount == 1);
+        const auto *projection = reinterpret_cast<const XrCompositionLayerProjection *>(p->layers[0]);
+        CHECK(projection->viewCount == expected_submitted_count);
+        CHECK(!std::memcmp(projection->views, expected_submitted_views,
+                           sizeof(*expected_submitted_views) * expected_submitted_count));
+    }
     return end_result;
 }
 XrResult XRAPI_CALL fake_poll(XrInstance, XrEventDataBuffer *p) {
@@ -194,19 +282,27 @@ XrResult XRAPI_CALL fake_poll(XrInstance, XrEventDataBuffer *p) {
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL fake_gipa(XrInstance, const char *name, PFN_xrVoidFunction *out) {
+    if (!std::strcmp(name, "xrGetVisibilityMaskKHR") && !mask_available) {
+        *out = nullptr;
+        return XR_ERROR_FUNCTION_UNSUPPORTED;
+    }
 #define ENTRY(n, f)                                                                                          \
     if (!std::strcmp(name, n)) {                                                                             \
         *out = reinterpret_cast<PFN_xrVoidFunction>(f);                                                      \
         return XR_SUCCESS;                                                                                   \
     }
     ENTRY("xrDestroyInstance", fake_destroy_instance)
+    ENTRY("xrLocateViews", fake_locate)
+    ENTRY("xrEnumerateViewConfigurationViews", fake_view_sizes)
+    ENTRY("xrGetVisibilityMaskKHR", fake_mask)
     ENTRY("xrCreateSession", fake_create_session)
     ENTRY("xrDestroySession", fake_destroy_session)
-    ENTRY("xrCreateSwapchain", fake_create_swapchain) ENTRY("xrDestroySwapchain", fake_destroy_swapchain)
-        ENTRY("xrEnumerateSwapchainImages", fake_enumerate) ENTRY("xrAcquireSwapchainImage", fake_acquire)
-            ENTRY("xrWaitSwapchainImage", fake_wait_image) ENTRY("xrReleaseSwapchainImage", fake_release)
-                ENTRY("xrWaitFrame", fake_wait_frame) ENTRY("xrEndFrame", fake_end)
-                    ENTRY("xrPollEvent", fake_poll) *out = nullptr;
+    ENTRY("xrCreateSwapchain", fake_create_swapchain)
+    ENTRY("xrDestroySwapchain", fake_destroy_swapchain)
+    ENTRY("xrEnumerateSwapchainImages", fake_enumerate) ENTRY("xrAcquireSwapchainImage", fake_acquire)
+        ENTRY("xrWaitSwapchainImage", fake_wait_image) ENTRY("xrReleaseSwapchainImage", fake_release)
+            ENTRY("xrWaitFrame", fake_wait_frame) ENTRY("xrEndFrame", fake_end)
+                ENTRY("xrPollEvent", fake_poll) *out = nullptr;
     return XR_ERROR_FUNCTION_UNSUPPORTED;
 }
 template <class T> T fn(PFN_xrGetInstanceProcAddr g, const char *name) {
@@ -214,6 +310,274 @@ template <class T> T fn(PFN_xrGetInstanceProcAddr g, const char *name) {
     CHECK(g(instance, name, &f) == XR_SUCCESS);
     CHECK(f);
     return reinterpret_cast<T>(f);
+}
+void check_render_hooks(const XrNegotiateApiLayerRequest &request, const XrInstanceCreateInfo &ci,
+                        const XrApiLayerCreateInfo &chain, const std::wstring &ini) {
+    auto set = [&](const wchar_t *key, const wchar_t *value) {
+        CHECK(WritePrivateProfileStringW(L"Render", key, value, ini.c_str()));
+    };
+    set(L"Enabled", L"1");
+    set(L"LeftEyeLeftTenths", L"0");
+    set(L"LeftEyeRightTenths", L"100");
+    set(L"RightEyeLeftTenths", L"100");
+    set(L"RightEyeRightTenths", L"0");
+    for (bool canted : {false, true}) {
+        asymmetric_runtime = canted;
+        XrInstance actual{};
+        CHECK(request.createApiLayerInstance(&ci, &chain, &actual) == XR_SUCCESS);
+        const auto g = request.getInstanceProcAddr;
+        XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO};
+        CHECK(fn<PFN_xrCreateSession>(g, "xrCreateSession")(instance, &si, &session) == XR_SUCCESS);
+        auto locate = fn<PFN_xrLocateViews>(g, "xrLocateViews");
+        auto sizes = fn<PFN_xrEnumerateViewConfigurationViews>(g, "xrEnumerateViewConfigurationViews");
+        auto mask = fn<PFN_xrGetVisibilityMaskKHR>(g, "xrGetVisibilityMaskKHR");
+        XrViewLocateInfo info{XR_TYPE_VIEW_LOCATE_INFO};
+        info.viewConfigurationType = canted ? quad_views : XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+        info.displayTime = 123456;
+        info.space = reinterpret_cast<XrSpace>(9);
+        XrViewState state{XR_TYPE_VIEW_STATE};
+        locate_arg = &info;
+        state_arg = &state;
+        XrView views[5]{};
+        for (auto &v : views)
+            v = runtime_view(9);
+        const XrView sentinel = views[4];
+        uint32_t count{};
+        CHECK(locate(session, &info, &state, 5, &count, views) == XR_SUCCESS);
+        CHECK(count == (canted ? 4u : 2u));
+        const float base_left = canted ? -.6f : -1.f, base_right = canted ? 1.4f : 1.f;
+        CHECK(std::abs(std::tan(views[0].fov.angleLeft) - base_left) < 1e-6f);
+        CHECK(std::abs(std::tan(views[0].fov.angleRight) - (canted ? 1.6f : 1.2f)) < 1e-6f);
+        CHECK(std::abs(std::tan(views[1].fov.angleLeft) - (canted ? -.8f : -1.2f)) < 1e-6f);
+        CHECK(std::abs(std::tan(views[1].fov.angleRight) - base_right) < 1e-6f);
+        for (unsigned i = 0; i < count; ++i) {
+            auto original = runtime_view(i);
+            CHECK(!std::memcmp(&views[i].pose, &original.pose, sizeof(original.pose)));
+            CHECK(views[i].fov.angleUp == original.fov.angleUp);
+            CHECK(views[i].fov.angleDown == original.fov.angleDown);
+            if (i >= 2)
+                CHECK(!std::memcmp(&views[i], &original, sizeof(original)));
+        }
+        CHECK(!std::memcmp(&views[4], &sentinel, sizeof(sentinel)));
+        XrView saved[5];
+        std::memcpy(saved, views, sizeof(views));
+        CHECK(locate(session, &info, &state, 0, &count, views) == XR_SUCCESS);
+        CHECK(!std::memcmp(saved, views, sizeof(views)));
+        CHECK(locate(session, &info, &state, 0, &count, nullptr) == XR_SUCCESS);
+        CHECK(locate(session, &info, &state, 1, &count, views) == XR_ERROR_SIZE_INSUFFICIENT);
+        CHECK(!std::memcmp(saved, views, sizeof(views)));
+        view_result = XR_ERROR_RUNTIME_FAILURE;
+        CHECK(locate(session, &info, &state, 5, &count, views) == view_result);
+        CHECK(!std::memcmp(saved, views, sizeof(views)));
+        view_result = XR_SUCCESS;
+        XrViewConfigurationView recommendations[5]{};
+        for (auto &v : recommendations)
+            v.type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 5, &count, recommendations) == XR_SUCCESS);
+        CHECK(recommendations[0].recommendedImageRectWidth == 2200);
+        CHECK(recommendations[1].recommendedImageRectWidth == 2200);
+        for (unsigned i = 0; i < count; ++i) {
+            CHECK(recommendations[i].maxImageRectWidth == maximum_width);
+            CHECK(recommendations[i].recommendedImageRectHeight == 2100);
+            CHECK(recommendations[i].maxImageRectHeight == 12000);
+            CHECK(recommendations[i].maxSwapchainSampleCount == 4);
+            if (i >= 2)
+                CHECK(recommendations[i].recommendedImageRectWidth == 2000);
+        }
+        XrViewConfigurationView saved_sizes[5];
+        std::memcpy(saved_sizes, recommendations, sizeof(recommendations));
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 0, &count, recommendations) == XR_SUCCESS);
+        CHECK(!std::memcmp(saved_sizes, recommendations, sizeof(recommendations)));
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 0, &count, nullptr) == XR_SUCCESS);
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 1, &count, recommendations) ==
+              XR_ERROR_SIZE_INSUFFICIENT);
+        CHECK(!std::memcmp(saved_sizes, recommendations, sizeof(recommendations)));
+        view_result = XR_ERROR_RUNTIME_FAILURE;
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 5, &count, recommendations) == view_result);
+        CHECK(!std::memcmp(saved_sizes, recommendations, sizeof(recommendations)));
+        view_result = XR_SUCCESS;
+        maximum_width = 2150;
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 5, &count, recommendations) == XR_SUCCESS);
+        CHECK(recommendations[0].recommendedImageRectWidth == 2150);
+        recommended_width = 8000;
+        maximum_width = 16384;
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 5, &count, recommendations) == XR_SUCCESS);
+        CHECK(recommendations[0].recommendedImageRectWidth == 8192);
+        // View enumeration cannot reveal whether a game uses side-by-side, array, or separate textures.
+        // A conservative allowance for additional pixels must not shrink the native recommendation.
+        recommended_width = 10000;
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 5, &count, recommendations) == XR_SUCCESS);
+        CHECK(recommendations[0].recommendedImageRectWidth == 10000);
+        CHECK(recommendations[1].recommendedImageRectWidth == 10000);
+        maximum_width = 10000;
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 5, &count, recommendations) == XR_SUCCESS);
+        CHECK(recommendations[0].recommendedImageRectWidth == 10000);
+        recommended_width = 2000;
+        maximum_width = 12000;
+        for (auto kind :
+             {XR_VISIBILITY_MASK_TYPE_HIDDEN_TRIANGLE_MESH_KHR,
+              XR_VISIBILITY_MASK_TYPE_VISIBLE_TRIANGLE_MESH_KHR, XR_VISIBILITY_MASK_TYPE_LINE_LOOP_KHR}) {
+            XrVector2f vertices[3]{{99, 98}, {97, 96}, {95, 94}};
+            uint32_t indices[3]{99, 98, 97};
+            XrVisibilityMaskKHR m{XR_TYPE_VISIBILITY_MASK_KHR};
+            m.vertices = vertices;
+            m.indices = indices;
+            CHECK(mask(session, info.viewConfigurationType, 0, kind, &m) == XR_SUCCESS);
+            CHECK(m.vertexCountOutput == 0 && m.indexCountOutput == 0);
+            m.vertexCapacityInput = 3;
+            CHECK(mask(session, info.viewConfigurationType, 0, kind, &m) == XR_SUCCESS);
+            CHECK(m.vertexCountOutput == 0 && m.indexCountOutput == 0);
+            CHECK(vertices[0].x == 99 && indices[0] == 99);
+            m.vertexCapacityInput = 0;
+            m.indexCapacityInput = 3;
+            CHECK(mask(session, info.viewConfigurationType, 1, kind, &m) == XR_SUCCESS);
+            CHECK(m.vertexCountOutput == 0 && m.indexCountOutput == 0);
+            CHECK(vertices[0].x == 99 && indices[0] == 99);
+            m.vertexCapacityInput = 3;
+            CHECK(mask(session, info.viewConfigurationType, 0, kind, &m) == XR_SUCCESS);
+            CHECK(m.vertexCountOutput == 0 && m.indexCountOutput == 0);
+            if (canted) {
+                CHECK(mask(session, quad_views, 2, kind, &m) == XR_SUCCESS);
+                CHECK(m.vertexCountOutput == 3 && m.indexCountOutput == 3);
+                CHECK(vertices[0].x == 0 && indices[0] == 0);
+            }
+            m.vertexCapacityInput = 1;
+            CHECK(mask(session, info.viewConfigurationType, 0, kind, &m) == XR_ERROR_SIZE_INSUFFICIENT);
+            CHECK(m.vertexCountOutput == 3 && m.indexCountOutput == 3);
+            mask_result = XR_ERROR_RUNTIME_FAILURE;
+            m.vertexCountOutput = 77;
+            m.indexCountOutput = 88;
+            CHECK(mask(session, info.viewConfigurationType, 0, kind, &m) == mask_result);
+            CHECK(m.vertexCountOutput == 77 && m.indexCountOutput == 88);
+            mask_result = XR_SUCCESS;
+            CHECK(mask(session, info.viewConfigurationType, 9, kind, &m) == XR_ERROR_VALIDATION_FAILURE);
+            CHECK(mask(session, info.viewConfigurationType, 0, static_cast<XrVisibilityMaskTypeKHR>(99),
+                       &m) == XR_ERROR_VALIDATION_FAILURE);
+            CHECK(mask(session, info.viewConfigurationType, 0, kind, nullptr) == XR_ERROR_VALIDATION_FAILURE);
+            CHECK(mask(session, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MONO, 0, kind, &m) ==
+                  XR_ERROR_VIEW_CONFIGURATION_TYPE_UNSUPPORTED);
+        }
+        // Settings are an instance snapshot: editing the file cannot change a running game's FOV.
+        set(L"Enabled", L"0");
+        CHECK(locate(session, &info, &state, 5, &count, views) == XR_SUCCESS);
+        CHECK(std::abs(std::tan(views[0].fov.angleRight) - (canted ? 1.6f : 1.2f)) < 1e-6f);
+        CHECK(fn<PFN_xrDestroySession>(g, "xrDestroySession")(session) == XR_SUCCESS);
+        CHECK(fn<PFN_xrDestroyInstance>(g, "xrDestroyInstance")(instance) == XR_SUCCESS);
+        CHECK(request.createApiLayerInstance(&ci, &chain, &actual) == XR_SUCCESS);
+        CHECK(fn<PFN_xrCreateSession>(g, "xrCreateSession")(instance, &si, &session) == XR_SUCCESS);
+        CHECK(locate(session, &info, &state, 5, &count, views) == XR_SUCCESS);
+        for (unsigned i = 0; i < count; ++i) {
+            auto original = runtime_view(i);
+            CHECK(!std::memcmp(&views[i], &original, sizeof(original)));
+        }
+        CHECK(sizes(instance, 77, info.viewConfigurationType, 5, &count, recommendations) == XR_SUCCESS);
+        CHECK(recommendations[0].recommendedImageRectWidth == 2000);
+        XrVisibilityMaskKHR m{XR_TYPE_VISIBILITY_MASK_KHR};
+        CHECK(mask(session, info.viewConfigurationType, 0, XR_VISIBILITY_MASK_TYPE_LINE_LOOP_KHR, &m) ==
+              XR_SUCCESS);
+        CHECK(m.vertexCountOutput == 3 && m.indexCountOutput == 3);
+        CHECK(fn<PFN_xrDestroySession>(g, "xrDestroySession")(session) == XR_SUCCESS);
+        CHECK(fn<PFN_xrDestroyInstance>(g, "xrDestroyInstance")(instance) == XR_SUCCESS);
+        set(L"Enabled", L"1");
+    }
+    // Enabling only one eye must leave the other eye's view, recommendation, and mask identical.
+    set(L"LeftEyeRightTenths", L"0");
+    set(L"RightEyeLeftTenths", L"0");
+    set(L"RightEyeRightTenths", L"900"); // Bound a hand-edited config to 30%.
+    XrInstance single{};
+    CHECK(request.createApiLayerInstance(&ci, &chain, &single) == XR_SUCCESS);
+    const auto g = request.getInstanceProcAddr;
+    XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO};
+    CHECK(fn<PFN_xrCreateSession>(g, "xrCreateSession")(instance, &si, &session) == XR_SUCCESS);
+    XrViewLocateInfo info{XR_TYPE_VIEW_LOCATE_INFO};
+    info.viewConfigurationType = quad_views;
+    XrViewState state{XR_TYPE_VIEW_STATE};
+    locate_arg = &info;
+    state_arg = &state;
+    XrView views[4]{};
+    uint32_t count{};
+    CHECK(fn<PFN_xrLocateViews>(g, "xrLocateViews")(session, &info, &state, 4, &count, views) == XR_SUCCESS);
+    const auto original = runtime_view(0);
+    CHECK(!std::memcmp(&original, &views[0], sizeof(original)));
+    CHECK(std::abs(std::tan(views[1].fov.angleRight) - 2.0f) < 1e-6f);
+    XrViewConfigurationView recommendations[4]{};
+    CHECK(fn<PFN_xrEnumerateViewConfigurationViews>(g, "xrEnumerateViewConfigurationViews")(
+              instance, 77, quad_views, 4, &count, recommendations) == XR_SUCCESS);
+    CHECK(recommendations[0].recommendedImageRectWidth == 2000);
+    CHECK(recommendations[1].recommendedImageRectWidth == 2600);
+    XrVisibilityMaskKHR unchanged_mask{XR_TYPE_VISIBILITY_MASK_KHR};
+    CHECK(fn<PFN_xrGetVisibilityMaskKHR>(g, "xrGetVisibilityMaskKHR")(
+              session, quad_views, 0, XR_VISIBILITY_MASK_TYPE_HIDDEN_TRIANGLE_MESH_KHR, &unchanged_mask) ==
+          XR_SUCCESS);
+    CHECK(unchanged_mask.vertexCountOutput == 3 && unchanged_mask.indexCountOutput == 3);
+    // Runtime must receive the expanded projection actually rendered by the game, without any rewrite.
+    XrCompositionLayerProjectionView submitted_views[4]{};
+    for (unsigned i = 0; i < 4; ++i) {
+        submitted_views[i].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+        submitted_views[i].pose = views[i].pose;
+        submitted_views[i].fov = views[i].fov;
+    }
+    XrCompositionLayerProjectionView expected[4];
+    std::memcpy(expected, submitted_views, sizeof(expected));
+    XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    projection.viewCount = 4;
+    projection.views = submitted_views;
+    const auto *projection_header = reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projection);
+    XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
+    end.displayTime = 123456;
+    end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    end.layerCount = 1;
+    end.layers = &projection_header;
+    const auto previous_calls = end_calls;
+    submitted = &end;
+    expected_submitted_views = expected;
+    expected_submitted_count = 4;
+    CHECK(fn<PFN_xrEndFrame>(g, "xrEndFrame")(session, &end) == XR_SUCCESS);
+    CHECK(!std::memcmp(submitted_views, expected, sizeof(expected)));
+    end_calls = previous_calls;
+    submitted = nullptr;
+    expected_submitted_views = nullptr;
+    expected_submitted_count = 0;
+    CHECK(fn<PFN_xrDestroySession>(g, "xrDestroySession")(session) == XR_SUCCESS);
+    CHECK(fn<PFN_xrDestroyInstance>(g, "xrDestroyInstance")(instance) == XR_SUCCESS);
+    set(L"LeftEyeRightTenths", L"100");
+    set(L"RightEyeLeftTenths", L"100");
+    set(L"RightEyeRightTenths", L"0");
+    mask_available = false;
+    XrInstance actual{};
+    CHECK(request.createApiLayerInstance(&ci, &chain, &actual) == XR_SUCCESS);
+    PFN_xrVoidFunction missing = reinterpret_cast<PFN_xrVoidFunction>(1);
+    CHECK(request.getInstanceProcAddr(instance, "xrGetVisibilityMaskKHR", &missing) ==
+          XR_ERROR_FUNCTION_UNSUPPORTED);
+    CHECK(!missing);
+    CHECK(fn<PFN_xrDestroyInstance>(request.getInstanceProcAddr, "xrDestroyInstance")(instance) ==
+          XR_SUCCESS);
+    mask_available = true;
+    asymmetric_runtime = false;
+}
+void check_render_settings(const std::wstring &ini) {
+    const auto defaults = read_render_settings(ini);
+    CHECK(!defaults.enabled && defaults.eyes[0].left == 0 && defaults.eyes[1].right == 0);
+    CHECK(WritePrivateProfileStringW(L"Preview", L"Eye", L"1", ini.c_str()));
+    RenderSettings settings{true, {{2.34, 12.36}, {-10, 100}}};
+    CHECK(write_render_settings(ini, settings));
+    auto read = read_render_settings(ini);
+    CHECK(read.enabled);
+    CHECK(read.eyes[0].left == 2.3 && read.eyes[0].right == 12.4);
+    CHECK(read.eyes[1].left == 0 && read.eyes[1].right == 30);
+    CHECK(GetPrivateProfileIntW(L"Preview", L"Eye", 0, ini.c_str()) == 1);
+    settings.eyes[0] = {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()};
+    CHECK(write_render_settings(ini, settings));
+    read = read_render_settings(ini);
+    CHECK(read.eyes[0].left == 0 && read.eyes[0].right == 0);
+    CHECK(WritePrivateProfileStringW(L"Render", L"LeftEyeLeftTenths", L"-100", ini.c_str()));
+    CHECK(WritePrivateProfileStringW(L"Render", L"LeftEyeRightTenths", L"900", ini.c_str()));
+    CHECK(WritePrivateProfileStringW(L"Render", L"RightEyeLeftTenths", L"NaN", ini.c_str()));
+    CHECK(WritePrivateProfileStringW(L"Render", L"RightEyeRightTenths", L"100 invalid", ini.c_str()));
+    read = read_render_settings(ini);
+    CHECK(read.eyes[0].left == 0 && read.eyes[0].right == 30);
+    CHECK(read.eyes[1].left == 0 && read.eyes[1].right == 0);
+    CHECK(!write_render_settings(ini + L"\\missing\\preview.ini", settings));
 }
 void make_texture(UINT samples = 1) {
     if (runtime_texture)
@@ -352,6 +716,12 @@ int main(int argc, char **) {
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
     std::strcpy(ci.applicationInfo.applicationName, "Capture regression test");
     ci.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    wchar_t temp_dir[MAX_PATH]{}, temp_file[MAX_PATH]{};
+    CHECK(GetTempPathW(MAX_PATH, temp_dir));
+    CHECK(GetTempFileNameW(temp_dir, L"hlr", 0, temp_file));
+    CHECK(SetEnvironmentVariableW(L"HORIZONLOCK_PREVIEW_SETTINGS", temp_file));
+    check_render_settings(temp_file);
+    check_render_hooks(request, ci, chain, temp_file);
     XrInstance actual{};
     CHECK(request.createApiLayerInstance(&ci, &chain, &actual) == XR_SUCCESS);
     CHECK(actual == instance);
@@ -469,6 +839,10 @@ int main(int argc, char **) {
     Frame first = viewer.data()->frame;
     CHECK(valid_frame(first));
     CHECK(first.view_count == 2);
+    CHECK(first.eye == 0);
+    CHECK(viewer.data()->render_enabled == 1);
+    CHECK(viewer.data()->render_left[0] == 0 && viewer.data()->render_right[0] == 10);
+    CHECK(viewer.data()->render_left[1] == 10 && viewer.data()->render_right[1] == 0);
     CHECK(first.display_time == 123456);
     CHECK(first.views[0].x == 1 && first.views[0].y == 2);
     CHECK(first.views[0].rect_width == 4 && first.views[0].rect_height == 3);
@@ -495,6 +869,10 @@ int main(int argc, char **) {
     frame(true);
     CHECK(viewer.lock());
     check_pixels(viewer.data()->frame.views[0], true);
+    CHECK(viewer.data()->frame.eye == 1);
+    auto invalid_eye = viewer.data()->frame;
+    invalid_eye.eye = 2;
+    CHECK(!valid_frame(invalid_eye));
     check_pixels(viewer.data()->frame.views[1], true);
     viewer.data()->ready = 0;
     viewer.unlock();
@@ -666,9 +1044,14 @@ int main(int argc, char **) {
     reader_device->Release();
     context->Release();
     device->Release();
-    std::puts("PASS: transport validation; before-release pixels; quad/array/rect; unchanged calls/results; "
-              "pause; backpressure; failed release; invalid bounds; reference epoch; MSAA stereo; producer "
-              "exclusivity; zero-copy inactive/paused/backpressure/rate-limit; stale reconnect; "
-              "discarded-key recovery; lock contention; reused submission; recreated/unsupported session");
+    CHECK(DeleteFileW(temp_file));
+    SetEnvironmentVariableW(L"HORIZONLOCK_PREVIEW_SETTINGS", nullptr);
+    std::puts(
+        "PASS: render settings round-trip/clamping; stereo/canted quad render expansion; resolution caps; "
+        "count-only/failed calls; masks/types/runtime validation; startup snapshot; active settings/eye IPC; "
+        "transport validation; before-release pixels; quad/array/rect; unchanged calls/results; "
+        "pause; backpressure; failed release; invalid bounds; reference epoch; MSAA stereo; producer "
+        "exclusivity; zero-copy inactive/paused/backpressure/rate-limit; stale reconnect; "
+        "discarded-key recovery; lock contention; reused submission; recreated/unsupported session");
     return 0;
 }

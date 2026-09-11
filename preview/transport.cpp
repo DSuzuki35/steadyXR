@@ -35,7 +35,8 @@ bool valid_view(const View &v) {
     return v.fov[1] - v.fov[0] > 1e-6f && v.fov[2] - v.fov[3] > 1e-6f;
 }
 bool valid_frame(const Frame &f) {
-    if (!f.producer_pid || !f.generation || !f.sequence || !f.session || !f.view_count || f.view_count > 2)
+    if (!f.producer_pid || !f.generation || !f.sequence || !f.session || !f.view_count || f.view_count > 2 ||
+        f.eye > 1)
         return false;
     for (std::uint32_t i = 0; i < f.view_count; ++i)
         if (!valid_view(f.views[i]))
