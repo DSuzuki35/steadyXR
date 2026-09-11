@@ -1,4 +1,5 @@
 #pragma once
+#include "render_settings.hpp"
 #include "renderer.hpp"
 #include "theme.hpp"
 #include <functional>
@@ -6,7 +7,7 @@
 
 namespace vrst::preview {
 void read_edge_settings(const std::wstring &ini, Options &);
-void write_edge_settings(const std::wstring &ini, const Options &);
+bool write_edge_settings(const std::wstring &ini, const Options &);
 class AdvancedSettings {
   public:
     enum Id {
@@ -31,6 +32,8 @@ class AdvancedSettings {
     void open(unsigned eye, bool visible = true);
     HWND handle() const;
     bool route(MSG &);
+    RenderSettings draft() const;
+    void reload(const std::wstring &ini);
 
   private:
     struct Impl;

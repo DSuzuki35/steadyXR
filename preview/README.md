@@ -1,4 +1,6 @@
-# Horizon Lock VR Preview 0.6.0
+# Horizon Lock VR Preview 0.6.1
+
+0.6.1 fixes disappearing sliders and makes Y offset use hidden stabilization reserves as well as aspect-ratio crop. It adds three tuning presets and named complete presets. Slider adjustments remain live; automatic settings writes are deferred until dragging settles.
 
 0.5.0 adds a dark native control panel and an embedded application icon. The PNG and Windows ICO are also included beside the EXE. Existing settings migrate when upgrading the ready-to-use package.
 
@@ -10,7 +12,9 @@ Standalone gaming-PC preview with OpenXR pose stabilization or existing-window c
 
 Close only the previous Horizon Lock preview app, then run **Gaming-PC/Start-Preview.cmd**. Existing preview.ini settings are copied to the new version when it has no settings yet. OpenXR mode and previous tuning are retained; new settings use their defaults.
 
-**0.6.0 requires the new OpenXR layer (IPC v2).** Select OpenXR pose capture and click **Upgrade connection** (or **Install connection**). This enables the current Horizon Lock layer and disables older Horizon Lock registrations for this Windows user; it leaves other API layers and the active runtime alone. Restart iRacing once. Both the viewer and layer must come from Preview-0.6.0. Delivery itself never changes registration or restarts anything. Window capture needs no connection or game restart.
+**Upgrading from a working 0.6.0:** only restart the preview app. 0.6.1 reuses an enabled registered layer when its DLL is byte-identical to the bundled layer. Keep the old preview directory: its registered DLL and adjacent render settings are still used. Explicit render saves and preset loads update that actual settings destination, so changed render expansion takes effect on the next game launch.
+
+**First setup or upgrading from before 0.6:** select OpenXR pose capture and click **Upgrade connection** (or **Install connection**), then restart iRacing once. This enables the current Horizon Lock layer and disables older Horizon Lock registrations for this Windows user; it leaves other API layers and the active runtime alone. Delivery itself never changes registration or restarts anything. Window capture needs no connection or game restart.
 
 ## Extra OpenXR scenery, asymmetric reserves and Y offset
 
@@ -19,9 +23,9 @@ Open **Render / edges…** in the main window. Choose the eye profile you want t
 In window capture, the same main-window selector is named **Profile**. It selects which reserve settings apply to the existing window; it cannot change which eye the game shows in that window.
 
 - **Use separate stabilization reserves:** four live sliders, 0–35% per edge in 0.1% steps. For a right-eye stream with more space kept on its inner side, try Left 2%, Right 20%; for the left eye, reverse these. The profile replaces the main uniform Crop reserve slider while enabled. Uniform reserve 10% equals 5% on each edge. Existing Crop left/right/top/bottom controls remain additional framing trims.
-- **Y offset:** move the aspect-ratio crop upward (negative) or downward (positive), without zooming or changing the edge trims. 0 restores the automatic placement; ±100 reaches the available upper/lower limit. If the chosen aspect leaves no vertical slack, it has no effect. This is a shared preview setting and works in both capture modes.
+- **Y offset:** shift the displayed rectangle upward (negative) or downward (positive), at the same zoom. It uses the full captured image, including pixels hidden by stabilization reserves and framing crops. 0 restores automatic placement; ±100 reaches the available upper/lower image limit. Shifting uses up stabilization room on that side. With no hidden vertical pixels at all, there is no room to shift. This shared setting works in both capture modes.
 - **Enable extra rendered area:** per-eye Extra left/right sliders, 0–30% each. Percentages refer to the original horizontal projection width, not degrees. Right-eye Extra left adds scenery toward the nose; left-eye Extra right is the corresponding inner side. **Both eyes inward: 10%** sets both inner sides to 10% and outer sides to zero.
-- **Save for next game launch:** commits both render profiles. Restart the OpenXR game afterward, because view sizes and projections are configured at startup. Render changes stay unsaved until this button is pressed; closing/reopening the panel discards unsaved render edits. Crop/reserve/Y settings are live and save automatically.
+- **Save for next game launch:** commits both render profiles. Restart the OpenXR game afterward, because view sizes and projections are configured at startup. Render drafts survive closing/reopening the panel within this app session. They are committed by this button or by loading a complete preset. Saving a complete preset includes the current render draft without activating it. Crop/reserve/Y settings are live and save automatically.
 
 Cropping changes only the displayed output rectangle. It does not delete the original image behind it: the full captured eye remains available for stabilization. Mirroring supplies only pixels beyond the actual rendered boundaries. Aspect fitting can require further crop; separate reserves bias that extra crop toward the side with more reserve.
 
@@ -72,6 +76,16 @@ OpenXR performance: the viewer polls for GPU-ready frames independently of the s
 
 **Stream Comfort** applies 60% smoothing, 50% horizon lock with Adaptive curve, 12% crop reserve, a 12% mirror limit and 70% mirror softness. Stabilization and mirroring are enabled. It keeps your source, eye, FPS, custom edge crops, per-eye reserves, Y offset, render-extension settings, aspect, output resolution and monitor. An enabled per-eye reserve profile continues to override the uniform reserve value. In image mode, the horizon setting is saved for OpenXR but has no effect on image stabilization.
 
-Fine-tune any slider after applying the preset. **Undo preset** restores the stabilization tuning from before the first preset click in this app session, including if you apply it repeatedly. Subsequent framing/output changes are kept. The current tuning is saved between launches; the temporary undo snapshot is not.
+Fine-tune any slider after applying a tuning preset. **Undo tuning** restores stabilization tuning from before the first built-in preset click in this app session, including repeated clicks. Subsequent framing/output changes are kept. Loading a complete preset clears this temporary undo snapshot.
 
 **Mirror softness** ranges from 0–100% (default 60%). Zero restores the sharp legacy reflection. Higher values progressively soften and slightly darken the reflection outside the source image, with a smooth transition at the original image edge and a fade to black at the mirror limit. Original image pixels stay untouched. Both OpenXR and image capture use the effect. The extra four texture samples apply only to mirrored regions; live GPU cost depends on the visible border area.
+
+## Presets
+
+Open **Presets…** in the main window. **Natural**, **Stream Comfort** and **Strong Leveling** change smoothing, horizon/adaptive curve, uniform crop reserve and mirror tuning. They retain the source, eye, FPS, edge profiles, framing trims, Y offset, render expansion, output resolution/aspect and monitor. Natural uses 25% smoothing / 25% horizon; Strong Leveling uses 70% / 85%.
+
+For your own preset, enter a name and click **Save new**. This saves a complete INI snapshot: all tuning, stabilization bypass, mode, selected source window identity, eye, FPS, both edge profiles, Y offset, both render-extension profiles (including current drafts), resolution, aspect, fullscreen startup preference and monitor. Valid edits in the aspect/resolution fields are included. Unknown future INI keys are preserved too. Pause, current fullscreen state and temporary smoothing/recenter history are session actions, not configuration; the fullscreen startup preference applies at the next preview launch.
+
+Select a saved preset and click **Load** to restore it, **Overwrite selected** to replace it with current settings, or **Delete** to remove it. Live preview settings apply immediately; changed OpenXR render expansion applies at the next game launch. No automatic game restart occurs. A saved window source is matched by executable and title; if unavailable, select it when it is running.
+
+Custom presets live in **Gaming-PC/Presets**, shared across versioned preview folders. Keep this folder when moving the app to another PC. Each preset is an INI file; saving a new name never overwrites an existing preset. Failed writes are reported rather than treated as successful saves.

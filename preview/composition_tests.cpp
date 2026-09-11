@@ -81,8 +81,8 @@ int main() {
             FrameStabilizer stabilizer;
             stabilizer.update(frame(1), edges);
             const auto fitted = stabilizer.update(frame(2, .4), edges);
-            check(fitted.warp.correction_fraction == 1 &&
-                      angle_between(fitted.warp.correction, {}) > .35 && corners_inside(fitted.warp),
+            check(fitted.warp.correction_fraction == 1 && angle_between(fitted.warp.correction, {}) > .35 &&
+                      corners_inside(fitted.warp),
                   "final aspect framing must supply correction room before OpenXR motion limiting");
             stabilizer.reset();
             edges.smoothing = 0;
@@ -109,8 +109,8 @@ int main() {
             }
             stabilizer.reset();
             const auto adaptive = stabilizer.update(tilted, edges);
-            check(std::abs(angle_between(multiply(q, adaptive.warp.correction), {}) * 180 / pi -
-                           .53125) < 1e-5,
+            check(std::abs(angle_between(multiply(q, adaptive.warp.correction), {}) * 180 / pi - .53125) <
+                      1e-5,
                   "enabled reserve must retain the adaptive horizon response");
         }
         {
@@ -140,7 +140,30 @@ int main() {
                   "zero edge reserves must keep centered finite aspect framing");
         }
         {
+            // The observed iRacing feed is wider than16:9: only the stabilization
+            // reserve leaves vertical room, not the aspect-ratio fit itself.
+            FrameStabilizer stabilizer;
+            auto wide = frame(1);
+            wide.views[0].fov[0] = -1.194938f;
+            wide.views[0].fov[1] = 1.315188f;
+            wide.views[0].fov[2] = .678389f;
+            wide.views[0].fov[3] = -.678389f;
             Options offset;
+            offset.crop = 7.8;
+            offset.stabilize = false;
+            offset.mirror = false;
+            offset.vertical_offset = -100;
+            const auto highest = stabilizer.update(wide, offset).warp;
+            offset.vertical_offset = 100;
+            const auto lowest = stabilizer.update(wide, offset).warp;
+            check(std::abs(map_uv(highest, .5, 0)[1]) < 1e-6 &&
+                      std::abs(map_uv(lowest, .5, 1)[1] - 1) < 1e-6 &&
+                      map_uv(lowest, .5, .5)[1] - map_uv(highest, .5, .5)[1] > .07,
+                  "Y offset must use the captured vertical reserve even without aspect-fit slack");
+        }
+        {
+            Options offset;
+            offset.crop = 0;
             offset.crop_top = 10;
             offset.crop_bottom = 20;
             offset.aspect = 2;
@@ -150,11 +173,13 @@ int main() {
             auto bottom = framing_region(1, offset);
             offset.vertical_offset = 0;
             auto center = framing_region(1, offset);
-            check(std::abs(top.top - .1) < 1e-9 && std::abs(top.bottom - .6) < 1e-9 &&
-                      std::abs(bottom.top - .3) < 1e-9 && std::abs(bottom.bottom - .8) < 1e-9 &&
+            check(std::abs(top.top) < 1e-9 && std::abs(top.bottom - .5) < 1e-9 &&
+                      std::abs(bottom.top - .5) < 1e-9 && std::abs(bottom.bottom - 1) < 1e-9 &&
                       std::abs(center.top - .2) < 1e-9 && std::abs(center.bottom - .7) < 1e-9,
-                  "vertical offset must move aspect framing to each trimmed boundary without zooming");
+                  "vertical offset must use full captured boundaries without changing zero-offset framing or "
+                  "zoom");
             offset.aspect = .5;
+            offset.crop_top = offset.crop_bottom = 0;
             offset.vertical_offset = -100;
             top = framing_region(1, offset);
             offset.vertical_offset = 100;
@@ -171,8 +196,8 @@ int main() {
             };
             const auto biased = sample(0), highest = sample(-100), lowest = sample(100);
             check(std::abs(map_uv(biased, .5, .5)[1] - .2954545454545) < 1e-6 &&
-                      std::abs(map_uv(highest, 0, 0)[1] - .02) < 1e-6 &&
-                      std::abs(map_uv(lowest, 1, 1)[1] - .8) < 1e-6,
+                      std::abs(map_uv(highest, 0, 0)[1]) < 1e-6 &&
+                      std::abs(map_uv(lowest, 1, 1)[1] - 1) < 1e-6,
                   "vertical offset must move from asymmetric base bias to each available boundary");
             const auto midpoint = sample(50);
             check(std::abs(map_uv(midpoint, .5, .5)[1] -

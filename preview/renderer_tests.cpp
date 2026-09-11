@@ -333,11 +333,24 @@ int main(int argc, char **argv) {
         require(std::abs(int(reserve_center & 255) - 76) <= 2,
                 "window aspect fit must visibly favor scenery beside its two-percent left reserve");
         options.eye = 1;
-        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "right window reserve draw");
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h),
+                "right window reserve draw");
         reserve_center = pixels[(h / 2) * w + w / 2];
         require(std::abs(int(reserve_center & 255) - 179) <= 2,
                 "window capture must change reserve profiles immediately with selected eye");
         options.edge_reserve[0].enabled = options.edge_reserve[1].enabled = false;
+        options.stabilize = false;
+        options.crop = 20;
+        options.aspect = 16. / 9.;
+        options.vertical_offset = -100;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "reserve-only high window");
+        const auto reserve_high = pixels[(h / 2) * w + w / 2];
+        options.vertical_offset = 100;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "reserve-only low window");
+        const auto reserve_low = pixels[(h / 2) * w + w / 2];
+        require(int((reserve_low >> 8) & 255) - int((reserve_high >> 8) & 255) >= 48,
+                "Y slider must use hidden uniform reserve in a16:9 window, with no extra aspect crop");
+        options.crop = 0;
         options.aspect = 4;
         options.vertical_offset = -100;
         require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "highest window framing");
@@ -357,9 +370,9 @@ int main(int argc, char **argv) {
         require(renderer.draw(options, false) && renderer.readback(pixels, w, h),
                 "lowest window framing with separate reserves");
         low_center = pixels[(h / 2) * w + w / 2];
-        require(std::abs(int((high_center >> 8) & 255) - 62) <= 2 &&
-                    std::abs(int((low_center >> 8) & 255) - 147) <= 2,
-                "window vertical offset must respect its enabled top and bottom edge reserves");
+        require(std::abs(int((high_center >> 8) & 255) - 57) <= 2 &&
+                    std::abs(int((low_center >> 8) & 255) - 198) <= 2,
+                "window vertical offset must use captured pixels behind the enabled edge reserves");
         renderer.source_changed();
         require(!renderer.has_frame(), "window source change must discard pending history");
         std::cout << "Native GPU: window analysis/color, quad composition, resize, subrect bounds, keyed "

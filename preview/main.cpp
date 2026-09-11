@@ -2,6 +2,7 @@
 #define _UNICODE
 #include "advanced.hpp"
 #include "connection.hpp"
+#include "presets.hpp"
 #include "render_settings.hpp"
 #include "renderer.hpp"
 #include "theme.hpp"
@@ -24,7 +25,30 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               source_id = 113, refresh_id = 114, left_id = 115, right_id = 116, top_id = 117, bottom_id = 118,
               horizon_id = 119, mirror_limit_id = 120, aspect_id = 121, width_id = 122, height_id = 123,
               apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127,
-              mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130, advanced_id = 131;
+              mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130, advanced_id = 131,
+              presets_id = 132;
+constexpr UINT_PTR save_timer = 4101;
+std::wstring executable_path(DWORD pid) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    wchar_t path[32768]{};
+    DWORD length = 32768;
+    const bool okay = process && QueryFullProcessImageNameW(process, 0, path, &length);
+    if (process)
+        CloseHandle(process);
+    return okay ? path : L"";
+}
+std::string read_bytes(const std::wstring &path) {
+    WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    std::ifstream in(std::filesystem::path(path), std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+bool write_bytes(const std::wstring &path, const std::string &bytes) {
+    std::ofstream out(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), std::streamsize(bytes.size()));
+    out.close();
+    WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    return !out.fail();
+}
 std::wstring decimal(double value) {
     wchar_t text[32]{};
     std::swprintf(text, 32, L"%.1f", value);
@@ -38,25 +62,27 @@ struct App {
     HFONT font{};
     Theme theme;
     AdvancedSettings advanced;
+    PresetsDialog presets;
     Channel channel;
     Renderer renderer;
     WindowCapture capture;
     std::vector<CaptureWindow> sources;
     HWND source_window{};
     DWORD source_pid{};
+    std::wstring source_executable, source_title;
     bool window_mode{true};
     std::uint64_t last_capture_start{};
     Options options;
     Options before_comfort;
     bool can_undo_comfort{};
     bool paused{}, demo{}, fullscreen{}, dirty{true}, quit{}, timer_resolution{};
-    bool start_fullscreen{true};
+    bool start_fullscreen{true}, diagnostic{}, compatible_connection{};
     unsigned aspect_numerator{16}, aspect_denominator{9};
     std::wstring monitor_name;
     std::vector<MONITORINFOEXW> monitors;
     unsigned selected_eye{}, rate{60};
     WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};
-    std::wstring directory, ini, setup_message;
+    std::wstring directory, ini, render_ini, setup_message;
     std::uint64_t start_ms{}, last_received_ms{}, last_sequence{}, fps_frames{}, fps_start{};
     double measured_fps{};
     bool waiting(std::uint64_t now) const {
@@ -64,23 +90,46 @@ struct App {
                (!paused && last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000);
     }
     bool registered(bool any_version = false) const {
-        return layer_installed(directory, any_version);
+        return compatible_connection || layer_installed(directory, any_version);
+    }
+    void resolve_connection() {
+        const auto installed =
+            diagnostic ? std::optional<std::wstring>{} : compatible_layer_directory(directory);
+        compatible_connection = installed.has_value();
+        render_ini = installed ? *installed + L"\\preview.ini" : ini;
     }
     void connection(bool enable) {
+        if (enable && compatible_connection) {
+            setup_message = L"Compatible OpenXR connection already installed.";
+            return;
+        }
         const auto result = set_layer_connection(directory, enable);
+        if (result == ERROR_SUCCESS) {
+            resolve_connection();
+            advanced.reload(render_ini);
+        }
         setup_message = result == ERROR_SUCCESS
                             ? (enable ? L"0.6 connection installed. Restart iRacing to use it."
                                       : L"Connection removed. This takes effect after restarting the game.")
                             : L"Could not change the connection. Windows error " + std::to_wstring(result);
     }
-    void save() {
-        write_edge_settings(ini, options);
+    void queue_save() {
+        // Keep disk I/O out of mouse tracking, especially inside synced folders.
+        SetTimer(controls, save_timer, 250, nullptr);
+    }
+    bool save() {
+        if (controls)
+            KillTimer(controls, save_timer);
+        bool saved = write_edge_settings(ini, options);
         auto write = [&](const wchar_t *key, int value) {
-            WritePrivateProfileStringW(L"Preview", key, std::to_wstring(value).c_str(), ini.c_str());
+            saved =
+                WritePrivateProfileStringW(L"Preview", key, std::to_wstring(value).c_str(), ini.c_str()) &&
+                saved;
         };
         write(L"Smoothing", int(options.smoothing));
         write(L"Crop", int(options.crop));
         write(L"Mirror", options.mirror);
+        write(L"Stabilize", options.stabilize);
         write(L"Eye", selected_eye);
         write(L"FPS", rate);
         write(L"Mode", window_mode ? 0 : 1);
@@ -105,7 +154,22 @@ struct App {
             if (GetMonitorInfoW(MonitorFromWindow(output, MONITOR_DEFAULTTONEAREST), &info))
                 monitor_name = info.szDevice;
         }
-        WritePrivateProfileStringW(L"Preview", L"Monitor", monitor_name.c_str(), ini.c_str());
+        DWORD current_pid{};
+        GetWindowThreadProcessId(source_window, &current_pid);
+        if (source_window && source_pid && source_pid == current_pid) {
+            source_executable = executable_path(source_pid);
+            wchar_t title[32768]{};
+            GetWindowTextW(source_window, title, 32768);
+            source_title = title;
+        }
+        saved =
+            WritePrivateProfileStringW(L"Preview", L"Monitor", monitor_name.c_str(), ini.c_str()) && saved;
+        saved = WritePrivateProfileStringW(L"Preview", L"SourceExecutable", source_executable.c_str(),
+                                           ini.c_str()) &&
+                saved;
+        saved = WritePrivateProfileStringW(L"Preview", L"SourceTitle", source_title.c_str(), ini.c_str()) &&
+                saved;
+        return saved;
     }
     void read() {
         auto value = [&](const wchar_t *key, int initial, int lo, int hi) {
@@ -137,7 +201,13 @@ struct App {
         wchar_t saved_monitor[64]{};
         GetPrivateProfileStringW(L"Preview", L"Monitor", L"", saved_monitor, 64, ini.c_str());
         monitor_name = saved_monitor;
+        wchar_t source_text[32768]{};
+        GetPrivateProfileStringW(L"Preview", L"SourceExecutable", L"", source_text, 32768, ini.c_str());
+        source_executable = source_text;
+        GetPrivateProfileStringW(L"Preview", L"SourceTitle", L"", source_text, 32768, ini.c_str());
+        source_title = source_text;
         options.mirror = value(L"Mirror", 1, 0, 1) != 0;
+        options.stabilize = value(L"Stabilize", 1, 0, 1) != 0;
         selected_eye = value(L"Eye", 0, 0, 1);
         options.eye = selected_eye;
         read_edge_settings(ini, options);
@@ -175,17 +245,17 @@ struct App {
                 continue;
             DWORD pid{};
             GetWindowThreadProcessId(sources[i].handle, &pid);
-            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-            wchar_t name[32768]{};
-            DWORD size = 32768;
-            if (process && QueryFullProcessImageNameW(process, 0, name, &size)) {
+            const auto name = executable_path(pid);
+            if (!source_executable.empty()) {
+                if (!_wcsicmp(name.c_str(), source_executable.c_str()) &&
+                    (source_title.empty() || sources[i].title == source_title))
+                    selected = int(i + 1);
+            } else if (!name.empty()) {
                 auto filename = std::filesystem::path(name).filename().wstring();
                 std::transform(filename.begin(), filename.end(), filename.begin(), ::towlower);
                 if (filename.find(L"iracingsim") == 0)
                     selected = int(i + 1);
             }
-            if (process)
-                CloseHandle(process);
         }
         SendMessageW(source, CB_SETCURSEL, selected, 0);
         source_window = selected ? sources[std::size_t(selected - 1)].handle : nullptr;
@@ -263,6 +333,7 @@ struct App {
     }
     void list_monitors() {
         monitors.clear();
+        SendMessageW(monitor, CB_RESETCONTENT, 0, 0);
         EnumDisplayMonitors(
             nullptr, nullptr,
             [](HMONITOR handle, HDC, LPRECT, LPARAM data) -> BOOL {
@@ -355,6 +426,105 @@ struct App {
                      0);
         SendMessageW(bypass, BM_SETCHECK, options.stabilize ? BST_UNCHECKED : BST_CHECKED, 0);
     }
+    std::string snapshot() {
+        // Include valid output edits and the unsaved render draft visible in Advanced.
+        if (!apply_output()) {
+            update_status();
+            return {};
+        }
+        if (!save()) {
+            setup_message = L"Could not save current settings. Check access to preview.ini, then retry.";
+            update_status();
+            return {};
+        }
+        const auto staging = ini + L".snapshot-" + std::to_wstring(GetCurrentProcessId());
+        std::string bytes;
+        if (write_bytes(staging, read_bytes(ini)) && write_render_settings(staging, advanced.draft()))
+            bytes = read_bytes(staging);
+        DeleteFileW(staging.c_str());
+        return bytes;
+    }
+    bool apply_snapshot(const std::string &bytes) {
+        std::wstring error;
+        if (!PresetStore::valid_snapshot(bytes, error))
+            return false;
+        const auto staging = ini + L".restore-" + std::to_wstring(GetCurrentProcessId());
+        if (!write_bytes(staging, bytes)) {
+            DeleteFileW(staging.c_str());
+            return false;
+        }
+        const auto previous_render = read_render_settings(render_ini);
+        const auto next_render = read_render_settings(staging);
+        // A compatible older registered DLL still reads its own adjacent INI on
+        // game launch. Keep that actual destination in sync with explicit loads.
+        const bool separate_render_file = _wcsicmp(render_ini.c_str(), ini.c_str()) != 0;
+        if (separate_render_file && !write_render_settings(render_ini, next_render)) {
+            write_render_settings(render_ini, previous_render);
+            DeleteFileW(staging.c_str());
+            return false;
+        }
+        WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());
+        if (!MoveFileExW(staging.c_str(), ini.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            if (separate_render_file)
+                write_render_settings(render_ini, previous_render);
+            DeleteFileW(staging.c_str());
+            return false;
+        }
+        KillTimer(controls, save_timer);
+        WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());
+        read();
+        set_tuning(options);
+        const double trim_values[]{options.crop_left, options.crop_right, options.crop_top,
+                                   options.crop_bottom};
+        for (unsigned i = 0; i < 4; ++i)
+            SendMessageW(trims[i], TBM_SETPOS, TRUE, LPARAM(std::lround(trim_values[i] * 10)));
+        SendMessageW(eye, CB_SETCURSEL, selected_eye, 0);
+        SendMessageW(mode, CB_SETCURSEL, window_mode ? 0 : 1, 0);
+        SendMessageW(fps, CB_SETCURSEL, rate == 30 ? 0 : rate == 60 ? 1 : 2, 0);
+        SetWindowTextW(output_width, std::to_wstring(options.output_width).c_str());
+        SetWindowTextW(output_height, std::to_wstring(options.output_height).c_str());
+        SetWindowTextW(
+            aspect, (std::to_wstring(aspect_numerator) + L":" + std::to_wstring(aspect_denominator)).c_str());
+        SendMessageW(auto_fullscreen, BM_SETCHECK, start_fullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
+        list_monitors();
+        if (!diagnostic)
+            move_to_monitor();
+        source_window = nullptr;
+        source_pid = 0;
+        refresh_sources();
+        restart_source();
+        advanced.reload(render_ini);
+        can_undo_comfort = false;
+        heartbeat();
+        labels();
+        setup_message = L"Complete preset loaded. Changed render expansion applies at the next game launch.";
+        update_status();
+        return true;
+    }
+    void builtin(BuiltinPreset preset) {
+        if (!can_undo_comfort)
+            before_comfort = options;
+        auto tuning = options;
+        if (preset == BuiltinPreset::stream_comfort)
+            apply_stream_comfort(tuning);
+        else {
+            const bool strong = preset == BuiltinPreset::strong_leveling;
+            tuning.smoothing = strong ? 70 : 25;
+            tuning.horizon_lock = strong ? 85 : 25;
+            tuning.adaptive_horizon = true;
+            tuning.crop = strong ? 15 : 8;
+            tuning.mirror = tuning.stabilize = true;
+            tuning.mirror_limit = strong ? 12 : 10;
+            tuning.mirror_softness = strong ? 75 : 60;
+        }
+        set_tuning(tuning);
+        can_undo_comfort = true;
+        labels();
+        save();
+        dirty = true;
+        setup_message = L"Tuning preset applied. Source, eye and output settings retained.";
+        update_status();
+    }
     void labels() {
         SetWindowTextW(smooth_label, (L"Smoothing: " + decimal(options.smoothing) + L" %").c_str());
         const bool separate = options.edge_reserve[std::min(selected_eye, 1u)].enabled;
@@ -415,7 +585,7 @@ struct App {
                     text = L"OpenXR feed connected.\r\n";
                     text += std::wstring(s.application, wcsnlen(s.application, 128)) + L"\r\n";
                     text += std::wstring(s.status, wcsnlen(s.status, 192)) + L"\r\n";
-                    const auto configured = read_render_settings(ini);
+                    const auto configured = read_render_settings(render_ini);
                     bool pending = configured.enabled != bool(s.render_enabled);
                     if (configured.enabled)
                         for (unsigned eye = 0; eye < 2; ++eye)
@@ -564,6 +734,12 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (app->theme.message(window, message, w, l, themed))
         return themed;
     switch (message) {
+    case WM_TIMER:
+        if (w == save_timer) {
+            app->save();
+            return 0;
+        }
+        break;
     case WM_HSCROLL:
         app->options.smoothing = SendMessageW(app->smooth, TBM_GETPOS, 0, 0) / 10.;
         app->options.crop = SendMessageW(app->crop, TBM_GETPOS, 0, 0) / 10.;
@@ -575,7 +751,7 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         app->options.mirror_limit = SendMessageW(app->mirror_limit, TBM_GETPOS, 0, 0) / 10.;
         app->options.mirror_softness = SendMessageW(app->mirror_softness, TBM_GETPOS, 0, 0) / 10.;
         app->labels();
-        app->save();
+        app->queue_save();
         app->dirty = true;
         return 0;
     case WM_COMMAND:
@@ -583,14 +759,11 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         case advanced_id:
             app->advanced.open(app->selected_eye);
             return 0;
+        case presets_id:
+            app->presets.open();
+            return 0;
         case comfort_id: {
-            if (!app->can_undo_comfort)
-                app->before_comfort = app->options;
-            auto tuning = app->options;
-            apply_stream_comfort(tuning);
-            app->set_tuning(tuning);
-            app->can_undo_comfort = true;
-            app->setup_message = L"Stream Comfort applied. Fine-tune any slider to taste.";
+            app->builtin(BuiltinPreset::stream_comfort);
             break;
         }
         case undo_comfort_id:
@@ -628,6 +801,8 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
                                          ? app->sources[std::size_t(index - 1)].handle
                                          : nullptr;
                 app->source_pid = app->source_window ? app->sources[std::size_t(index - 1)].pid : 0;
+                app->source_executable = executable_path(app->source_pid);
+                app->source_title = app->source_window ? app->sources[std::size_t(index - 1)].title : L"";
                 app->restart_source();
             }
             break;
@@ -687,6 +862,7 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         app->dirty = true;
         return 0;
     case WM_CLOSE:
+        app->save();
         DestroyWindow(window);
         return 0;
     case WM_DESTROY:
@@ -720,6 +896,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     }
     App state;
     app = &state;
+    state.diagnostic = self_test;
     state.demo = std::wstring(command).find(L"--demo") != std::wstring::npos;
     wchar_t path[32768]{};
     GetModuleFileNameW(nullptr, path, 32768);
@@ -729,6 +906,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.ini =
             state.directory + L"\\preview-selftest-" + std::to_wstring(GetCurrentProcessId()) + L".ini";
     state.read();
+    state.resolve_connection();
     state.start_ms = state.fps_start = GetTickCount64();
     INITCOMMONCONTROLSEX common{sizeof(common), ICC_BAR_CLASSES};
     InitCommonControlsEx(&common);
@@ -747,9 +925,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    state.controls = CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.6.0",
-                                     WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 100, 100, 1050,
-                                     855, nullptr, nullptr, instance, nullptr);
+    state.controls =
+        CreateWindowExW(0, L"HorizonLockControls", L"Horizon Lock VR – Preview 0.6.1",
+                        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, 100, 100,
+                        1050, 855, nullptr, nullptr, instance, nullptr);
     state.output =
         CreateWindowExW(0, L"HorizonLockOutput", L"Horizon Lock VR – Clean Preview", WS_OVERLAPPEDWINDOW, 800,
                         120, 976, 579, nullptr, nullptr, instance, nullptr);
@@ -813,8 +992,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SendMessageW(state.fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value));
     SendMessageW(state.fps, CB_SETCURSEL, state.rate == 30 ? 0 : state.rate == 60 ? 1 : 2, 0);
     state.status = child(state.controls, L"STATIC", L"", 0, 22, 478, 596, 190);
-    child(state.controls, L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 22, 668, 290, 34, comfort_id);
-    child(state.controls, L"BUTTON", L"Undo preset", BS_PUSHBUTTON, 326, 668, 290, 34, undo_comfort_id);
+    child(state.controls, L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 22, 668, 190, 34, comfort_id);
+    child(state.controls, L"BUTTON", L"Undo tuning", BS_PUSHBUTTON, 225, 668, 190, 34, undo_comfort_id);
+    child(state.controls, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 428, 668, 188, 34, presets_id);
     child(state.controls, L"STATIC", L"FRAMING / OUTPUT", 0, 655, 18, 360, 28);
     const double trim_values[] = {state.options.crop_left, state.options.crop_right, state.options.crop_top,
                                   state.options.crop_bottom};
@@ -867,16 +1047,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                                   655, 675, 350, 28, auto_fullscreen_id);
     SendMessageW(state.auto_fullscreen, BM_SETCHECK, state.start_fullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
     state.advanced.initialize(
-        state.controls, state.theme, state.options, state.ini,
+        state.controls, state.theme, state.options, state.render_ini,
         [&] {
             state.labels();
-            state.save();
+            state.queue_save();
             state.dirty = true;
         },
         [&](std::wstring message) {
+            if (message.rfind(L"Render settings saved.", 0) == 0) {
+                if (_wcsicmp(state.ini.c_str(), state.render_ini.c_str()))
+                    write_render_settings(state.ini, read_render_settings(state.render_ini));
+                state.save();
+            }
             state.setup_message = std::move(message);
             state.update_status();
         });
+    const auto presets_directory = self_test
+                                       ? std::filesystem::path(state.ini + L"-presets")
+                                       : std::filesystem::path(state.directory).parent_path() / L"Presets";
+    state.presets.initialize(state.controls, state.theme, presets_directory,
+                             {[&] { return state.snapshot(); },
+                              [&](const std::string &bytes) { return state.apply_snapshot(bytes); },
+                              [&](BuiltinPreset preset) { state.builtin(preset); }});
+    state.set_tuning(state.options);
     state.list_monitors();
     if (!self_test)
         state.move_to_monitor();
@@ -931,7 +1124,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             MSG msg{};
             while (!state.quit && GetTickCount64() < until) {
                 while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                    if (!state.advanced.route(msg) && !IsDialogMessageW(state.controls, &msg)) {
+                    if (!state.presets.route(msg) && !state.advanced.route(msg) &&
+                        !IsDialogMessageW(state.controls, &msg)) {
                         TranslateMessage(&msg);
                         DispatchMessageW(&msg);
                     }
@@ -1073,6 +1267,101 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         profile_ok = profile_ok && state.options.eye == 0 && IsWindowEnabled(state.crop);
         trace << "window-profile=" << profile_ok << '\n';
         okay = okay && profile_ok;
+        // Exercise the real dialog callbacks: unsaved render drafts, bypass,
+        // both eyes, signed Y, source identity and future INI keys must survive.
+        state.window_mode = false;
+        state.selected_eye = state.options.eye = 1;
+        state.rate = 90;
+        state.options.stabilize = false;
+        state.options.vertical_offset = -43.2;
+        state.options.edge_reserve[0] = {true, 3.4, 8.7, 5.6, 12.3};
+        state.source_executable = L"C:\\Preset test\\simulator.exe";
+        state.source_title = L"Simulator preview";
+        state.save();
+        WritePrivateProfileStringW(L"FutureSettings", L"RetainMe", L"complete snapshot", state.ini.c_str());
+        SendMessageW(GetDlgItem(panel, AdvancedSettings::render_left_id), TBM_SETPOS, TRUE, 237);
+        SendMessageW(panel, WM_HSCROLL, 0,
+                     reinterpret_cast<LPARAM>(GetDlgItem(panel, AdvancedSettings::render_left_id)));
+        // Advanced's live controls still hold the earlier Y value; set its signed value explicitly.
+        SendMessageW(GetDlgItem(panel, AdvancedSettings::vertical_id), TBM_SETPOS, TRUE, -432);
+        SendMessageW(panel, WM_HSCROLL, 0,
+                     reinterpret_cast<LPARAM>(GetDlgItem(panel, AdvancedSettings::vertical_id)));
+        state.presets.open(false);
+        const auto preset_panel = state.presets.handle();
+        SetDlgItemTextW(preset_panel, PresetsDialog::name_id, L"Complete round trip");
+        SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::save_id, 0);
+        PresetStore test_store(presets_directory);
+        std::wstring preset_error;
+        const auto stored_snapshot = test_store.read(L"Complete round trip", preset_error);
+        bool preset_ok = stored_snapshot.has_value() && read_render_settings(state.ini).eyes[1].left == 10;
+        state.builtin(BuiltinPreset::natural);
+        state.options.crop_left = 42;
+        state.options.edge_reserve[0] = {};
+        state.options.edge_reserve[1] = {};
+        state.options.vertical_offset = 99;
+        state.selected_eye = state.options.eye = 0;
+        state.window_mode = true;
+        state.rate = 30;
+        state.start_fullscreen = true;
+        state.source_executable.clear();
+        state.source_title.clear();
+        SetWindowTextW(state.output_width, L"1280");
+        SetWindowTextW(state.output_height, L"720");
+        SetWindowTextW(state.aspect, L"4:3");
+        state.apply_output();
+        state.save();
+        SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::load_id, 0);
+        preset_ok =
+            preset_ok && !state.window_mode && state.selected_eye == 1 && state.options.eye == 1 &&
+            state.rate == 90 && !state.options.stabilize && !state.start_fullscreen &&
+            state.options.output_width == 1920 && state.options.output_height == 1080 &&
+            state.aspect_numerator == 21 && state.aspect_denominator == 9 && state.options.crop_left == 2 &&
+            state.options.crop_right == 4.5 && state.options.crop_top == 6.7 &&
+            state.options.crop_bottom == 8.9 && state.options.vertical_offset == -43.2 &&
+            state.options.edge_reserve[0].enabled && state.options.edge_reserve[0].left == 3.4 &&
+            state.options.edge_reserve[0].right == 8.7 && state.options.edge_reserve[0].top == 5.6 &&
+            state.options.edge_reserve[0].bottom == 12.3 && state.options.edge_reserve[1].enabled &&
+            state.options.edge_reserve[1].right == 20 &&
+            state.source_executable == L"C:\\Preset test\\simulator.exe" && !state.source_window &&
+            read_render_settings(state.ini).eyes[1].left == 23.7 &&
+            state.advanced.draft().eyes[1].left == 23.7 && SendMessageW(state.fps, CB_GETCURSEL, 0, 0) == 2 &&
+            SendMessageW(state.eye, CB_GETCURSEL, 0, 0) == 1 &&
+            SendMessageW(state.bypass, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+            SendMessageW(GetDlgItem(panel, AdvancedSettings::vertical_id), TBM_GETPOS, 0, 0) == -432;
+        wchar_t retained[64]{};
+        GetPrivateProfileStringW(L"FutureSettings", L"RetainMe", L"", retained, 64, state.ini.c_str());
+        preset_ok = preset_ok && std::wstring(retained) == L"complete snapshot";
+        const auto monitor_count = SendMessageW(state.monitor, CB_GETCOUNT, 0, 0);
+        SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::load_id, 0);
+        preset_ok = preset_ok && SendMessageW(state.monitor, CB_GETCOUNT, 0, 0) == monitor_count;
+        // An unchanged registered 0.6.0 layer still reads its own settings file.
+        const auto installed_ini = state.ini + L"-installed.ini";
+        RenderSettings old_render{};
+        preset_ok = write_render_settings(installed_ini, old_render) && preset_ok;
+        state.render_ini = installed_ini;
+        state.advanced.reload(installed_ini);
+        SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::load_id, 0);
+        preset_ok = preset_ok && read_render_settings(installed_ini).enabled &&
+                    read_render_settings(installed_ini).eyes[1].left == 23.7 &&
+                    state.advanced.draft().eyes[1].left == 23.7;
+        state.render_ini = state.ini;
+        state.advanced.reload(state.ini);
+        DeleteFileW(installed_ini.c_str());
+        // Never report a successful complete snapshot after a settings write fails.
+        const auto attributes = GetFileAttributesW(state.ini.c_str());
+        preset_ok = SetFileAttributesW(state.ini.c_str(), attributes | FILE_ATTRIBUTE_READONLY) && preset_ok;
+        state.options.smoothing = 14.9;
+        SetDlgItemTextW(preset_panel, PresetsDialog::name_id, L"Must not save stale values");
+        SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::save_id, 0);
+        preset_ok = test_store.list(preset_error).size() == 1 && preset_ok;
+        SetFileAttributesW(state.ini.c_str(), attributes);
+        SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::load_id, 0);
+        preset_ok = save_controls(preset_panel, state.directory + L"\\preview-presets-test.bmp") && preset_ok;
+        SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::delete_id, 0);
+        preset_ok = test_store.list(preset_error).empty() && preset_ok;
+        RemoveDirectoryW(presets_directory.c_str());
+        trace << "complete-presets=" << preset_ok << '\n';
+        okay = okay && preset_ok;
         RECT initial{}, expanded{}, restored{};
         trace << "settings=" << okay << '\n';
         GetWindowRect(state.output, &initial);
@@ -1119,7 +1408,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 state.quit = true;
                 break;
             }
-            if (!state.advanced.route(msg) && !IsDialogMessageW(state.controls, &msg)) {
+            if (!state.presets.route(msg) && !state.advanced.route(msg) &&
+                !IsDialogMessageW(state.controls, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }

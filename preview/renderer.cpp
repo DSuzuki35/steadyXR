@@ -865,14 +865,16 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
                 source_aspect *= (100 - edges.left - edges.right) / (100 - edges.top - edges.bottom);
             }
             const auto region = framing_region(source_aspect, options, settings.edge_reserve);
+            const bool final_framing =
+                settings.edge_reserve.enabled ||
+                (std::isfinite(options.vertical_offset) && options.vertical_offset != 0);
             const auto warp = make_image_warp(
                 r.frame.views[0].width, r.frame.views[0].height, settings, result,
-                settings.edge_reserve.enabled
-                    ? std::array<double, 4>{region.left, region.right, region.top, region.bottom}
-                    : std::array<double, 4>{0, 1, 0, 1});
+                final_framing ? std::array<double, 4>{region.left, region.right, region.top, region.bottom}
+                              : std::array<double, 4>{0, 1, 0, 1});
             std::copy(warp.row_x.begin(), warp.row_x.end(), p.image_row_x);
             std::copy(warp.row_y.begin(), warp.row_y.end(), p.image_row_y);
-            if (!settings.edge_reserve.enabled)
+            if (!final_framing)
                 for (auto row : {p.image_row_x, p.image_row_y}) {
                     row[2] += float(row[0] * region.left + row[1] * region.top);
                     row[0] *= float(region.right - region.left);

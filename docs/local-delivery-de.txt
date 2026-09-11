@@ -1,15 +1,22 @@
-Horizon Lock VR - Version 0.6.0
+Horizon Lock VR - Version 0.6.1
 
 GAMING PC - STANDALONE PREVIEW
 Run Gaming-PC\Start-Preview.cmd after closing the previous preview app.
 Existing settings are copied if the new version has no preview.ini.
-OpenXR capture needs the 0.6 layer. Select OpenXR pose capture, click
-Upgrade connection (or Install connection), then restart iRacing.
+From a working 0.6.0: only restart the preview app; iRacing can stay running.
+Keep Preview-0.6.0 if its identical OpenXR layer is still registered.
+For first setup or a pre-0.6 layer: select OpenXR pose capture, click
+Upgrade connection (or Install connection), then restart iRacing once.
 Delivery does not change your registration or runtime automatically.
 Window capture still needs no game restart or connection.
 
-New in Render / edges: per-eye extra OpenXR scenery, Both eyes inward preset,
-asymmetric stabilization reserves and a Y offset slider for the aspect crop.
+New: Presets... with Natural, Stream Comfort, Strong Leveling and your own
+complete presets. Save new, Load, Overwrite selected and Delete are available.
+User presets live in Gaming-PC\Presets and survive version upgrades.
+All settings are included, including both eyes and pending render drafts.
+Slider repaint is fixed. Y offset now uses the hidden stabilization reserve.
+Render / edges still offers per-eye extra OpenXR scenery, Both eyes inward,
+asymmetric stabilization reserves and vertical framing adjustment.
 The original captured pixels stay available behind the crop for stabilization.
 Extra rendering is off by default. Save render settings, then restart the game;
 edge reserves and Y offset work immediately. GPU cost depends on your setup.

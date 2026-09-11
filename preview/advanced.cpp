@@ -36,18 +36,24 @@ void read_edge_settings(const std::wstring &ini, Options &options) {
                    1000) /
         10.;
 }
-void write_edge_settings(const std::wstring &ini, const Options &options) {
+bool write_edge_settings(const std::wstring &ini, const Options &options) {
+    bool okay = true;
     for (unsigned eye = 0; eye < 2; ++eye) {
         const auto &reserve = options.edge_reserve[eye];
-        WritePrivateProfileStringW(sections[eye], L"Enabled", reserve.enabled ? L"1" : L"0", ini.c_str());
+        okay = WritePrivateProfileStringW(sections[eye], L"Enabled", reserve.enabled ? L"1" : L"0",
+                                          ini.c_str()) &&
+               okay;
         const double edges[]{reserve.left, reserve.right, reserve.top, reserve.bottom};
         for (unsigned i = 0; i < 4; ++i)
-            WritePrivateProfileStringW(sections[eye], edge_keys[i],
-                                       std::to_wstring(tenths(edges[i], 0, 35)).c_str(), ini.c_str());
+            okay =
+                WritePrivateProfileStringW(sections[eye], edge_keys[i],
+                                           std::to_wstring(tenths(edges[i], 0, 35)).c_str(), ini.c_str()) &&
+                okay;
     }
-    WritePrivateProfileStringW(L"Preview", L"VerticalOffsetTenths",
-                               std::to_wstring(tenths(options.vertical_offset, -100, 100)).c_str(),
-                               ini.c_str());
+    return WritePrivateProfileStringW(L"Preview", L"VerticalOffsetTenths",
+                                      std::to_wstring(tenths(options.vertical_offset, -100, 100)).c_str(),
+                                      ini.c_str()) &&
+           okay;
 }
 
 struct AdvancedSettings::Impl {
@@ -127,7 +133,7 @@ struct AdvancedSettings::Impl {
         cls.lpfnWndProc = proc;
         RegisterClassW(&cls);
         RECT r{0, 0, 744, 754};
-        const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+        const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
         AdjustWindowRectEx(&r, style, FALSE, WS_EX_CONTROLPARENT);
         window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName,
                                  L"Horizon Lock VR — Render & edge settings", style, 135, 120,
@@ -154,8 +160,8 @@ struct AdvancedSettings::Impl {
         vertical = slider(vertical_id, 331, -1000, 1000, 387);
         child(L"BUTTON", L"Center", BS_PUSHBUTTON, 636, 330, 78, 31, center_id);
         child(L"STATIC",
-              L"Y offset moves the aspect-ratio crop: negative = up, positive = down.\r\nReserves are "
-              L"percentages per edge. Aspect fitting may crop further.",
+              L"Y offset shifts the view within the full image: negative = up, positive = down.\r\n"
+              L"Uses hidden crop pixels; shifting leaves less stabilization room on that edge.",
               0, 24, 373, 690, 44);
         child(L"STATIC", L"OPENXR RENDER EXTENSION", 0, 24, 439, 690, 26, 0, true);
         render = child(L"BUTTON", L"Enable extra rendered area (next game launch)", BS_AUTOCHECKBOX, 24, 475,
@@ -270,7 +276,7 @@ void AdvancedSettings::initialize(HWND parent, Theme &theme, Options &options, c
 }
 void AdvancedSettings::open(unsigned eye, bool visible) {
     auto &s = *impl_;
-    if (!s.window || !IsWindowVisible(s.window))
+    if (!s.window)
         s.pending = read_render_settings(s.ini);
     s.editing = std::min(eye, 1u);
     if (!s.window)
@@ -288,5 +294,14 @@ HWND AdvancedSettings::handle() const {
 }
 bool AdvancedSettings::route(MSG &msg) {
     return impl_->window && IsWindowVisible(impl_->window) && IsDialogMessageW(impl_->window, &msg);
+}
+RenderSettings AdvancedSettings::draft() const {
+    return impl_->window ? impl_->pending : read_render_settings(impl_->ini);
+}
+void AdvancedSettings::reload(const std::wstring &ini) {
+    impl_->ini = ini;
+    impl_->pending = read_render_settings(ini);
+    if (impl_->window)
+        impl_->load_controls();
 }
 } // namespace vrst::preview

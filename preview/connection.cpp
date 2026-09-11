@@ -1,5 +1,8 @@
 #include "connection.hpp"
+#include <algorithm>
+#include <array>
 #include <filesystem>
+#include <fstream>
 #include <vector>
 
 namespace vrst::preview {
@@ -17,6 +20,28 @@ bool same_path(const std::wstring &a, const std::wstring &b) {
 bool file_present(const std::filesystem::path &path) {
     std::error_code ec;
     return std::filesystem::is_regular_file(path, ec);
+}
+bool same_file_contents(const std::filesystem::path &a, const std::filesystem::path &b) {
+    std::error_code ec;
+    const auto a_size = std::filesystem::file_size(a, ec);
+    if (ec)
+        return false;
+    const auto b_size = std::filesystem::file_size(b, ec);
+    if (ec || a_size != b_size)
+        return false;
+    std::ifstream left(a, std::ios::binary), right(b, std::ios::binary);
+    if (!left || !right)
+        return false;
+    std::array<char, 64 * 1024> left_bytes{}, right_bytes{};
+    while (left && right) {
+        left.read(left_bytes.data(), static_cast<std::streamsize>(left_bytes.size()));
+        right.read(right_bytes.data(), static_cast<std::streamsize>(right_bytes.size()));
+        const auto count = left.gcount();
+        if (count != right.gcount() ||
+            !std::equal(left_bytes.begin(), left_bytes.begin() + count, right_bytes.begin()))
+            return false;
+    }
+    return left.eof() && right.eof();
 }
 LONG entries(HKEY key, std::vector<Entry> &out) {
     for (DWORD index = 0;; ++index) {
@@ -53,6 +78,35 @@ bool layer_installed(const std::wstring &directory, bool any_version, const wcha
             file_present(std::filesystem::path(entry.name).parent_path() / L"horizonlock-openxr-layer.dll"))
             return true;
     return false;
+}
+std::optional<std::wstring> compatible_layer_directory(const std::wstring &directory,
+                                                       const wchar_t *registry) {
+    const auto requested_directory = std::filesystem::path(directory).lexically_normal();
+    const auto requested_dll = requested_directory / L"horizonlock-openxr-layer.dll";
+    if (!file_present(requested_dll))
+        return std::nullopt;
+    HKEY key{};
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, registry, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return std::nullopt;
+    std::vector<Entry> found;
+    const auto result = entries(key, found);
+    RegCloseKey(key);
+    if (result != ERROR_SUCCESS)
+        return std::nullopt;
+    std::optional<std::wstring> fallback;
+    for (const auto &entry : found) {
+        const auto registered_manifest = std::filesystem::path(entry.name);
+        const auto registered_directory = registered_manifest.parent_path().lexically_normal();
+        const auto registered_dll = registered_directory / L"horizonlock-openxr-layer.dll";
+        if (entry.value != 0 || !file_present(registered_manifest) || !file_present(registered_dll) ||
+            !same_file_contents(requested_dll, registered_dll))
+            continue;
+        if (same_path(registered_directory.wstring(), requested_directory.wstring()))
+            return registered_directory.wstring();
+        if (!fallback)
+            fallback = registered_directory.wstring();
+    }
+    return fallback;
 }
 LONG set_layer_connection(const std::wstring &directory, bool enable, const wchar_t *registry) {
     const auto path = (std::filesystem::path(directory) / manifest).wstring();

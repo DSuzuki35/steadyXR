@@ -45,7 +45,16 @@ FramingRegion framing_region(double source_aspect, const Options &options, EdgeR
     const double offset =
         std::isfinite(options.vertical_offset) ? std::clamp(options.vertical_offset, -100., 100.) / 100 : 0.;
     if (offset != 0) {
-        const double slack = offset < 0 ? fitted.top - r.top : r.bottom - fitted.bottom;
+        // These coordinates are relative to the stabilization-cropped image.
+        // Recover the full captured vertical bounds, including the reserve and
+        // framing trims, so a wide feed can still be moved vertically.
+        const auto edges = sanitize_edge_reserve(reserve);
+        const double uniform = std::isfinite(options.crop) ? std::clamp(options.crop, 0., 40.) : 10.;
+        const double top = (edges.enabled ? edges.top : uniform / 2) / 100;
+        const double bottom = (edges.enabled ? edges.bottom : uniform / 2) / 100;
+        const double keep = 1 - top - bottom;
+        const double full_top = -top / keep, full_bottom = 1 + bottom / keep;
+        const double slack = offset < 0 ? fitted.top - full_top : full_bottom - fitted.bottom;
         const double shift = offset * std::max(0., slack);
         fitted.top += shift;
         fitted.bottom += shift;
@@ -88,10 +97,12 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     settings.mirror_edges = options.mirror;
     settings.output_16_9 = false;
     settings.edge_reserve = options.edge_reserve[frame.eye];
-    result.warp = make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
-                            options.stabilize && !settings.edge_reserve.enabled ? pose.correction : Quat{},
-                            projection(frame.views[0]));
-    if (settings.edge_reserve.enabled && options.stabilize)
+    const bool final_framing = settings.edge_reserve.enabled ||
+                               (std::isfinite(options.vertical_offset) && options.vertical_offset != 0);
+    result.warp =
+        make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
+                  options.stabilize && !final_framing ? pose.correction : Quat{}, projection(frame.views[0]));
+    if (final_framing && options.stabilize)
         result.warp.correction = pose.correction;
     auto effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
     // Projection poses are expressed in the application's layer space, not
@@ -131,7 +142,7 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
         framing_region((out.right - out.left) / (out.up - out.down), options, settings.edge_reserve);
     const double x = out.left, y = out.up, w = out.right - out.left, h = out.down - out.up;
     out = {x + w * region.left, x + w * region.right, y + h * region.top, y + h * region.bottom};
-    if (settings.edge_reserve.enabled) {
+    if (final_framing) {
         // Reserve, extra framing and horizon leveling all describe the final
         // output rays. Limit those rays, not an earlier, wider intermediate.
         limit_warp_correction(result.warp, result.warp.correction, settings.mirror_edges);

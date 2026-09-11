@@ -203,7 +203,7 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         RECT version{890, 28, 1009, 59};
         fill(dc, version, field);
         SetTextColor(dc, accent);
-        DrawTextW(dc, L"PREVIEW  0.6.0", -1, &version, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        DrawTextW(dc, L"PREVIEW  0.6.1", -1, &version, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         SelectObject(dc, old);
         if (message == WM_PAINT)
             EndPaint(window, &ps);
@@ -240,27 +240,33 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
             return false;
         const auto &draw = *reinterpret_cast<NMCUSTOMDRAW *>(l);
         if (draw.dwDrawStage == CDDS_PREPAINT) {
-            RECT r{};
-            GetClientRect(header->hwndFrom, &r);
-            fill(draw.hdc, r, panel);
-            result = CDRF_NOTIFYITEMDRAW;
-        } else if (draw.dwDrawStage == CDDS_ITEMPREPAINT) {
+            // Native incremental paints may omit channel or even all item callbacks.
+            // Draw one complete scene; the paint DC's clip limits it to the damage.
+            const int saved = SaveDC(draw.hdc);
+            RECT client{}, channel{}, thumb{};
+            GetClientRect(header->hwndFrom, &client);
+            IntersectClipRect(draw.hdc, client.left, client.top, client.right, client.bottom);
+            fill(draw.hdc, client, panel);
+            SendMessageW(header->hwndFrom, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+            SendMessageW(header->hwndFrom, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
             const bool enabled = IsWindowEnabled(header->hwndFrom);
-            auto r = draw.rc;
-            if (draw.dwItemSpec == TBCD_CHANNEL) {
-                const int mid = (r.top + r.bottom) / 2;
-                r.top = mid - 2;
-                r.bottom = mid + 2;
-                fill(draw.hdc, r, border);
-                const auto maximum = SendMessageW(header->hwndFrom, TBM_GETRANGEMAX, 0, 0);
-                const auto minimum = SendMessageW(header->hwndFrom, TBM_GETRANGEMIN, 0, 0);
-                const auto value = SendMessageW(header->hwndFrom, TBM_GETPOS, 0, 0);
-                if (maximum > minimum)
-                    r.right = r.left + LONG((r.right - r.left) * (value - minimum) / (maximum - minimum));
-                fill(draw.hdc, r, enabled ? accent : disabled);
-            } else if (draw.dwItemSpec == TBCD_THUMB) {
-                fill(draw.hdc, r, enabled ? accent : disabled);
+            const int mid = (channel.top + channel.bottom) / 2;
+            channel.top = mid - 2;
+            channel.bottom = mid + 2;
+            fill(draw.hdc, channel, border);
+            const long long maximum = static_cast<int>(SendMessageW(header->hwndFrom, TBM_GETRANGEMAX, 0, 0));
+            const long long minimum = static_cast<int>(SendMessageW(header->hwndFrom, TBM_GETRANGEMIN, 0, 0));
+            const long long value = static_cast<int>(SendMessageW(header->hwndFrom, TBM_GETPOS, 0, 0));
+            if (maximum > minimum) {
+                channel.right = channel.left + LONG((channel.right - channel.left) * (value - minimum) /
+                                                    (maximum - minimum));
+                fill(draw.hdc, channel, enabled ? accent : disabled);
             }
+            fill(draw.hdc, thumb, enabled ? accent : disabled);
+            if (GetFocus() == header->hwndFrom &&
+                !(SendMessageW(header->hwndFrom, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS))
+                DrawFocusRect(draw.hdc, &client);
+            RestoreDC(draw.hdc, saved);
             result = CDRF_SKIPDEFAULT;
         } else
             result = CDRF_DODEFAULT;

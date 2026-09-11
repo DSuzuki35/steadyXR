@@ -6,15 +6,15 @@ The filter appears as **VR Stabilizer** in OBS. Windows downloads include both c
 
 Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
 
-Version **0.6.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
+Version **0.6.1 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
 
 For pose mode, SteamVR must be supplying headset tracking. Native Pimax OpenXR without SteamVR needs a future tracking provider; it is not included in this release. Image mode works independently of the runtime because it analyzes the captured video.
 
 The local v0.3.4 Windows test package uses LLVM-MinGW with static runtime libraries. Twelve automated suites cover core math, image motion, per-axis smoothing/crop, calibration and collection, timing displays, the native sender window, sender math, launcher failures and real UDP integration. Version 0.3.3 fixes a SteamVR startup crash in the MinGW sender by retrieving the eye transform through Valve's C function table. Native OBS GPU/module tests exercise SDR sources, full 4K output and bounded 480×270 analysis. Synthetic results do not guarantee racing-footage quality; the live Dream Air / Elgato / iRacing / LMU setup still needs validation. The published v0.3.0 package uses Visual Studio binaries from [GitHub's build and test runs](https://github.com/DSuzuki35/horizonlock-vr/actions).
 
-## Preview 0.6.0
+## Preview 0.6.1
 
-The standalone preview adds optional per-eye OpenXR render extension, a **Both eyes inward** preset, independent stabilization reserves per edge, and a live **Y offset** for aspect-ratio framing. The full captured image stays available behind the cropped output. Open **Render / edges…** for the new controls. Extra rendering defaults off and needs **Upgrade connection** plus an OpenXR game restart; live crop/Y changes do not. See [the preview guide](preview/README.md) for setup, bounds and the status of native OpenXR/SteamVR-SBoys3 validation.
+The standalone preview now has **Presets…** with Natural, Stream Comfort, Strong Leveling and complete named user presets. This update fixes disappearing slider tracks and makes Y offset use the captured pixels hidden by stabilization reserves. Existing per-eye OpenXR render extension and asymmetric crop remain available in **Render / edges…**. A working 0.6.0 connection is reused without restarting the game; changing the render extension still requires the next game launch. See [the preview guide](preview/README.md) for setup and details.
 
 ## Standalone gaming-PC preview (new in 0.4.0)
 
