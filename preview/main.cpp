@@ -1366,10 +1366,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.shortcut_hint = child(state.controls, L"STATIC", L"", 0, 22, 545, 596, 40);
     state.status = child(state.controls, L"EDIT", L"",
                          ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 22, 589, 596, 69);
-    child(state.controls, L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 22, 668, 145, 34, comfort_id);
-    child(state.controls, L"BUTTON", L"Undo tuning", BS_PUSHBUTTON, 177, 668, 129, 34, undo_comfort_id);
-    child(state.controls, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 316, 668, 115, 34, presets_id);
-    child(state.controls, L"BUTTON", L"Layer order…", BS_PUSHBUTTON, 441, 668, 175, 34, layers_id);
+    child(state.controls, L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 22, 668, 130, 34, comfort_id);
+    child(state.controls, L"BUTTON", L"Undo tuning", BS_PUSHBUTTON, 158, 668, 105, 34, undo_comfort_id);
+    child(state.controls, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 269, 668, 95, 34, presets_id);
+    child(state.controls, L"BUTTON", L"Layer order…", BS_PUSHBUTTON, 370, 668, 120, 34, layers_id);
     child(state.controls, L"STATIC", L"FRAMING / OUTPUT", 0, 655, 18, 360, 28);
     const double trim_values[] = {state.options.crop_left, state.options.crop_right, state.options.crop_top,
                                   state.options.crop_bottom};
@@ -1421,7 +1421,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.auto_fullscreen = child(state.controls, L"BUTTON", L"Start preview in fullscreen", BS_AUTOCHECKBOX,
                                   655, 675, 350, 28, auto_fullscreen_id);
     SendMessageW(state.auto_fullscreen, BM_SETCHECK, state.start_fullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
-    child(state.controls, L"BUTTON", L"Overlay capture…", BS_PUSHBUTTON, 28, 714, 200, 32, overlays_id);
+    child(state.controls, L"BUTTON", L"Overlay layers…", BS_PUSHBUTTON, 496, 668, 120, 34, overlays_id);
     state.advanced.initialize(
         state.controls, state.theme, state.options, state.render_ini,
         [&] {
@@ -1542,6 +1542,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         bool interactions_ok = !state.paused && IsWindow(state.comparison) &&
                                IsWindow(GetDlgItem(state.controls, next_preset_id)) &&
                                IsWindow(GetDlgItem(state.controls, hotkeys_id));
+        RECT overlay_button_rect{}, controls_rect{};
+        GetWindowRect(GetDlgItem(state.controls, overlays_id), &overlay_button_rect);
+        MapWindowPoints(nullptr, state.controls, reinterpret_cast<POINT *>(&overlay_button_rect), 2);
+        GetClientRect(state.controls, &controls_rect);
+        interactions_ok = interactions_ok && overlay_button_rect.left >= 0 && overlay_button_rect.top >= 0 &&
+                          overlay_button_rect.right <= controls_rect.right &&
+                          overlay_button_rect.bottom <= controls_rect.bottom;
         if (state.channel.lock()) {
             auto &catalog = state.channel.data()->overlay_catalog;
             catalog = {};
