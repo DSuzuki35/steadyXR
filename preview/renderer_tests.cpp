@@ -1,11 +1,15 @@
 #include "renderer.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstring>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
+#include <type_traits>
 #include <wrl/client.h>
 using namespace vrst::preview;
 using Microsoft::WRL::ComPtr;
@@ -13,8 +17,204 @@ void require(bool value, const char *what) {
     if (!value)
         throw std::runtime_error(what);
 }
+template <class T, class = void> struct HasOffscreen : std::false_type {};
+template <class T>
+struct HasOffscreen<T, std::void_t<decltype(std::declval<T &>().attach_offscreen())>> : std::true_type {};
+
+// This reader uses an independent hardware device, exactly as an OBS consumer does.
+struct OutputReader {
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<IDXGIKeyedMutex> mutex;
+    explicit OutputReader(ID3D11Device *writer) {
+        ComPtr<IDXGIDevice> dxgi;
+        ComPtr<IDXGIAdapter> adapter;
+        require(SUCCEEDED(writer->QueryInterface(IID_PPV_ARGS(&dxgi))) &&
+                    SUCCEEDED(dxgi->GetAdapter(&adapter)),
+                "offscreen writer adapter");
+        require(SUCCEEDED(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0,
+                                            D3D11_SDK_VERSION, &device, nullptr, &context)),
+                "independent output reader device");
+    }
+    void open(std::uint64_t handle) {
+        mutex.Reset();
+        texture.Reset();
+        require(handle &&
+                    SUCCEEDED(device->OpenSharedResource(reinterpret_cast<HANDLE>(handle),
+                                                         IID_PPV_ARGS(&texture))) &&
+                    SUCCEEDED(texture.As(&mutex)),
+                "open keyed offscreen output");
+    }
+    std::vector<std::uint32_t> pixels(unsigned width, unsigned height) {
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        require(desc.Width == width && desc.Height == height, "offscreen output dimensions");
+        require(desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS, "OBS-compatible RGBA output");
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = desc.MiscFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        ComPtr<ID3D11Texture2D> staging;
+        require(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &staging)), "reader staging texture");
+        context->CopyResource(staging.Get(), texture.Get());
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        require(SUCCEEDED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)), "reader GPU map");
+        std::vector<std::uint32_t> result(std::size_t(width) * height);
+        for (unsigned y = 0; y < height; ++y)
+            std::memcpy(result.data() + std::size_t(y) * width,
+                        static_cast<const char *>(mapped.pData) + y * mapped.RowPitch, width * 4);
+        context->Unmap(staging.Get(), 0);
+        return result;
+    }
+};
+
+void abandon_output(OutputReader &reader, std::uint64_t handle) {
+    HRESULT acquired = E_FAIL;
+    // The owning thread exits without returning the GPU reader key, then its
+    // reader device is destroyed. Thread exit alone does not abandon a D3D11
+    // mutex because ownership belongs to the device. No GPU TDR is requested.
+    std::thread owner([&] { acquired = reader.mutex->AcquireSync(1, 0); });
+    owner.join();
+    require(acquired == S_OK, "abandonment fixture acquires the published output");
+    OutputReader probe(reader.device.Get());
+    probe.open(handle);
+    reader.mutex.Reset();
+    reader.texture.Reset();
+    reader.context.Reset();
+    reader.device.Reset();
+    const HRESULT abandoned = probe.mutex->AcquireSync(0, 0);
+    require(abandoned == WAIT_ABANDONED, "destroyed owner must abandon the native output mutex");
+}
+
+template <class T> void offscreen_tests() {
+    if constexpr (!HasOffscreen<T>::value) {
+        require(false, "renderer must support offscreen attachment without an HWND");
+    } else {
+        T renderer;
+        require(renderer.attach_offscreen(), "offscreen initialize without creating a window");
+        Options options;
+        options.output_width = 640;
+        options.output_height = 360;
+        options.crop = 0;
+        options.stabilize = false;
+        require(renderer.draw(options), "offscreen black waiting draw");
+        OutputReader reader(renderer.device());
+        reader.open(renderer.output_handle());
+        const auto first_generation = renderer.output_generation();
+        require(first_generation != 0, "published output has a generation");
+        require(reader.mutex->AcquireSync(1, 0) == S_OK, "waiting frame published on reader key");
+        const auto waiting = reader.pixels(640, 360);
+        require(std::all_of(waiting.begin(), waiting.end(), [](auto p) { return p == 0xff000000u; }),
+                "offscreen waiting image is opaque black");
+        const auto begin = std::chrono::steady_clock::now();
+        require(!renderer.draw(options), "reader ownership prevents overwriting output");
+        require(std::chrono::steady_clock::now() - begin < std::chrono::milliseconds(100),
+                "busy output draw must never wait for the reader");
+        require(reader.pixels(640, 360) == waiting, "busy draw preserves the held image");
+        require(SUCCEEDED(reader.mutex->ReleaseSync(0)), "reader returns writer key");
+        require(renderer.demo(0) && renderer.draw(options), "offscreen quad demo draw");
+        require(renderer.output_generation() == first_generation, "ordinary draws retain generation");
+        require(reader.mutex->AcquireSync(1, 0) == S_OK, "demo published after reader releases");
+        const auto demo = reader.pixels(640, 360);
+        const auto center = demo[180 * 640 + 320];
+        // Linear demo RGB (32,208,32) is sRGB-encoded by the output target.
+        require(std::abs(int(center & 255) - 99) <= 2 && std::abs(int((center >> 8) & 255) - 233) <= 2 &&
+                    std::abs(int((center >> 16) & 255) - 99) <= 2,
+                "shared output preserves quad focus colors");
+
+        options.output_width = 800;
+        options.output_height = 450;
+        require(renderer.draw(options), "resize can replace output while reader holds old image");
+        require(renderer.output_generation() != first_generation, "resize changes output generation");
+        require(reader.pixels(640, 360) == demo, "resize preserves reader-owned old texture");
+        require(SUCCEEDED(reader.mutex->ReleaseSync(0)), "release retired output");
+        reader.open(renderer.output_handle());
+        require(reader.mutex->AcquireSync(1, 0) == S_OK, "resized output publishes reader key");
+        require(reader.pixels(800, 450)[225 * 800 + 400] == center, "resized output correct colors");
+        require(SUCCEEDED(reader.mutex->ReleaseSync(0)), "release resized output");
+
+        require(renderer.demo(-2), "create invalid display-time fixture");
+        require(!renderer.draw(options), "invalid composition fails after writer acquires output");
+        require(reader.mutex->AcquireSync(1, 0) == WAIT_TIMEOUT,
+                "failed draw never publishes a partial frame");
+        require(renderer.demo(.1) && renderer.draw(options), "failed draw returns writer key for retry");
+        require(reader.mutex->AcquireSync(1, 0) == S_OK, "successful retry publishes output");
+        const auto generation = renderer.output_generation();
+        require(renderer.attach_offscreen() && renderer.draw(options), "replace offscreen device");
+        require(renderer.output_generation() != generation, "device replacement changes generation");
+        require(reader.pixels(800, 450)[225 * 800 + 400] == center,
+                "device replacement preserves independently opened old output");
+        require(SUCCEEDED(reader.mutex->ReleaseSync(0)), "release old-device output");
+        std::vector<std::uint32_t> diagnostic;
+        unsigned diagnostic_width{}, diagnostic_height{};
+        require(renderer.readback(diagnostic, diagnostic_width, diagnostic_height) &&
+                    diagnostic_width == 800 && diagnostic_height == 450 &&
+                    diagnostic[225 * 800 + 400] == 0xff000000u,
+                "diagnostic readback consumes the new device waiting output");
+        require(renderer.draw(options), "diagnostic readback returns output ownership to writer");
+
+        ComPtr<IDXGIDevice> dxgi;
+        ComPtr<IDXGIAdapter> adapter;
+        DXGI_ADAPTER_DESC adapter_desc{};
+        renderer.device()->QueryInterface(IID_PPV_ARGS(&dxgi));
+        dxgi->GetAdapter(&adapter);
+        adapter->GetDesc(&adapter_desc);
+        require(renderer.attach_offscreen(&adapter_desc.AdapterLuid), "attach fixed OBS adapter");
+        auto *fixed_device = renderer.device();
+        Channel channel;
+        require(channel.open(true,
+                             L"Local\\HorizonLock-offscreen-test-" + std::to_wstring(GetCurrentProcessId())),
+                "offscreen adapter channel");
+        require(channel.lock(), "offscreen adapter packet lock");
+        auto &frame = channel.data()->frame;
+        frame = {};
+        frame.generation = frame.session = frame.sequence = frame.reference_epoch = 1;
+        frame.producer_pid = GetCurrentProcessId();
+        frame.display_time = 1000000000;
+        frame.adapter = adapter_desc.AdapterLuid;
+        frame.adapter.LowPart ^= 0x80000000u;
+        frame.view_count = 1;
+        frame.views[0].texture_handle = 1;
+        frame.views[0].width = frame.views[0].height = 512;
+        frame.views[0].rect_width = frame.views[0].rect_height = 512;
+        frame.views[0].format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        channel.data()->ready = 1;
+        channel.unlock();
+        require(!renderer.consume(channel), "different game adapter must fail for fixed OBS adapter");
+        require(renderer.device() == fixed_device, "adapter mismatch preserves fixed renderer device");
+        require(renderer.error().find(L"adapter") != std::wstring::npos, "clear adapter mismatch error");
+        require(renderer.draw(options), "fixed adapter remains usable after rejecting game adapter");
+        for (bool diagnostic_acquire : {false, true}) {
+            OutputReader abandoned_reader(renderer.device());
+            abandoned_reader.open(renderer.output_handle());
+            const auto abandoned_generation = renderer.output_generation();
+            abandon_output(abandoned_reader, renderer.output_handle());
+            require(SUCCEEDED(renderer.device()->GetDeviceRemovedReason()),
+                    "abandoned reader must leave the writer device healthy");
+            require(diagnostic_acquire ? !renderer.readback(diagnostic, diagnostic_width, diagnostic_height)
+                                       : !renderer.draw(options),
+                    "abandoned output acquisition must fail");
+            require(renderer.output_handle() == 0 && renderer.output_generation() != abandoned_generation,
+                    "abandoned output is invalidated and its generation retired");
+            require(renderer.device() == fixed_device, "abandonment retains the fixed writer device");
+            require(renderer.draw(options), "next draw recreates output after reader abandonment");
+            OutputReader recovered_reader(renderer.device());
+            recovered_reader.open(renderer.output_handle());
+            require(recovered_reader.mutex->AcquireSync(1, 0) == S_OK,
+                    "replacement output publishes a readable frame");
+            require(recovered_reader.pixels(800, 450)[225 * 800 + 400] == 0xff000000u,
+                    "replacement output has correct waiting pixels");
+            require(SUCCEEDED(recovered_reader.mutex->ReleaseSync(0)), "release recovered output");
+            require(renderer.draw(options), "publish next frame after abandoned output recovery");
+        }
+        std::cout << "Native GPU: abandoned reader draw/readback recovery without device removal passed\n";
+        std::cout << "Native GPU: offscreen waiting/demo, keyed output, busy reader, resize, failed draw, "
+                     "device replacement and fixed adapter passed\n";
+    }
+}
 int main(int argc, char **argv) {
     try {
+        offscreen_tests<Renderer>();
         WNDCLASSW wc{};
         wc.lpfnWndProc = DefWindowProcW;
         wc.hInstance = GetModuleHandleW(nullptr);

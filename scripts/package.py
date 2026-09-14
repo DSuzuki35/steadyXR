@@ -47,7 +47,7 @@ copy(output(Path('plugin/vr-stabilizer.dll')), 'obs-install/obs-plugins/64bit/vr
 for item in (root / 'plugin/data').rglob('*'):
     if item.is_file():
         copy(item, Path('obs-install/data/obs-plugins/vr-stabilizer') / item.relative_to(root / 'plugin/data'))
-for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'Start-Delay-Check.cmd', 'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1']:
+for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'Start-Delay-Check.cmd', 'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1', 'docs/obs-openxr-source.md']:
     copy(root / name, name)
 copy(a.openvr / 'LICENSE', 'licenses/OpenVR-LICENSE.txt')
 if a.openxr:
@@ -72,7 +72,7 @@ for item in (root / 'licenses').glob('*'):
     if item.is_file():
         copy(item, Path('licenses') / item.name)
 # Include corresponding project source so the binary package is self-contained.
-for name in ['AGENTS.md', 'CMakeLists.txt', '.clang-format', '.gitignore', 'LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md']:
+for name in ['AGENTS.md', 'CMakeLists.txt', '.clang-format', '.gitignore', 'LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md', 'TODO.md']:
     copy(root / name, Path('source') / name)
 for directory in ['include', 'src', 'plugin', 'sender', 'preview', 'scripts', 'cmake', 'tests', 'docs', '.github', 'licenses']:
     for item in (root / directory).rglob('*'):
@@ -145,6 +145,7 @@ if a.delivery_dir:
         shutil.copy2(stage / 'preview/README.md', delivery / 'Gaming-PC/Preview-Guide.md')
         shutil.copy2(stage / 'preview/README.md', delivery / 'Gaming-PC/Preview-Anleitung.md')
     shutil.copy2(root / 'docs/local-delivery-de.txt', delivery / 'LIESMICH.txt')
+    shutil.copy2(root / 'docs/obs-openxr-source.md', delivery / 'OBS-OpenXR-Guide.md')
     print(f'Ready-to-use files: {delivery}')
 print(archive)
 print(f'{archive.stat().st_size:,} bytes; {len(checks)} files; ZIP integrity passed')

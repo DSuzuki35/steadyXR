@@ -1,10 +1,10 @@
 # SteadyXR
 
-SteadyXR creates a stabilized, stream-ready VR preview on your gaming PC without OBS. Capture submitted OpenXR eye images with their poses, or stabilize an existing game window. Horizon leveling, extra rendered scenery, asymmetric framing, soft mirrored borders and complete presets help tune the output for viewers.
+SteadyXR creates a stabilized VR view, either in its standalone preview or directly as an OBS source for single-PC streaming. Capture submitted OpenXR eye images with their poses, or stabilize an existing game window in the standalone app. Horizon leveling, extra rendered scenery, asymmetric framing, soft mirrored borders and complete presets help tune the output for viewers.
 
 The package also includes the original OBS effect filter for stabilizing a capture-card picture on the stream PC. Its **SteamVR pose**, **Image-based microjitter** and **Hybrid** modes remain available, with a lightweight tracking sender for pose mode.
 
-The filter appears as **VR Stabilizer** in OBS. Windows downloads include both components and complete source code.
+The filter appears as **VR Stabilizer** and the direct source as **SteadyXR OpenXR Capture** in OBS. Windows downloads include both workflows and complete source code.
 
 Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
 
@@ -19,6 +19,16 @@ The local v0.3.4 Windows test package uses LLVM-MinGW with static runtime librar
 Horizon Lock VR is now **SteadyXR**. The new **OpenXR layers…** editor lists 64-bit and 32-bit registrations, their status, runtime, manifest and DLL paths. Stage enable/disable, unregister and order changes, then Apply with a verified backup. Undo and Restore backup are included. System-wide changes use a separately elevated editor; the preview stays unelevated. Reordering stays within the loader's registry groups, and explicit layer order belongs to the game/environment.
 
 The completed rename keeps version 0.7.0 and ships SteadyXR.exe, SteadyXR.ini and SteadyXR-OpenXR.dll. Existing settings migrate without overwriting newer tuning; the previously delivered compatible capture DLL is still recognized. Old registered directories remain in place. The update itself changes no OpenXR registrations. See [the preview guide](preview/README.md) for setup and details.
+
+## Direct OBS source for single-PC streaming
+
+Install the updated OBS module and add **Sources → + → SteadyXR OpenXR Capture**. Close the standalone preview; OBS receives and stabilizes the OpenXR eye images directly, with no preview window to capture. Use **Import settings** to bring your existing `SteadyXR.ini` or saved INI preset into this source. OBS then keeps its own settings in the scene collection.
+
+The source uses the same crop, horizon leveling, adaptive leveling, mirror softness, per-eye reserves and Y offset as the preview. Default output is 3840×2160 at 60 FPS. It requires the working SteadyXR OpenXR layer, a D3D11 game and OBS on the same GPU. Existing layer render-extension settings continue to apply. Hidden sources stop requesting game copies; missing frames show a black waiting screen. Reuse the same source across scenes because one consumer owns the capture connection at a time. The 30-day build expiration also applies to this source.
+
+The source transfers video through GPU shared textures and uses the existing stabilization pass; it performs no CPU video readback or encoding of its own. Actual streaming overhead still depends on game, resolution and OBS encoding settings. [Installation and settings guide](docs/obs-openxr-source.md).
+
+Build with both `VRST_BUILD_PLUGIN=ON` and `VRST_BUILD_PREVIEW=ON`. The native source tests use the installed OBS runtime via `VRST_OBS_RUNTIME_DIR`; they create private test channels and never change your scenes or layer registration.
 
 ## Standalone gaming-PC preview (new in 0.4.0)
 

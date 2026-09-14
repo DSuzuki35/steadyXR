@@ -1,5 +1,20 @@
 SteadyXR - Version 0.7.0
 
+SINGLE-PC OBS - DIRECT OPENXR SOURCE
+Close OBS, then copy obs-plugins and data from Stream-PC directly into
+C:\Program Files\obs-studio on the gaming PC. Restart OBS and add the source
+"SteadyXR OpenXR Capture". Close the standalone SteadyXR preview; the source
+captures and stabilizes directly and does not need a visible preview window.
+Use the source's settings import to select Gaming-PC\SteadyXR-0.7.0\SteadyXR.ini.
+OBS stores its own settings in the scene collection; the INI stays unchanged.
+Reuse this existing source in other scenes instead of creating another capture.
+The working SteadyXR OpenXR connection must remain enabled. Existing render
+extension settings still apply. OBS and the OpenXR game must use the same GPU.
+No game restart is needed if the compatible layer is already loaded.
+If no frames arrive, the source shows a black waiting screen. It pauses capture
+when hidden, and follows the same 30-day build validity as the standalone app.
+Game audio remains a separate OBS audio source, as before.
+
 GAMING PC - STANDALONE PREVIEW
 Run Gaming-PC\Start-Preview.cmd after closing the previous preview app.
 The app is in Gaming-PC\SteadyXR-0.7.0: SteadyXR.exe and SteadyXR.ini. Existing settings are copied unchanged if SteadyXR.ini is missing.

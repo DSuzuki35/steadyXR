@@ -1,4 +1,7 @@
 #include <obs-module.h>
+#ifdef VRST_WITH_OPENXR_SOURCE
+#include "openxr_source.hpp"
+#endif
 
 #include "calibration_session.hpp"
 #include "image_filter.hpp"
@@ -959,6 +962,9 @@ const char *obs_module_description(void) {
 }
 
 bool obs_module_load(void) {
+#ifdef VRST_WITH_OPENXR_SOURCE
+    register_openxr_source();
+#endif
     obs_source_info info{};
     info.id = "vr-stabilizer";
     info.type = OBS_SOURCE_TYPE_FILTER;

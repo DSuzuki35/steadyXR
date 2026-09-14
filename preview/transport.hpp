@@ -60,7 +60,12 @@ class Channel {
     Channel &operator=(const Channel &) = delete;
     bool open(bool viewer, const std::wstring &name = default_channel);
     void close();
-    bool lock(); // zero timeout; WAIT_ABANDONED treated as acquired
+    // One active renderer per channel; separate OBS sources cannot steal frames.
+    bool heartbeat(unsigned eye, unsigned fps);
+    void release_consumer();
+    bool owns_consumer() const;
+    // Validate ownership under the same mutex as frame consumption when requested.
+    bool lock(bool require_consumer = false); // zero timeout; WAIT_ABANDONED treated as acquired
     void unlock();
     Shared *data() const {
         return shared_;
@@ -70,5 +75,6 @@ class Channel {
     HANDLE mapping_{}, mutex_{};
     Shared *shared_{};
     bool locked_{};
+    std::wstring name_;
 };
 } // namespace vrst::preview

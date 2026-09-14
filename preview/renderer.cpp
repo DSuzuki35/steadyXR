@@ -1,5 +1,6 @@
 #include "renderer.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <d3d11.h>
@@ -121,10 +122,31 @@ void rect(float *r, float *c, const View &v) {
 bool same(LUID a, LUID b) {
     return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
 }
+std::atomic<std::uint64_t> next_output_generation{0};
+
+// Keep the resources alive even when reporting device loss releases the renderer.
+// Abandoned writes return to key 0; only a completed draw publishes key 1.
+struct OutputWrite {
+    ComPtr<IDXGIKeyedMutex> mutex;
+    ComPtr<ID3D11DeviceContext> context;
+    bool acquired{};
+    HRESULT release(std::uint64_t key) {
+        if (!acquired)
+            return S_OK;
+        context->Flush();
+        acquired = false;
+        return mutex->ReleaseSync(key);
+    }
+    ~OutputWrite() {
+        release(0);
+    }
+};
 } // namespace
 
 struct Renderer::Impl {
     HWND window{};
+    bool offscreen{}, fixed_adapter{};
+    LUID requested_adapter{};
     LUID adapter{};
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -134,6 +156,8 @@ struct Renderer::Impl {
     ComPtr<ID3D11Texture2D> output;
     ComPtr<ID3D11RenderTargetView> output_target;
     ComPtr<ID3D11ShaderResourceView> output_view;
+    ComPtr<IDXGIKeyedMutex> output_mutex;
+    std::uint64_t output_handle{}, output_generation{};
     ComPtr<ID3D11ShaderResourceView> waiting_view;
     std::wstring waiting_label;
     unsigned output_width{}, output_height{};
@@ -173,6 +197,17 @@ struct Renderer::Impl {
         error = stream.str();
         return false;
     }
+    void discard_output() {
+        if (context)
+            context->OMSetRenderTargets(0, nullptr, nullptr);
+        output_view.Reset();
+        output_target.Reset();
+        output_mutex.Reset();
+        output.Reset();
+        output_handle = 0;
+        output_width = output_height = 0;
+        output_generation = ++next_output_generation;
+    }
     void release() {
         if (context) {
             context->ClearState();
@@ -195,6 +230,10 @@ struct Renderer::Impl {
         back.Reset();
         output_view.Reset();
         output_target.Reset();
+        output_mutex.Reset();
+        output_handle = 0;
+        if (output)
+            output_generation = ++next_output_generation;
         waiting_view.Reset();
         waiting_label.clear();
         output.Reset();
@@ -239,20 +278,22 @@ struct Renderer::Impl {
                                nullptr, &context);
         if (FAILED(hr))
             return fail(L"D3D11CreateDevice", hr);
-        DXGI_SWAP_CHAIN_DESC desc{};
-        desc.BufferDesc.Width = 960;
-        desc.BufferDesc.Height = 540;
-        desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        desc.SampleDesc.Count = 1;
-        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        desc.BufferCount = 2;
-        desc.OutputWindow = window;
-        desc.Windowed = TRUE;
-        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        hr = factory->CreateSwapChain(device.Get(), &desc, &swap);
-        if (FAILED(hr))
-            return fail(L"Preview window", hr);
-        factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
+        if (!offscreen) {
+            DXGI_SWAP_CHAIN_DESC desc{};
+            desc.BufferDesc.Width = 960;
+            desc.BufferDesc.Height = 540;
+            desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+            desc.BufferCount = 2;
+            desc.OutputWindow = window;
+            desc.Windowed = TRUE;
+            desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            hr = factory->CreateSwapChain(device.Get(), &desc, &swap);
+            if (FAILED(hr))
+                return fail(L"Preview window", hr);
+            factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
+        }
         ComPtr<ID3DBlob> vblob, pblob, errors;
         hr = D3DCompile(shader, sizeof(shader) - 1, nullptr, nullptr, nullptr, "VS", "vs_5_0",
                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vblob, &errors);
@@ -290,7 +331,7 @@ struct Renderer::Impl {
         if (FAILED(hr))
             return fail(L"Sampler", hr);
         error.clear();
-        return resize();
+        return offscreen || resize();
     }
     bool resize() {
         RECT client{};
@@ -325,6 +366,9 @@ struct Renderer::Impl {
         context->OMSetRenderTargets(0, nullptr, nullptr);
         output_view.Reset();
         output_target.Reset();
+        output_mutex.Reset();
+        output_handle = 0;
+        output_generation = ++next_output_generation;
         output.Reset();
         D3D11_TEXTURE2D_DESC d{};
         d.Width = w;
@@ -333,6 +377,8 @@ struct Renderer::Impl {
         d.SampleDesc.Count = 1;
         d.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
         d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        if (offscreen)
+            d.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
         HRESULT hr = device->CreateTexture2D(&d, nullptr, &output);
         D3D11_RENDER_TARGET_VIEW_DESC rt{};
         rt.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
@@ -345,6 +391,17 @@ struct Renderer::Impl {
             FAILED(hr = device->CreateShaderResourceView(output.Get(), &sv, &output_view))) {
             output.Reset();
             return fail(L"Output resolution allocation", hr);
+        }
+        if (offscreen) {
+            ComPtr<IDXGIResource> resource;
+            HANDLE handle{};
+            if (FAILED(hr = output.As(&output_mutex)) || FAILED(hr = output.As(&resource)) ||
+                FAILED(hr = resource->GetSharedHandle(&handle))) {
+                output.Reset();
+                output_mutex.Reset();
+                return fail(L"Share offscreen output", hr);
+            }
+            output_handle = reinterpret_cast<std::uint64_t>(handle);
         }
         output_width = w;
         output_height = h;
@@ -605,7 +662,22 @@ void Renderer::source_changed() {
 }
 bool Renderer::attach(HWND w) {
     impl_->window = w;
+    impl_->offscreen = false;
+    impl_->fixed_adapter = false;
     return impl_->initialize();
+}
+bool Renderer::attach_offscreen(const LUID *adapter) {
+    impl_->window = nullptr;
+    impl_->offscreen = true;
+    impl_->fixed_adapter = adapter != nullptr;
+    impl_->requested_adapter = adapter ? *adapter : LUID{};
+    return impl_->initialize(adapter);
+}
+std::uint64_t Renderer::output_handle() const {
+    return impl_->output_handle;
+}
+std::uint64_t Renderer::output_generation() const {
+    return impl_->output_generation;
 }
 void Renderer::reset() {
     impl_->stabilizer.reset();
@@ -626,11 +698,11 @@ unsigned Renderer::views() const {
     return impl_->frame.view_count;
 }
 
-bool Renderer::consume(Channel &channel) {
+bool Renderer::consume(Channel &channel, bool require_consumer) {
     auto &r = *impl_;
     if (r.window_mode)
         source_changed();
-    if (!channel.lock())
+    if (!channel.lock(require_consumer))
         return false;
     struct Unlock {
         Channel &c;
@@ -652,12 +724,15 @@ bool Renderer::consume(Channel &channel) {
             r.local[i].Reset();
             r.srv[i].Reset();
         }
-        InvalidateRect(r.window, nullptr, FALSE);
+        if (r.window)
+            InvalidateRect(r.window, nullptr, FALSE);
         return r.fail(where, hr);
     };
     const Frame packet = s.frame;
     if (!valid_frame(packet))
         return recover(L"Invalid image metadata");
+    if (r.fixed_adapter && !same(r.requested_adapter, packet.adapter))
+        return recover(L"Game graphics adapter does not match the requested output adapter");
     if (!r.device || !same(r.adapter, packet.adapter)) {
         if (!r.initialize(&packet.adapter)) {
             s.ready = 2;
@@ -809,17 +884,28 @@ bool Renderer::demo(double seconds, bool quad) {
 
 bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting_text) {
     auto &r = *impl_;
-    if (!r.device || !r.swap || !r.resize() || !r.resize_output(options))
+    if (!r.device || (!r.offscreen && (!r.swap || !r.resize())) || !r.resize_output(options))
         return false;
-    const float clear[4] = {waiting_text ? 0.f : .005f, waiting_text ? 0.f : .009f,
-                            waiting_text ? 0.f : .016f, 1};
+    OutputWrite writer{r.output_mutex, r.context};
+    if (writer.mutex) {
+        const HRESULT hr = writer.mutex->AcquireSync(0, 0);
+        if (hr != S_OK) {
+            if (hr == WAIT_ABANDONED)
+                r.discard_output();
+            return hr == WAIT_TIMEOUT ? false : r.fail(L"Acquire offscreen output", hr);
+        }
+        writer.acquired = true;
+    }
+    const bool black = waiting_text || r.offscreen;
+    const float clear[4] = {black ? 0.f : .005f, black ? 0.f : .009f, black ? 0.f : .016f, 1};
     r.context->ClearRenderTargetView(r.output_target.Get(), clear);
     if (waiting_text) {
         if (!r.make_waiting(waiting_text))
             return false;
         // Use the same GPU output path as live frames. GDI painting over a
         // flip-model swapchain cannot reliably replace a previously presented frame.
-        const float scale = std::min(float(r.width) / r.output_width, float(r.height) / r.output_height);
+        const float scale =
+            r.offscreen ? 1.f : std::min(float(r.width) / r.output_width, float(r.height) / r.output_height);
         const float text_scale = std::min(1.f / std::max(.01f, scale), float(r.output_width) / 512);
         D3D11_VIEWPORT vp{(r.output_width - 512 * text_scale) / 2,
                           (r.output_height - 64 * text_scale) / 2,
@@ -935,6 +1021,17 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
         ID3D11ShaderResourceView *empty[2] = {};
         r.context->PSSetShaderResources(0, 2, empty);
     }
+    if (r.offscreen) {
+        r.context->OMSetRenderTargets(0, nullptr, nullptr);
+        const HRESULT removed = r.device->GetDeviceRemovedReason();
+        if (FAILED(removed))
+            return r.fail(L"Render offscreen output", removed);
+        const HRESULT hr = writer.release(1);
+        if (FAILED(hr))
+            return r.fail(L"Publish offscreen output", hr);
+        r.error.clear();
+        return true;
+    }
     // Present the complete requested-resolution canvas without distorting it
     // when the physical client area has a different aspect ratio.
     r.context->ClearRenderTargetView(r.target.Get(), clear);
@@ -971,6 +1068,16 @@ bool Renderer::readback(std::vector<std::uint32_t> &pixels, unsigned &width, uns
     auto &r = *impl_;
     if (!r.output)
         return false;
+    OutputWrite reader{r.output_mutex, r.context};
+    if (reader.mutex) {
+        const HRESULT hr = reader.mutex->AcquireSync(1, 0);
+        if (hr != S_OK) {
+            if (hr == WAIT_ABANDONED)
+                r.discard_output();
+            return hr == WAIT_TIMEOUT ? false : r.fail(L"Acquire diagnostic output", hr);
+        }
+        reader.acquired = true;
+    }
     D3D11_TEXTURE2D_DESC d{};
     r.output->GetDesc(&d);
     d.Usage = D3D11_USAGE_STAGING;

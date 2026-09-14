@@ -80,6 +80,7 @@ struct App {
     bool can_undo_comfort{};
     bool paused{}, demo{}, fullscreen{}, dirty{true}, quit{}, timer_resolution{}, expired{};
     bool start_fullscreen{true}, diagnostic{}, compatible_connection{};
+    bool capture_conflict{};
     unsigned aspect_numerator{16}, aspect_denominator{9};
     std::wstring monitor_name;
     std::vector<MONITORINFOEXW> monitors;
@@ -127,13 +128,14 @@ struct App {
         layer_editor_process = execute.hProcess;
     }
     bool waiting(std::uint64_t now) const {
-        return expired || !renderer.has_frame() ||
+        return expired || capture_conflict || !renderer.has_frame() ||
                (!paused && last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000);
     }
     const wchar_t *waiting_text() const {
-        return expired       ? L"Build expired. Please install a newer SteadyXR build."
-               : window_mode ? L"Waiting for window capture…"
-                             : L"Waiting for OpenXR capture…";
+        return expired            ? L"Build expired. Please install a newer SteadyXR build."
+               : capture_conflict ? L"OpenXR capture is in use by OBS or another preview."
+               : window_mode      ? L"Waiting for window capture…"
+                                  : L"Waiting for OpenXR capture…";
     }
     void refresh_expiry() {
         if (!expired && build_expired()) {
@@ -353,14 +355,18 @@ struct App {
         return renderer.consume_window(texture.Get(), time, options);
     }
     void heartbeat() {
-        if (channel.lock()) {
-            auto &s = *channel.data();
-            s.consumer_pid = GetCurrentProcessId();
-            s.heartbeat_ms = GetTickCount64();
-            s.paused = active() && !window_mode && !demo ? 0 : 1;
-            s.eye = selected_eye;
-            s.fps = rate;
-            channel.unlock();
+        const bool previous_conflict = capture_conflict;
+        if (active() && !window_mode && !demo) {
+            const bool claimed = channel.heartbeat(selected_eye, rate);
+            capture_conflict = !claimed && !channel.owns_consumer();
+        } else {
+            channel.release_consumer();
+            capture_conflict = false;
+        }
+        if (previous_conflict != capture_conflict) {
+            renderer.source_changed();
+            last_received_ms = 0;
+            dirty = true;
         }
         if (!active() || !window_mode || demo)
             capture.stop();
@@ -679,6 +685,9 @@ struct App {
         }
         if (!setup_message.empty())
             text += setup_message + L"\r\n";
+        if (capture_conflict)
+            text += L"OpenXR capture is in use by OBS or another preview. Hide or pause that source to use "
+                    L"this preview.\r\n";
         if (!active())
             text += L"PAUSED – no new frame copies requested.\r\n";
         else if (last_received_ms && GetTickCount64() - last_received_ms > 2000)
@@ -1252,6 +1261,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.expired = true;
         okay = okay && state.waiting(15000) && !state.active() &&
                std::wstring(state.waiting_text()).find(L"Build expired") != std::wstring::npos;
+        Channel obs_consumer;
+        bool cooperation_ok = obs_consumer.open(true, channel_name) && obs_consumer.heartbeat(1, 90);
+        state.heartbeat();
+        if (obs_consumer.lock()) {
+            cooperation_ok = cooperation_ok && !obs_consumer.data()->paused &&
+                             obs_consumer.data()->eye == 1 && obs_consumer.data()->fps == 90;
+            obs_consumer.unlock();
+        } else
+            cooperation_ok = false;
+        obs_consumer.close();
+        trace << "consumer-cooperation=" << cooperation_ok << '\n';
+        okay = cooperation_ok && okay;
         state.heartbeat();
         if (state.channel.lock()) {
             okay = okay && state.channel.data()->paused == 1;
@@ -1548,7 +1569,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         if (state.active() && (submitted_feed || double(now) >= next_frame)) {
             bool received = state.demo          ? state.renderer.demo((now - state.start_ms) / 1000.)
                             : state.window_mode ? state.capture_frame(now)
-                                                : state.renderer.consume(state.channel);
+                                                : state.channel.owns_consumer() &&
+                                                      state.renderer.consume(state.channel, true);
             if (received) {
                 state.last_received_ms = now;
                 ++state.fps_frames;
@@ -1581,13 +1603,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                                 : DWORD(std::clamp(next_frame - double(GetTickCount64()), 1., 16.));
         MsgWaitForMultipleObjectsEx(0, nullptr, delay, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
-    if (state.channel.lock()) {
-        auto &s = *state.channel.data();
-        s.paused = 1;
-        s.heartbeat_ms = 0;
-        s.consumer_pid = 0;
-        state.channel.unlock();
-    }
+    state.channel.release_consumer();
     if (state.timer_resolution)
         timeEndPeriod(1);
     state.capture.stop();

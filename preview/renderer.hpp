@@ -17,7 +17,7 @@ struct Options {
     bool adaptive_horizon{true};
     double mirror_softness{60};
     EdgeReserve edge_reserve[2]{};
-    unsigned eye{}; // Window capture profile; OpenXR uses the eye stored with its frame.
+    unsigned eye{};           // Window capture profile; OpenXR uses the eye stored with its frame.
     double vertical_offset{}; // -100 highest, +100 lowest position within aspect-fit slack.
 };
 void apply_stream_comfort(Options &);
@@ -46,7 +46,13 @@ class Renderer {
     Renderer();
     ~Renderer();
     bool attach(HWND window);
-    bool consume(Channel &channel);
+    bool attach_offscreen(const LUID *adapter = nullptr);
+    // Offscreen output: acquire key 1 before reading, release key 0 afterward.
+    // Handles remain valid only for their output generation. Opened resources
+    // may be retained by the reader while a resize replaces the writer output.
+    std::uint64_t output_handle() const;
+    std::uint64_t output_generation() const;
+    bool consume(Channel &channel, bool require_consumer = false);
     ID3D11Device *device() const;
     bool consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, const Options &);
     void source_changed();
@@ -58,6 +64,7 @@ class Renderer {
     std::uint64_t sequence() const;
     unsigned views() const;
     // Diagnostic readback is used only by tests, never the live preview path.
+    // For offscreen output this consumes key 1 and returns key 0, like a reader.
     bool readback(std::vector<std::uint32_t> &, unsigned &, unsigned &);
 
   private:

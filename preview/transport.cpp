@@ -3,8 +3,14 @@
 #include <cmath>
 #include <dxgiformat.h>
 #include <limits>
+#include <map>
+#include <mutex>
 
 namespace vrst::preview {
+namespace {
+std::mutex consumers_mutex;
+std::map<std::wstring, const Channel *> consumers;
+} // namespace
 bool valid_view(const View &v) {
     if (!v.texture_handle || !v.width || !v.height || v.width > 16384 || v.height > 16384 || v.x < 0 ||
         v.y < 0 || v.rect_width <= 0 || v.rect_height <= 0 || std::uint64_t(v.x) + v.rect_width > v.width ||
@@ -70,6 +76,59 @@ void RateLimiter::reset() {
 Channel::~Channel() {
     close();
 }
+bool Channel::heartbeat(unsigned eye, unsigned fps) {
+    if (!lock())
+        return false;
+    bool claimed = false;
+    {
+        std::lock_guard<std::mutex> guard(consumers_mutex);
+        const auto owner = consumers.find(name_);
+        const bool local_busy = owner != consumers.end() && owner->second != this;
+        const auto now = GetTickCount64();
+        const bool foreign_busy =
+            shared_->consumer_pid != GetCurrentProcessId() && viewer_active(*shared_, now);
+        if (!local_busy && !foreign_busy) {
+            if (owner == consumers.end() || shared_->consumer_pid != GetCurrentProcessId() || shared_->paused)
+                shared_->ready = 2;
+            consumers[name_] = this;
+            shared_->consumer_pid = GetCurrentProcessId();
+            shared_->heartbeat_ms = now;
+            shared_->paused = 0;
+            shared_->eye = std::min(eye, 1u);
+            shared_->fps = std::clamp(fps, 1u, 240u);
+            claimed = true;
+        } else if (owner != consumers.end() && owner->second == this) {
+            consumers.erase(owner);
+        }
+    }
+    unlock();
+    return claimed;
+}
+void Channel::release_consumer() {
+    // Always forget the process-local owner even if the shared mutex is busy;
+    // its last heartbeat then expires, and no dangling Channel pointer survives.
+    const bool acquired = lock();
+    {
+        std::lock_guard<std::mutex> guard(consumers_mutex);
+        const auto owner = consumers.find(name_);
+        if (owner != consumers.end() && owner->second == this) {
+            if (acquired && shared_->consumer_pid == GetCurrentProcessId()) {
+                shared_->paused = 1;
+                shared_->consumer_pid = 0;
+                shared_->heartbeat_ms = 0;
+                shared_->ready = 2;
+            }
+            consumers.erase(owner);
+        }
+    }
+    if (acquired)
+        unlock();
+}
+bool Channel::owns_consumer() const {
+    std::lock_guard<std::mutex> guard(consumers_mutex);
+    const auto owner = consumers.find(name_);
+    return owner != consumers.end() && owner->second == this;
+}
 bool Channel::open(bool, const std::wstring &name) {
     close();
     std::wstring actual = name;
@@ -79,6 +138,7 @@ bool Channel::open(bool, const std::wstring &name) {
         if (n && n < 240)
             actual = override_name;
     }
+    name_ = actual;
     mutex_ = CreateMutexW(nullptr, FALSE, (actual + L".mutex").c_str());
     if (!mutex_)
         return false;
@@ -105,6 +165,7 @@ bool Channel::open(bool, const std::wstring &name) {
 }
 void Channel::close() {
     unlock();
+    release_consumer();
     if (shared_)
         UnmapViewOfFile(shared_);
     if (mapping_)
@@ -113,12 +174,16 @@ void Channel::close() {
         CloseHandle(mutex_);
     shared_ = nullptr;
     mapping_ = mutex_ = nullptr;
+    name_.clear();
 }
-bool Channel::lock() {
+bool Channel::lock(bool require_consumer) {
     if (!mutex_ || locked_)
         return false;
     DWORD result = WaitForSingleObject(mutex_, 0);
     locked_ = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
+    if (locked_ && require_consumer &&
+        (!shared_ || shared_->consumer_pid != GetCurrentProcessId() || shared_->paused || !owns_consumer()))
+        unlock();
     return locked_;
 }
 void Channel::unlock() {
