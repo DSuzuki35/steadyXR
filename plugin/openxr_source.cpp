@@ -32,7 +32,7 @@ struct ActionInfo {
 constexpr ActionInfo actions[]{{"reset", "Reset stabilization", Action::reset},
                                {"reset_horizon", "Reset horizon", Action::reset_horizon},
                                {"pause", "Pause / resume capture", Action::pause},
-                               {"compare", "Compare A/B (3 seconds)", Action::compare},
+                               {"compare", "Compare A/B (20 seconds)", Action::compare},
                                {"natural", "Natural", Action::natural},
                                {"comfort", "Stream Comfort", Action::comfort},
                                {"strong", "Strong leveling", Action::strong},
@@ -463,10 +463,10 @@ void perform(Source &s, Action action, bool refresh_properties) {
     if (action == Action::compare) {
         const auto now = GetTickCount64();
         auto previous = s.compare_until.load();
-        while (!s.compare_until.compare_exchange_weak(previous, previous > now ? 0 : now + 3000)) {
+        while (!s.compare_until.compare_exchange_weak(previous, previous > now ? 0 : now + 20000)) {
         }
         s.feedback(previous > now ? "A/B comparison ended."
-                                  : "A/B comparison started for 3 seconds; press again to return sooner.",
+                                  : "A/B comparison started for 20 seconds; press again to return sooner.",
                    refresh_properties);
         return;
     }
@@ -562,7 +562,7 @@ obs_properties_t *properties(void *data) {
     obs_properties_add_text(
         p, "hotkey_help",
         "Assign source hotkeys in OBS Settings > Hotkeys. For Reset horizon, keep the "
-        "headset approximately upright. Comparison returns after 3 seconds, or press again "
+        "headset approximately upright. Comparison returns after 20 seconds, or press again "
         "to return sooner.",
         OBS_TEXT_INFO);
     const auto *deadline = build_expiry_text();

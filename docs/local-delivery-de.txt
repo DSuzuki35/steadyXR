@@ -33,7 +33,7 @@ Window capture still needs no game restart or connection.
 NEW IN 0.8.0 - RESET HORIZON, COMPARISON AND HOTKEYS
 Hold the headset approximately upright, then press Reset horizon to refresh
 the preview's upright reference. Smoothing is retained. It does not recenter the HMD.
-A/B shows the selected comparison for three seconds: Original, 50/50 split
+A/B shows the selected comparison for twenty seconds: Original, 50/50 split
 (left stabilized, right original), or two complete views side by side.
 The same framing is retained and both views keep their aspect ratio. Press again to return immediately. The comparison is temporary and
 never becomes part of your saved settings or presets.

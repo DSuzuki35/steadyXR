@@ -155,7 +155,7 @@ struct App {
         AppendMenuW(menu, MF_STRING | (!hotkey_profile ? MF_CHECKED : 0), hotkeys_off_id,
                     L"Off — disable global hotkeys");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        const wchar_t *comparison_labels[]{L"A/B: Original (3s)",
+        const wchar_t *comparison_labels[]{L"A/B: Original (20s)",
                                            L"A/B: 50/50 split — left stabilized, right original",
                                            L"A/B: Side by side — left stabilized, right original"};
         for (unsigned i = 0; i < 3; ++i)
@@ -195,12 +195,12 @@ struct App {
         if (comparing(now))
             cancel_comparison();
         else if (!paused && !expired && !waiting(now)) {
-            compare_until = now + 3000;
+            compare_until = now + 20000;
             SetTimer(controls, comparison_timer, 100, nullptr);
             dirty = true;
         } else {
             cancel_comparison();
-            setup_message = L"Start or resume a live preview for a 3-second A/B comparison.";
+            setup_message = L"Start or resume a live preview for a 20-second A/B comparison.";
         }
         update_status();
     }
@@ -820,9 +820,9 @@ struct App {
         const auto summary =
             std::to_wstring(fps_value) + L" FPS | " + feed + L" " + connection + L" | " + view;
         SetWindowTextW(compact_status, summary.c_str());
-        const wchar_t *comparison_button = options.compare_mode == 1   ? L"Compare 50/50 (3s)"
-                                           : options.compare_mode == 2 ? L"Compare side by side (3s)"
-                                                                       : L"Compare original (3s)";
+        const wchar_t *comparison_button = options.compare_mode == 1   ? L"Compare 50/50 (20s)"
+                                           : options.compare_mode == 2 ? L"Compare side by side (20s)"
+                                                                       : L"Compare original (20s)";
         SetWindowTextW(comparison, comparison_active ? L"End A/B comparison" : comparison_button);
         EnableWindow(comparison, comparison_active || (!paused && !expired && !waiting(now)));
         SetWindowTextW(
@@ -1345,8 +1345,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     SendMessageW(state.fps, CB_SETCURSEL, state.rate == 30 ? 0 : state.rate == 60 ? 1 : 2, 0);
     state.compact_status =
         child(state.controls, L"STATIC", L"", SS_LEFTNOWORDWRAP, 22, 474, 596, 25, compact_status_id);
-    state.comparison = child(state.controls, L"BUTTON", L"Compare original (3s)", BS_PUSHBUTTON, 22, 506, 210,
-                             32, compare_id);
+    state.comparison = child(state.controls, L"BUTTON", L"Compare original (20s)", BS_PUSHBUTTON, 22, 506,
+                             210, 32, compare_id);
     child(state.controls, L"BUTTON", L"Next preset", BS_PUSHBUTTON, 245, 506, 160, 32, next_preset_id);
     child(state.controls, L"BUTTON", L"Hotkeys / A/B…", BS_PUSHBUTTON, 418, 506, 198, 32, hotkeys_id);
     state.shortcut_hint = child(state.controls, L"STATIC", L"", 0, 22, 545, 596, 40);
@@ -1531,18 +1531,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         // the complete serialized configuration (including framing and presets).
         state.last_received_ms = GetTickCount64();
         const auto before_comparison = state.snapshot();
+        const auto comparison_started = GetTickCount64();
         SendMessageW(state.controls, WM_HOTKEY, compare_id, 0);
         const auto comparison_deadline = state.compare_until;
         const auto compared_options = state.draw_options(comparison_deadline - 1);
         wchar_t interaction_text[512]{};
         GetWindowTextW(state.compact_status, interaction_text, 512);
-        interactions_ok = interactions_ok && comparison_deadline > state.last_received_ms &&
+        interactions_ok = interactions_ok && comparison_deadline >= comparison_started + 20000 &&
+                          comparison_deadline <= GetTickCount64() + 20000 &&
                           compared_options.compare_original && !state.options.compare_original &&
                           compared_options.smoothing == 65 && compared_options.output_width == 3840 &&
                           compared_options.output_height == 2160 && compared_options.crop == 10 &&
                           std::wstring(interaction_text).find(L"Original") != std::wstring::npos &&
                           !before_comparison.empty() && state.snapshot() == before_comparison;
-        // Keep the source fresh so this specifically tests the 3-second timeout.
+        // Keep the source fresh so this specifically tests the 20-second timeout.
         state.last_received_ms = comparison_deadline - 1;
         state.refresh_comparison(comparison_deadline - 1);
         interactions_ok = interactions_ok && state.comparing(comparison_deadline - 1);

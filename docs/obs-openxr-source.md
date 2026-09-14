@@ -23,14 +23,14 @@ The default output is 3840×2160, 16:9 and 60 FPS. Eye, output resolution, aspec
 
 - **Reset stabilization** clears motion history without changing tuning.
 - **Reset horizon** selects the upright reference again while retaining motion history and tuning. Hold the headset approximately upright and look normally ahead before using it. It does not recenter the headset.
-- **Compare A/B (3 seconds)** uses the selected **A/B comparison view**: Original, 50/50 split (left stabilized, right original), or Side by side (two complete views fitted without stretching). All three retain the crop, reserve, aspect and framing. Press it again to return immediately. It returns automatically after three seconds and never changes the saved bypass setting or preset contents.
+- **Compare A/B (20 seconds)** uses the selected **A/B comparison view**: Original, 50/50 split (left stabilized, right original), or Side by side (two complete views fitted without stretching). All three retain the crop, reserve, aspect and framing. Press it again to return immediately. It returns automatically after twenty seconds and never changes the saved bypass setting or preset contents.
 - **Saved preset 1/2/3** accept paths to complete INI presets. Use the corresponding **Load saved preset** button or hotkey to apply one. The source saves the slot paths in its OBS settings and reads the selected preset without modifying the file. Importing a preset keeps the current capture pause state and leaves the game's render-extension settings alone.
 
 The compact **Status snapshot** in source properties reports the connection, measured captured FPS versus requested FPS, pause and comparison state. Open the properties or press **Refresh status** for an updated reading. Measurements continue internally; the panel is not rebuilt automatically while you adjust sliders. These messages add no pixels over the live game image. The chosen comparison view is saved, but an active comparison is temporary.
 
 ## Hotkeys
 
-Open **OBS → Settings → Hotkeys** and find this SteadyXR OpenXR Capture source. Assign your own shortcuts to **Reset stabilization**, **Reset horizon**, **Pause / resume capture**, **Compare A/B (3 seconds)**, **Natural**, **Stream Comfort**, **Strong leveling**, and **Load saved preset 1/2/3**. OBS stores and handles these bindings; the standalone app's Ctrl+Alt shortcuts apply only while that app is running.
+Open **OBS → Settings → Hotkeys** and find this SteadyXR OpenXR Capture source. Assign your own shortcuts to **Reset stabilization**, **Reset horizon**, **Pause / resume capture**, **Compare A/B (20 seconds)**, **Natural**, **Stream Comfort**, **Strong leveling**, and **Load saved preset 1/2/3**. OBS stores and handles these bindings; the standalone app's Ctrl+Alt shortcuts apply only while that app is running.
 
 The source pauses capture when hidden or explicitly paused. If no frames arrive for two seconds, it replaces the previous image with a black waiting screen and reconnects when frames resume. A busy message means another source or preview owns the feed. A GPU mismatch requires moving OBS and the game to the same adapter. Do not add the original VR Stabilizer filter to this already stabilized output.
 

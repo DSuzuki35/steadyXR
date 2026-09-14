@@ -1,6 +1,6 @@
 # SteadyXR Preview 0.8.0
 
-Version **0.8.0** adds **Reset horizon**, global hotkeys, a temporary **3-second A/B comparison**, and compact capture/FPS feedback in the controls. The OBS drop-in folders now sit directly beside the standalone app in the delivered version folder. Existing settings and presets remain supported.
+Version **0.8.0** adds **Reset horizon**, global hotkeys, a temporary **20-second A/B comparison**, and compact capture/FPS feedback in the controls. The OBS drop-in folders now sit directly beside the standalone app in the delivered version folder. Existing settings and presets remain supported.
 
 Horizon Lock VR became **SteadyXR** in 0.7.0, which introduced the on-demand **OpenXR layers…** editor with staged changes, backups and restore. The filenames are SteadyXR.exe, SteadyXR.ini, SteadyXR-OpenXR.dll, SteadyXR.ico and SteadyXR.png.
 
@@ -80,7 +80,7 @@ Extra pixels and disabled visibility masks increase game GPU work; the cost depe
 - **Mirror limit:** maximum extension per source axis, as a percentage of source width/height. Default 10%; range 0–50%. Beyond the limit: black. Increase crop reserve or mirror limit if exposed edges appear. Mirroring does not reconstruct scenery.
 - **Disable stabilization:** keep stabilization bypassed while capture continues. This is a saved setting.
 - **Reset horizon:** hold the headset approximately upright, then reset the preview's upright reference while retaining smoothing without recentering the headset or changing tuning.
-- **A/B comparison:** choose Original, 50/50 split (left stabilized, right original with identical framing), or Side by side (both complete views fitted without stretching) in **Hotkeys / A/B…**. The compare button uses that view for three seconds, retaining crop, reserves, aspect and output framing. The chosen view is saved; active comparison is temporary. Press again to return immediately. It returns automatically after three seconds, including if capture stops, and cancels on pause, reset, source or preset changes. The comparison never changes the saved bypass setting or becomes part of a preset.
+- **A/B comparison:** choose Original, 50/50 split (left stabilized, right original with identical framing), or Side by side (both complete views fitted without stretching) in **Hotkeys / A/B…**. The compare button uses that view for twenty seconds, retaining crop, reserves, aspect and output framing. The chosen view is saved; active comparison is temporary. Press again to return immediately. It returns automatically after twenty seconds, including if capture stops, and cancels on pause, reset, source or preset changes. The comparison never changes the saved bypass setting or becomes part of a preset.
 - **Pause / GPU comparison:** stop capture and continuous rendering. Hiding/minimizing the output also pauses it. Compare VR frame times in the same scene.
 
 Capture state, measured FPS, requested FPS and temporary comparison feedback appear in the control panel only. No status overlay is added to the live stream output.
@@ -94,7 +94,7 @@ These global shortcuts work while SteadyXR is running, including when the game h
 | Ctrl+Alt+R | Reset horizon; hold the headset approximately upright |
 | Ctrl+Alt+P | Pause or resume capture |
 | Ctrl+Alt+N | Load the next preset |
-| Ctrl+Alt+B | Show the selected A/B view for three seconds; press again to return |
+| Ctrl+Alt+B | Show the selected A/B view for twenty seconds; press again to return |
 
 Open **Hotkeys / A/B…** to choose **Ctrl+Alt**, the alternate **Ctrl+Alt+Shift** combination, or **Off**. If another application owns a shortcut, the control panel reports the registration conflict; select the alternate combination or use the buttons.
 

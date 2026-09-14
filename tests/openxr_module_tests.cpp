@@ -472,9 +472,10 @@ int main(int argc, char **argv) {
                       }
                       return status(source).find("Comparison") == std::string::npos;
                   },
-                  4000) &&
-                  GetTickCount64() - compare_started >= 2800 && frame(source).checksum == stabilized.checksum,
-              "comparison automatically restores the corrected pixels after three seconds");
+                  21000) &&
+                  GetTickCount64() - compare_started >= 19800 &&
+                  frame(source).checksum == stabilized.checksum,
+              "comparison automatically restores the corrected pixels after twenty seconds");
         check(refreshes.count == before_stream && status(source).find("0.0 FPS") == std::string::npos,
               "measured status is available without unsolicited property rebuilds during capture");
         properties = obs_source_properties(source);
