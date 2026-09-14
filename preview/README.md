@@ -1,6 +1,8 @@
-# SteadyXR Preview 0.7.0
+# SteadyXR Preview 0.8.0
 
-Horizon Lock VR is now **SteadyXR**. Version 0.7.0 adds an on-demand **OpenXR layers…** editor with staged changes, backups and restore. Existing settings and presets remain supported. The completed filename update keeps version 0.7.0: SteadyXR.exe, SteadyXR.ini, SteadyXR-OpenXR.dll, SteadyXR.ico and SteadyXR.png.
+Version **0.8.0** adds **Reset horizon**, global hotkeys, a temporary **3-second A/B comparison**, and compact capture/FPS feedback in the controls. The OBS drop-in folders now sit directly beside the standalone app in the delivered version folder. Existing settings and presets remain supported.
+
+Horizon Lock VR became **SteadyXR** in 0.7.0, which introduced the on-demand **OpenXR layers…** editor with staged changes, backups and restore. The filenames are SteadyXR.exe, SteadyXR.ini, SteadyXR-OpenXR.dll, SteadyXR.ico and SteadyXR.png.
 
 0.6.1 fixes disappearing sliders and makes Y offset use hidden stabilization reserves as well as aspect-ratio crop. It adds three tuning presets and named complete presets. Slider adjustments remain live; automatic settings writes are deferred until dragging settles.
 
@@ -12,15 +14,17 @@ Standalone gaming-PC preview with OpenXR pose stabilization or existing-window c
 
 ## Upgrade from a working OpenXR preview
 
-Close only the previous preview app, then run **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in Gaming-PC/SteadyXR-0.7.0. Previous settings are copied unchanged into SteadyXR.ini when it has no settings yet. A preview.ini copied beside the new EXE is also migrated once on startup; an existing SteadyXR.ini takes precedence. OpenXR mode and previous tuning are retained; new settings use their defaults.
+Close only the previous preview app, then run **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in Gaming-PC/SteadyXR-0.8.0. The previous viewer's settings, including 0.7 tuning, are copied unchanged into SteadyXR.ini when it has no settings yet. A preview.ini copied beside the new EXE is also migrated once on startup; an existing SteadyXR.ini takes precedence. OpenXR mode and previous tuning are retained; new settings use their defaults.
 
-**Upgrading from a working 0.6.0 or 0.6.1:** only restart the preview app. SteadyXR reuses an enabled registered layer when its DLL is byte-identical to the bundled layer, or matches the exact SHA-256 of the previously delivered compatible 0.6/0.7 capture DLL. Unknown modified binaries still require upgrading the connection. Keep the old preview directory: its registered DLL and adjacent render settings are still used. Explicit render saves and preset loads update that actual settings destination, so changed render expansion takes effect on the next game launch.
+For OBS on the same PC, close OBS and copy **obs-plugins** and **data** directly from Gaming-PC/SteadyXR-0.8.0 into **C:\Program Files\obs-studio**. These are the same folders supplied under Stream-PC. They need no additional folder nesting. The complete ZIP also includes both folders beside the app under `preview`. The delivery root includes OBS-OpenXR-Guide.md with source setup details.
+
+**Upgrading from a working compatible 0.6 or 0.7 preview:** only restart the preview app. SteadyXR reuses an enabled registered layer when its DLL is byte-identical to the bundled layer, or matches the exact SHA-256 of the previously delivered compatible 0.6/0.7 capture DLL. Unknown modified binaries still require upgrading the connection. Keep the old preview directory: its registered DLL and adjacent render settings are still used. Explicit render saves and preset loads update that actual settings destination, so changed render expansion takes effect on the next game launch.
 
 **First setup or upgrading from before 0.6:** select OpenXR pose capture and click **Upgrade connection** (or **Install connection**), then restart iRacing once. This enables the current Horizon Lock layer and disables older Horizon Lock registrations for this Windows user; it leaves other API layers and the active runtime alone. Delivery itself never changes registration or restarts anything. Window capture needs no connection or game restart.
 
 ## Build validity
 
-Each newly compiled SteadyXR build is valid for **30 days from its UTC build timestamp**. The exact deadline is embedded in the EXE and capture DLL, shown in the control-window title and included in SteadyXR-build.json for reference. Editing the INI or JSON, copying the files or restarting the app does not extend that deadline. This uses the PC's system UTC clock.
+Each newly compiled SteadyXR build is valid for **30 days from its UTC build timestamp**. The app, bundled capture DLL and direct OBS source share the release's build timestamp and deadline, shown in the control-window title and included in SteadyXR-build.json for reference. Editing the INI or JSON, copying the files or restarting the app does not extend that deadline. This uses the PC's system UTC clock.
 
 After expiry, the clean preview shows a black **Build expired** screen and stops capturing, including when the app was already running. Install a newer build to resume; settings remain available. The layer editor remains accessible so registrations can still be managed.
 
@@ -71,12 +75,30 @@ Extra pixels and disabled visibility masks increase game GPU work; the cost depe
 - **Crop left / right / top / bottom:** independently trim 0–45% per side, in 0.1% steps. Arrow keys adjust one step.
 - **Crop reserve:** additional stabilization margin, separate from framing crop. Aspect fitting may trim the remaining image further.
 - **Smoothing:** movement smoothing with 0.1% precision, separate from horizon leveling.
-- **Horizon lock (OpenXR):** 0% preserves normal smoothed head roll; 100% levels roll using the upright Y-axis hemisphere of the submitted OpenXR layer space. This also supports iRacing poses whose upright direction is -Y. Look normally ahead when starting the preview or pressing Reset preview; the upright hemisphere is retained until reset. With **Adaptive curve** enabled (default), small tilts are suppressed more strongly while larger tilts retain some natural movement. At 50% strength, a 5° head tilt leaves about 0.5° and a 20° tilt leaves about 6.9° (away from vertical viewing). The response is continuous with no hard dead zone. Disable Adaptive curve to restore the previous linear response. Both modes preserve viewing direction. It fades near straight up/down, where a level horizon is undefined. Default: 0%. Inactive in image mode or when stabilization is disabled.
+- **Horizon lock (OpenXR):** 0% preserves normal smoothed head roll; 100% levels roll using the upright Y-axis hemisphere of the submitted OpenXR layer space. This also supports iRacing poses whose upright direction is -Y. Hold the headset approximately upright and look normally ahead when starting the preview or pressing **Reset horizon**; the upright hemisphere is retained until reset. With **Adaptive curve** enabled (default), small tilts are suppressed more strongly while larger tilts retain some natural movement. At 50% strength, a 5° head tilt leaves about 0.5° and a 20° tilt leaves about 6.9° (away from vertical viewing). The response is continuous with no hard dead zone. Disable Adaptive curve to restore the previous linear response. Both modes preserve viewing direction. It fades near straight up/down, where a level horizon is undefined. Default: 0%. Inactive in image mode or when stabilization is disabled.
 - **Mirror edges:** fill exposed borders with reflected source content.
 - **Mirror limit:** maximum extension per source axis, as a percentage of source width/height. Default 10%; range 0–50%. Beyond the limit: black. Increase crop reserve or mirror limit if exposed edges appear. Mirroring does not reconstruct scenery.
-- **Disable stabilization:** compare the captured image while capture continues.
-- **Reset preview:** clear smoothing without recentering the headset.
+- **Disable stabilization:** keep stabilization bypassed while capture continues. This is a saved setting.
+- **Reset horizon:** hold the headset approximately upright, then reset the preview's upright reference while retaining smoothing without recentering the headset or changing tuning.
+- **A/B comparison:** choose Original, 50/50 split (left stabilized, right original with identical framing), or Side by side (both complete views fitted without stretching) in **Hotkeys / A/B…**. The compare button uses that view for three seconds, retaining crop, reserves, aspect and output framing. The chosen view is saved; active comparison is temporary. Press again to return immediately. It returns automatically after three seconds, including if capture stops, and cancels on pause, reset, source or preset changes. The comparison never changes the saved bypass setting or becomes part of a preset.
 - **Pause / GPU comparison:** stop capture and continuous rendering. Hiding/minimizing the output also pauses it. Compare VR frame times in the same scene.
+
+Capture state, measured FPS, requested FPS and temporary comparison feedback appear in the control panel only. No status overlay is added to the live stream output.
+
+## Hotkeys
+
+These global shortcuts work while SteadyXR is running, including when the game has focus:
+
+| Default shortcut | Action |
+|---|---|
+| Ctrl+Alt+R | Reset horizon; hold the headset approximately upright |
+| Ctrl+Alt+P | Pause or resume capture |
+| Ctrl+Alt+N | Load the next preset |
+| Ctrl+Alt+B | Show the selected A/B view for three seconds; press again to return |
+
+Open **Hotkeys / A/B…** to choose **Ctrl+Alt**, the alternate **Ctrl+Alt+Shift** combination, or **Off**. If another application owns a shortcut, the control panel reports the registration conflict; select the alternate combination or use the buttons.
+
+Next preset cycles through **Natural**, **Stream Comfort**, **Strong Leveling**, then your saved presets alphabetically. Built-in presets change tuning while keeping framing; complete saved presets restore the settings described below. The direct OBS source uses OBS's own configurable **Settings → Hotkeys** entries instead of these standalone bindings.
 
 ## Output
 
@@ -114,7 +136,7 @@ Fine-tune any slider after applying a tuning preset. **Undo tuning** restores st
 
 Open **Presets…** in the main window. **Natural**, **Stream Comfort** and **Strong Leveling** change smoothing, horizon/adaptive curve, uniform crop reserve and mirror tuning. They retain the source, eye, FPS, edge profiles, framing trims, Y offset, render expansion, output resolution/aspect and monitor. Natural uses 25% smoothing / 25% horizon; Strong Leveling uses 70% / 85%.
 
-For your own preset, enter a name and click **Save new**. This saves a complete INI snapshot: all tuning, stabilization bypass, mode, selected source window identity, eye, FPS, both edge profiles, Y offset, both render-extension profiles (including current drafts), resolution, aspect, fullscreen startup preference and monitor. Valid edits in the aspect/resolution fields are included. Unknown future INI keys are preserved too. Pause, current fullscreen state and temporary smoothing/recenter history are session actions, not configuration; the fullscreen startup preference applies at the next preview launch.
+For your own preset, enter a name and click **Save new**. This saves a complete INI snapshot: all tuning, stabilization bypass, mode, selected source window identity, eye, FPS, both edge profiles, Y offset, both render-extension profiles (including current drafts), resolution, aspect, fullscreen startup preference and monitor. Valid edits in the aspect/resolution fields are included. Unknown future INI keys are preserved too. Pause, temporary original comparison, current fullscreen state and temporary smoothing/recenter history are session actions, not configuration; the fullscreen startup preference applies at the next preview launch.
 
 Select a saved preset and click **Load** to restore it, **Overwrite selected** to replace it with current settings, or **Delete** to remove it. Live preview settings apply immediately; changed OpenXR render expansion applies at the next game launch. No automatic game restart occurs. A saved window source is matched by executable and title; if unavailable, select it when it is running.
 

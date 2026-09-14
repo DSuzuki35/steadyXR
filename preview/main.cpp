@@ -16,6 +16,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mmsystem.h>
 #include <shellapi.h>
 #include <string>
@@ -28,8 +29,13 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               horizon_id = 119, mirror_limit_id = 120, aspect_id = 121, width_id = 122, height_id = 123,
               apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127,
               mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130, advanced_id = 131,
-              presets_id = 132, layers_id = 133;
-constexpr UINT_PTR save_timer = 4101;
+              presets_id = 132, layers_id = 133, compare_id = 134, next_preset_id = 135, hotkeys_id = 136,
+              compact_status_id = 137;
+constexpr int hotkeys_default_id = 2100, hotkeys_alternate_id = 2101, hotkeys_off_id = 2102;
+constexpr int comparison_original_id = 2110, comparison_split_id = 2111, comparison_side_by_side_id = 2112;
+constexpr UINT_PTR save_timer = 4101, comparison_timer = 4102;
+constexpr int hotkey_actions[]{reset_id, pause_id, next_preset_id, compare_id};
+constexpr wchar_t hotkey_letters[]{L'R', L'P', L'N', L'B'};
 std::wstring executable_path(DWORD pid) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     wchar_t path[32768]{};
@@ -60,7 +66,8 @@ struct App {
     HWND controls{}, output{}, status{}, smooth_label{}, crop_label{}, smooth{}, crop{}, mirror{}, bypass{},
         eye{}, eye_label{}, fps{}, pause{}, mode{}, source{}, trims[4]{}, trim_labels[4]{}, horizon{},
         horizon_label{}, mirror_limit{}, mirror_limit_label{}, aspect{}, output_width{}, output_height{},
-        auto_fullscreen{}, monitor{}, adaptive_horizon{}, mirror_softness{}, mirror_softness_label{};
+        auto_fullscreen{}, monitor{}, adaptive_horizon{}, mirror_softness{}, mirror_softness_label{},
+        compact_status{}, comparison{}, shortcut_hint{};
     HFONT font{};
     Theme theme;
     AdvancedSettings advanced;
@@ -87,11 +94,160 @@ struct App {
     unsigned selected_eye{}, rate{60};
     WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};
     std::wstring directory, ini, render_ini, setup_message;
+    std::filesystem::path presets_directory;
+    std::wstring preset_cursor, hotkey_error;
+    unsigned hotkey_profile{1}; // 0 off, 1 Ctrl+Alt, 2 Ctrl+Alt+Shift.
+    bool hotkey_registered[4]{};
+    std::uint64_t compare_until{};
     std::uint64_t start_ms{}, last_received_ms{}, last_sequence{}, fps_frames{}, fps_start{};
     double measured_fps{};
     ~App() {
+        unregister_hotkeys();
         if (layer_editor_process)
             CloseHandle(layer_editor_process);
+    }
+    void unregister_hotkeys() {
+        for (unsigned i = 0; i < 4; ++i) {
+            if (hotkey_registered[i])
+                UnregisterHotKey(controls, hotkey_actions[i]);
+            hotkey_registered[i] = false;
+        }
+    }
+    void register_hotkeys() {
+        unregister_hotkeys();
+        hotkey_error.clear();
+        if (!hotkey_profile || diagnostic)
+            return;
+        const UINT modifiers = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT | (hotkey_profile == 2 ? MOD_SHIFT : 0);
+        for (unsigned i = 0; i < 4; ++i) {
+            hotkey_registered[i] =
+                RegisterHotKey(controls, hotkey_actions[i], modifiers, hotkey_letters[i]) != FALSE;
+            if (!hotkey_registered[i]) {
+                if (!hotkey_error.empty())
+                    hotkey_error += L", ";
+                hotkey_error += hotkey_letters[i];
+            }
+        }
+        if (!hotkey_error.empty())
+            hotkey_error =
+                L"Hotkeys unavailable: " + hotkey_error + L". In Hotkeys, choose the alternate keys or Off.";
+    }
+    std::wstring hotkey_hint() const {
+        if (!hotkey_profile)
+            return L"Global hotkeys are off. F11: fullscreen.";
+        return std::wstring(hotkey_profile == 2 ? L"Ctrl+Alt+Shift: " : L"Ctrl+Alt: ") +
+               L"R reset | P pause | N next preset | B compare";
+    }
+    void configure_hotkeys(unsigned profile) {
+        hotkey_profile = profile;
+        register_hotkeys();
+        save();
+        update_status();
+    }
+    void hotkeys_menu() {
+        const auto menu = CreatePopupMenu();
+        if (!menu)
+            return;
+        AppendMenuW(menu, MF_STRING | (hotkey_profile == 1 ? MF_CHECKED : 0), hotkeys_default_id,
+                    L"Ctrl+Alt + R / P / N / B");
+        AppendMenuW(menu, MF_STRING | (hotkey_profile == 2 ? MF_CHECKED : 0), hotkeys_alternate_id,
+                    L"Ctrl+Alt+Shift + R / P / N / B (alternate)");
+        AppendMenuW(menu, MF_STRING | (!hotkey_profile ? MF_CHECKED : 0), hotkeys_off_id,
+                    L"Off — disable global hotkeys");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        const wchar_t *comparison_labels[]{L"A/B: Original (3s)",
+                                           L"A/B: 50/50 split — left stabilized, right original",
+                                           L"A/B: Side by side — left stabilized, right original"};
+        for (unsigned i = 0; i < 3; ++i)
+            AppendMenuW(menu, MF_STRING | (options.compare_mode == i ? MF_CHECKED : 0),
+                        comparison_original_id + i, comparison_labels[i]);
+        RECT bounds{};
+        GetWindowRect(GetDlgItem(controls, hotkeys_id), &bounds);
+        const auto selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, bounds.left, bounds.bottom,
+                                             0, controls, nullptr);
+        DestroyMenu(menu);
+        if (selected)
+            SendMessageW(controls, WM_COMMAND, selected, 0);
+    }
+    bool comparing(std::uint64_t now) const {
+        return compare_until && now < compare_until && !paused && !expired;
+    }
+    Options draw_options(std::uint64_t now) const {
+        auto result = options;
+        result.compare_original = comparing(now);
+        return result;
+    }
+    void cancel_comparison() {
+        if (compare_until) {
+            KillTimer(controls, comparison_timer);
+            compare_until = 0;
+            dirty = true;
+        }
+    }
+    void refresh_comparison(std::uint64_t now) {
+        if (compare_until && (!comparing(now) || waiting(now))) {
+            cancel_comparison();
+            update_status();
+        }
+    }
+    void toggle_comparison() {
+        const auto now = GetTickCount64();
+        if (comparing(now))
+            cancel_comparison();
+        else if (!paused && !expired && !waiting(now)) {
+            compare_until = now + 3000;
+            SetTimer(controls, comparison_timer, 100, nullptr);
+            dirty = true;
+        } else {
+            cancel_comparison();
+            setup_message = L"Start or resume a live preview for a 3-second A/B comparison.";
+        }
+        update_status();
+    }
+    void reset_horizon() {
+        cancel_comparison();
+        renderer.reset_horizon();
+        dirty = true;
+        setup_message =
+            window_mode && !demo
+                ? L"Horizon reset is ready for OpenXR pose capture. Hold the headset approximately upright."
+                : L"Horizon reset. Hold the headset approximately upright when resetting.";
+        update_status();
+    }
+    void next_preset() {
+        PresetStore store(presets_directory);
+        std::wstring error;
+        const auto saved = store.list(error);
+        if (!error.empty()) {
+            setup_message = error;
+            update_status();
+            return;
+        }
+        std::vector<std::wstring> entries{L"builtin:natural", L"builtin:comfort", L"builtin:strong"};
+        for (const auto &name : saved)
+            entries.push_back(L"saved:" + name);
+        const auto previous = std::find(entries.begin(), entries.end(), preset_cursor);
+        const auto next = previous == entries.end()
+                              ? 0u
+                              : unsigned((std::distance(entries.begin(), previous) + 1) % entries.size());
+        if (next < 3) {
+            const BuiltinPreset builtins[]{BuiltinPreset::natural, BuiltinPreset::stream_comfort,
+                                           BuiltinPreset::strong_leveling};
+            builtin(builtins[next]);
+        } else {
+            const auto &name = saved[next - 3];
+            const auto bytes = store.read(name, error);
+            if (!bytes || !apply_snapshot(*bytes)) {
+                setup_message = error.empty()
+                                    ? L"Could not apply the next preset. Check access to the settings folder."
+                                    : error;
+                update_status();
+                return;
+            }
+            preset_cursor = entries[next];
+            setup_message = L"Preset: " + name + L". Changed render settings apply at the next game launch.";
+            update_status();
+        }
     }
     void refresh_editor_connection() {
         const auto old_ini = render_ini;
@@ -140,6 +296,7 @@ struct App {
     void refresh_expiry() {
         if (!expired && build_expired()) {
             expired = true;
+            cancel_comparison();
             dirty = true;
             heartbeat();
             labels();
@@ -214,6 +371,8 @@ struct App {
         write(L"AspectNumerator", aspect_numerator);
         write(L"AspectDenominator", aspect_denominator);
         write(L"AutoFullscreen", start_fullscreen);
+        write(L"HotkeyProfile", hotkey_profile);
+        write(L"CompareMode", options.compare_mode);
         if (output) {
             MONITORINFOEXW info{};
             info.cbSize = sizeof(info);
@@ -264,6 +423,8 @@ struct App {
             options.aspect = 16. / 9.;
         }
         start_fullscreen = value(L"AutoFullscreen", 1, 0, 1) != 0;
+        hotkey_profile = value(L"HotkeyProfile", 1, 0, 2);
+        options.compare_mode = value(L"CompareMode", 0, 0, 2);
         wchar_t saved_monitor[64]{};
         GetPrivateProfileStringW(L"Preview", L"Monitor", L"", saved_monitor, 64, ini.c_str());
         monitor_name = saved_monitor;
@@ -286,6 +447,7 @@ struct App {
         return !expired && !paused && IsWindowVisible(output) && !IsIconic(output);
     }
     void restart_source() {
+        cancel_comparison();
         capture.stop();
         renderer.source_changed();
         last_capture_start = last_received_ms = 0;
@@ -543,6 +705,8 @@ struct App {
         KillTimer(controls, save_timer);
         WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());
         read();
+        register_hotkeys();
+        preset_cursor.clear();
         set_tuning(options);
         const double trim_values[]{options.crop_left, options.crop_right, options.crop_top,
                                    options.crop_bottom};
@@ -572,6 +736,13 @@ struct App {
         return true;
     }
     void builtin(BuiltinPreset preset) {
+        cancel_comparison();
+        const wchar_t *name = preset == BuiltinPreset::natural          ? L"Natural"
+                              : preset == BuiltinPreset::stream_comfort ? L"Stream Comfort"
+                                                                        : L"Strong leveling";
+        preset_cursor = preset == BuiltinPreset::natural          ? L"builtin:natural"
+                        : preset == BuiltinPreset::stream_comfort ? L"builtin:comfort"
+                                                                  : L"builtin:strong";
         if (!can_undo_comfort)
             before_comfort = options;
         auto tuning = options;
@@ -592,7 +763,7 @@ struct App {
         labels();
         save();
         dirty = true;
-        setup_message = L"Tuning preset applied. Source, eye and output settings retained.";
+        setup_message = std::wstring(L"Preset: ") + name + L". Source, eye and output settings retained.";
         update_status();
     }
     void labels() {
@@ -601,7 +772,7 @@ struct App {
         SetWindowTextW(crop_label, separate ? L"Per-edge crop reserve"
                                             : (L"Crop reserve: " + decimal(options.crop) + L" %").c_str());
         EnableWindow(crop, !separate);
-        SetWindowTextW(pause, paused ? L"Resume" : L"Pause / GPU comparison");
+        SetWindowTextW(pause, paused ? L"Resume preview" : L"Pause preview");
         EnableWindow(source, window_mode);
         EnableWindow(GetDlgItem(controls, refresh_id), window_mode);
         EnableWindow(eye, TRUE);
@@ -627,6 +798,36 @@ struct App {
         EnableWindow(GetDlgItem(controls, undo_comfort_id), can_undo_comfort);
     }
     void update_status() {
+        const auto now = GetTickCount64();
+        const bool comparison_active = comparing(now);
+        const bool stale = last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000;
+        const auto fps_value = !active() || stale || capture_conflict ? 0 : int(measured_fps + .5);
+        const wchar_t *feed = demo ? L"Demo" : window_mode ? L"Window" : L"OpenXR";
+        const wchar_t *connection = expired                                        ? L"expired"
+                                    : capture_conflict                             ? L"in use elsewhere"
+                                    : paused                                       ? L"paused"
+                                    : !IsWindowVisible(output) || IsIconic(output) ? L"hidden"
+                                    : !renderer.has_frame() || stale               ? L"waiting"
+                                                                                   : L"connected";
+        const wchar_t *comparison_name = options.compare_mode == 1   ? L"50/50 comparison"
+                                         : options.compare_mode == 2 ? L"Side-by-side comparison"
+                                                                     : L"Original";
+        const auto view = comparison_active ? std::wstring(comparison_name) + L" (" +
+                                                  std::to_wstring((compare_until - now + 999) / 1000) + L"s)"
+                          : expired         ? std::wstring(L"Preview stopped")
+                          : options.stabilize ? std::wstring(L"Stabilized")
+                                              : std::wstring(L"Stabilization off");
+        const auto summary =
+            std::to_wstring(fps_value) + L" FPS | " + feed + L" " + connection + L" | " + view;
+        SetWindowTextW(compact_status, summary.c_str());
+        const wchar_t *comparison_button = options.compare_mode == 1   ? L"Compare 50/50 (3s)"
+                                           : options.compare_mode == 2 ? L"Compare side by side (3s)"
+                                                                       : L"Compare original (3s)";
+        SetWindowTextW(comparison, comparison_active ? L"End A/B comparison" : comparison_button);
+        EnableWindow(comparison, comparison_active || (!paused && !expired && !waiting(now)));
+        SetWindowTextW(
+            shortcut_hint,
+            (hotkey_hint() + L"\r\nReset horizon: hold the headset approximately upright.").c_str());
         if (expired) {
             const auto message = std::wstring(L"This SteadyXR build has expired.\r\nValid until: ") +
                                  build_expiry_text() +
@@ -684,19 +885,22 @@ struct App {
             }
         }
         if (!setup_message.empty())
-            text += setup_message + L"\r\n";
+            text = setup_message + L"\r\n" + text;
+        if (!hotkey_error.empty())
+            text = hotkey_error + L"\r\n" + text;
         if (capture_conflict)
             text += L"OpenXR capture is in use by OBS or another preview. Hide or pause that source to use "
                     L"this preview.\r\n";
-        if (!active())
+        if (paused)
             text += L"PAUSED – no new frame copies requested.\r\n";
+        else if (!IsWindowVisible(output) || IsIconic(output))
+            text += L"Preview hidden – no new frame copies requested.\r\n";
         else if (last_received_ms && GetTickCount64() - last_received_ms > 2000)
             text += L"No new frame for more than 2 seconds.\r\n";
         if (renderer.has_frame())
-            text += L"Received: " + std::to_wstring(int(measured_fps + .5)) + L" FPS | " +
-                    (window_mode && !demo    ? L"Image analysis"
-                     : renderer.views() == 2 ? L"Context + foveal inset"
-                                             : L"Stereo eye") +
+            text += std::wstring(window_mode && !demo    ? L"Image analysis"
+                                 : renderer.views() == 2 ? L"Context + foveal inset"
+                                                         : L"Stereo eye") +
                     L"\r\n";
         if (!renderer.error().empty())
             text += renderer.error() + L"\r\n";
@@ -704,7 +908,13 @@ struct App {
                 std::to_wstring(options.output_height) + L" | Aspect: " + std::to_wstring(aspect_numerator) +
                 L":" + std::to_wstring(aspect_denominator) +
                 L"\r\nF11: fullscreen. No OBS or encoder required.";
-        SetWindowTextW(status, text.c_str());
+        // Preserve selection/scrolling in the details field while only the FPS
+        // summary changes. Errors and connection changes remain inspectable.
+        std::wstring previous(std::size_t(GetWindowTextLengthW(status)) + 1, L'\0');
+        GetWindowTextW(status, previous.data(), int(previous.size()));
+        previous.resize(std::wcslen(previous.c_str()));
+        if (previous != text)
+            SetWindowTextW(status, text.c_str());
     }
 };
 App *app{};
@@ -769,6 +979,7 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         return DefWindowProcW(window, message, w, l);
     switch (message) {
     case WM_CLOSE:
+        app->cancel_comparison();
         ShowWindow(window, SW_HIDE);
         app->heartbeat();
         return 0;
@@ -799,7 +1010,7 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         BeginPaint(window, &ps);
         EndPaint(window, &ps);
         if (app->waiting(GetTickCount64()))
-            app->renderer.draw(app->options, true, app->waiting_text());
+            app->renderer.draw(app->draw_options(GetTickCount64()), true, app->waiting_text());
         app->dirty = true;
         return 0;
     }
@@ -813,11 +1024,28 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (app->theme.message(window, message, w, l, themed))
         return themed;
     switch (message) {
+    case WM_HOTKEY:
+        if (app->hotkey_profile && std::find(std::begin(hotkey_actions), std::end(hotkey_actions), int(w)) !=
+                                       std::end(hotkey_actions))
+            SendMessageW(window, WM_COMMAND, w, 0);
+        return 0;
     case WM_ACTIVATE:
         if (LOWORD(w) != WA_INACTIVE && app->status && app->output)
             app->refresh_editor_connection();
         break;
     case WM_TIMER:
+        if (w == comparison_timer) {
+            const bool had_comparison = app->compare_until != 0;
+            const auto now = GetTickCount64();
+            app->refresh_comparison(now);
+            // Popup menus and window dragging run a nested message loop. End
+            // the displayed comparison there as well as in the capture loop.
+            if (had_comparison && !app->compare_until && IsWindowVisible(app->output) &&
+                !IsIconic(app->output))
+                app->renderer.draw(app->draw_options(now), true,
+                                   app->waiting(now) ? app->waiting_text() : nullptr);
+            return 0;
+        }
         if (w == save_timer) {
             app->save();
             return 0;
@@ -839,6 +1067,30 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         return 0;
     case WM_COMMAND:
         switch (LOWORD(w)) {
+        case compare_id:
+            app->toggle_comparison();
+            return 0;
+        case next_preset_id:
+            app->next_preset();
+            return 0;
+        case hotkeys_id:
+            app->hotkeys_menu();
+            return 0;
+        case hotkeys_default_id:
+        case hotkeys_alternate_id:
+        case hotkeys_off_id:
+            app->configure_hotkeys(LOWORD(w) == hotkeys_default_id     ? 1
+                                   : LOWORD(w) == hotkeys_alternate_id ? 2
+                                                                       : 0);
+            return 0;
+        case comparison_original_id:
+        case comparison_split_id:
+        case comparison_side_by_side_id:
+            app->options.compare_mode = LOWORD(w) - comparison_original_id;
+            app->save();
+            app->dirty = true;
+            app->update_status();
+            return 0;
         case advanced_id:
             app->advanced.open(app->selected_eye);
             return 0;
@@ -903,18 +1155,20 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             app->connection(false);
             break;
         case show_id:
+            app->cancel_comparison();
             ShowWindow(app->output, SW_RESTORE);
             app->paused = false;
             SetForegroundWindow(app->output);
             break;
         case pause_id:
+            app->cancel_comparison();
             app->paused = !app->paused;
             if (!app->paused)
                 app->renderer.reset();
             break;
         case reset_id:
-            app->renderer.reset();
-            break;
+            app->reset_horizon();
+            return 0;
         case mirror_id:
             app->options.mirror = SendMessageW(app->mirror, BM_GETCHECK, 0, 0) == BST_CHECKED;
             break;
@@ -927,6 +1181,7 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             break;
         case eye_id:
             if (HIWORD(w) == CBN_SELCHANGE) {
+                app->cancel_comparison();
                 app->selected_eye = unsigned(SendMessageW(app->eye, CB_GETCURSEL, 0, 0));
                 app->options.eye = app->selected_eye;
                 app->renderer.reset();
@@ -952,6 +1207,7 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         DestroyWindow(window);
         return 0;
     case WM_DESTROY:
+        app->unregister_hotkeys();
         app->quit = true;
         PostQuitMessage(0);
         return 0;
@@ -1021,7 +1277,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    const auto control_title = std::wstring(L"SteadyXR – Preview 0.7.0 | Expires ") + build_expiry_text();
+    const auto control_title = std::wstring(L"SteadyXR – Preview 0.8.0 | Expires ") + build_expiry_text();
     state.controls =
         CreateWindowExW(0, L"HorizonLockControls", control_title.c_str(),
                         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, 100, 100,
@@ -1053,9 +1309,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     child(state.controls, L"BUTTON", L"Remove connection", BS_PUSHBUTTON, 245, 145, 205, 34, remove_id);
     child(state.controls, L"BUTTON", L"Render / edges…", BS_PUSHBUTTON, 463, 145, 154, 34, advanced_id);
     child(state.controls, L"BUTTON", L"Open preview", BS_PUSHBUTTON, 22, 195, 190, 36, show_id);
-    state.pause = child(state.controls, L"BUTTON", L"Pause / GPU comparison", BS_PUSHBUTTON, 225, 195, 215,
-                        36, pause_id);
-    child(state.controls, L"BUTTON", L"Reset preview", BS_PUSHBUTTON, 453, 195, 163, 36, reset_id);
+    state.pause =
+        child(state.controls, L"BUTTON", L"Pause preview", BS_PUSHBUTTON, 225, 195, 215, 36, pause_id);
+    child(state.controls, L"BUTTON", L"Reset horizon", BS_PUSHBUTTON, 453, 195, 163, 36, reset_id);
     state.smooth_label = child(state.controls, L"STATIC", L"", 0, 22, 250, 210, 24);
     state.smooth =
         child(state.controls, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS, 230, 240, 385, 40, smooth_id);
@@ -1087,7 +1343,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     for (const wchar_t *value : {L"30 FPS", L"60 FPS", L"90 FPS"})
         SendMessageW(state.fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value));
     SendMessageW(state.fps, CB_SETCURSEL, state.rate == 30 ? 0 : state.rate == 60 ? 1 : 2, 0);
-    state.status = child(state.controls, L"STATIC", L"", 0, 22, 478, 596, 190);
+    state.compact_status =
+        child(state.controls, L"STATIC", L"", SS_LEFTNOWORDWRAP, 22, 474, 596, 25, compact_status_id);
+    state.comparison = child(state.controls, L"BUTTON", L"Compare original (3s)", BS_PUSHBUTTON, 22, 506, 210,
+                             32, compare_id);
+    child(state.controls, L"BUTTON", L"Next preset", BS_PUSHBUTTON, 245, 506, 160, 32, next_preset_id);
+    child(state.controls, L"BUTTON", L"Hotkeys / A/B…", BS_PUSHBUTTON, 418, 506, 198, 32, hotkeys_id);
+    state.shortcut_hint = child(state.controls, L"STATIC", L"", 0, 22, 545, 596, 40);
+    state.status = child(state.controls, L"EDIT", L"",
+                         ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 22, 589, 596, 69);
     child(state.controls, L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 22, 668, 145, 34, comfort_id);
     child(state.controls, L"BUTTON", L"Undo tuning", BS_PUSHBUTTON, 177, 668, 129, 34, undo_comfort_id);
     child(state.controls, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 316, 668, 115, 34, presets_id);
@@ -1159,12 +1423,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             state.setup_message = std::move(message);
             state.update_status();
         });
-    const auto presets_directory = self_test
-                                       ? std::filesystem::path(state.ini + L"-presets")
-                                       : std::filesystem::path(state.directory).parent_path() / L"Presets";
+    const auto presets_directory = state.presets_directory =
+        self_test ? std::filesystem::path(state.ini + L"-presets")
+                  : std::filesystem::path(state.directory).parent_path() / L"Presets";
     state.presets.initialize(state.controls, state.theme, presets_directory,
                              {[&] { return state.snapshot(); },
-                              [&](const std::string &bytes) { return state.apply_snapshot(bytes); },
+                              [&](const std::string &bytes) {
+                                  if (!state.apply_snapshot(bytes))
+                                      return false;
+                                  wchar_t name[65]{};
+                                  GetDlgItemTextW(state.presets.handle(), PresetsDialog::names_id, name, 65);
+                                  state.preset_cursor = L"saved:" + std::wstring(name);
+                                  return true;
+                              },
                               [&](BuiltinPreset preset) { state.builtin(preset); }});
     state.set_tuning(state.options);
     state.list_monitors();
@@ -1173,6 +1444,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.refresh_sources();
     state.labels();
     state.renderer.attach(state.output);
+    state.register_hotkeys();
     if (verify_window) {
         // Explicit diagnostic mode: capture only the auto-selected iRacing
         // simulator process, without opening UI, installing a layer or editing settings.
@@ -1249,6 +1521,112 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                     state.paused && state.options.smoothing == 65 && state.renderer.demo(0) &&
                     state.renderer.draw(state.options, false);
         okay = okay && state.theme.icon && state.theme.small_icon;
+        // Global shortcuts must reach the same actions even while a child
+        // control owns focus. Diagnostic runs send messages without reserving keys.
+        SendMessageW(state.controls, WM_HOTKEY, pause_id, 0);
+        bool interactions_ok = !state.paused && IsWindow(state.comparison) &&
+                               IsWindow(GetDlgItem(state.controls, next_preset_id)) &&
+                               IsWindow(GetDlgItem(state.controls, hotkeys_id));
+        // A/B changes only the draw copy, returns at its deadline, and preserves
+        // the complete serialized configuration (including framing and presets).
+        state.last_received_ms = GetTickCount64();
+        const auto before_comparison = state.snapshot();
+        SendMessageW(state.controls, WM_HOTKEY, compare_id, 0);
+        const auto comparison_deadline = state.compare_until;
+        const auto compared_options = state.draw_options(comparison_deadline - 1);
+        wchar_t interaction_text[512]{};
+        GetWindowTextW(state.compact_status, interaction_text, 512);
+        interactions_ok = interactions_ok && comparison_deadline > state.last_received_ms &&
+                          compared_options.compare_original && !state.options.compare_original &&
+                          compared_options.smoothing == 65 && compared_options.output_width == 3840 &&
+                          compared_options.output_height == 2160 && compared_options.crop == 10 &&
+                          std::wstring(interaction_text).find(L"Original") != std::wstring::npos &&
+                          !before_comparison.empty() && state.snapshot() == before_comparison;
+        // Keep the source fresh so this specifically tests the 3-second timeout.
+        state.last_received_ms = comparison_deadline - 1;
+        state.refresh_comparison(comparison_deadline - 1);
+        interactions_ok = interactions_ok && state.comparing(comparison_deadline - 1);
+        state.refresh_comparison(comparison_deadline);
+        interactions_ok = interactions_ok && !state.compare_until &&
+                          !state.draw_options(comparison_deadline).compare_original &&
+                          state.snapshot() == before_comparison;
+        SendMessageW(state.controls, WM_COMMAND, compare_id, 0);
+        interactions_ok = interactions_ok && state.compare_until;
+        SendMessageW(state.controls, WM_HOTKEY, compare_id, 0);
+        interactions_ok = interactions_ok && !state.compare_until;
+        SendMessageW(state.controls, WM_COMMAND, compare_id, 0);
+        SendMessageW(state.controls, WM_HOTKEY, reset_id, 0);
+        interactions_ok = interactions_ok && !state.compare_until &&
+                          state.setup_message.find(L"approximately upright") != std::wstring::npos &&
+                          state.snapshot() == before_comparison;
+        SendMessageW(state.controls, WM_HOTKEY, compare_id, 0);
+        SendMessageW(state.controls, WM_HOTKEY, pause_id, 0);
+        interactions_ok = interactions_ok && state.paused && !state.compare_until;
+        SendMessageW(state.controls, WM_HOTKEY, compare_id, 0);
+        interactions_ok = interactions_ok && !state.compare_until;
+        state.measured_fps = 89;
+        state.update_status();
+        GetWindowTextW(state.compact_status, interaction_text, 512);
+        interactions_ok = interactions_ok && std::wstring(interaction_text).find(L"0 FPS") == 0 &&
+                          std::wstring(interaction_text).find(L"paused") != std::wstring::npos &&
+                          std::wstring(interaction_text).find(L"Original") == std::wstring::npos;
+        // The selected layout persists, while changing it during A/B preserves
+        // the same deadline and never persists the temporary comparison itself.
+        SendMessageW(state.controls, WM_COMMAND, comparison_split_id, 0);
+        state.paused = false;
+        state.last_received_ms = GetTickCount64();
+        SendMessageW(state.controls, WM_HOTKEY, compare_id, 0);
+        const auto mode_deadline = state.compare_until;
+        GetWindowTextW(state.compact_status, interaction_text, 512);
+        interactions_ok = interactions_ok && mode_deadline &&
+                          state.draw_options(mode_deadline - 1).compare_mode == 1 &&
+                          std::wstring(interaction_text).find(L"50/50 comparison") != std::wstring::npos;
+        SendMessageW(state.controls, WM_COMMAND, comparison_side_by_side_id, 0);
+        interactions_ok = interactions_ok && state.compare_until == mode_deadline &&
+                          state.draw_options(mode_deadline - 1).compare_mode == 2;
+        {
+            App restored;
+            restored.ini = state.ini;
+            restored.read();
+            interactions_ok =
+                interactions_ok && restored.options.compare_mode == 2 && !restored.options.compare_original;
+        }
+        SendMessageW(state.controls, WM_COMMAND, comparison_original_id, 0);
+        state.cancel_comparison();
+        state.paused = true;
+        SendMessageW(state.controls, WM_COMMAND, hotkeys_off_id, 0);
+        SendMessageW(state.controls, WM_HOTKEY, pause_id, 0);
+        interactions_ok = interactions_ok && state.paused;
+        SendMessageW(state.controls, WM_COMMAND, hotkeys_alternate_id, 0);
+        {
+            App restored;
+            restored.ini = state.ini;
+            restored.read();
+            interactions_ok =
+                interactions_ok && restored.hotkey_profile == 2 && !restored.options.compare_original;
+        }
+        SendMessageW(state.controls, WM_COMMAND, hotkeys_default_id, 0);
+        SendMessageW(state.controls, WM_HOTKEY, 9999, 0);
+        interactions_ok = interactions_ok && state.paused;
+        state.paused = false;
+        SendMessageW(state.controls, WM_HOTKEY, compare_id, 0);
+        state.expired = true;
+        state.refresh_comparison(GetTickCount64());
+        interactions_ok = interactions_ok && !state.compare_until;
+        trace << "comparison-modes=" << interactions_ok << '\n';
+        state.expired = false;
+        state.paused = false;
+        state.last_received_ms = GetTickCount64();
+        SendMessageW(state.controls, WM_COMMAND, compare_id, 0);
+        // A popup has its own message loop: its timer must end A/B without
+        // waiting for the outer capture loop to resume.
+        state.compare_until = GetTickCount64() - 1;
+        SendMessageW(state.controls, WM_TIMER, comparison_timer, 0);
+        interactions_ok = interactions_ok && !state.compare_until;
+        state.paused = true;
+        state.setup_message.clear();
+        trace << "preview-interactions=" << interactions_ok << '\n';
+        okay = interactions_ok && okay;
         // A stalled source clears the output after two seconds and recovers on
         // the very next frame; a deliberate pause retains the current image.
         state.last_received_ms = 10000;
@@ -1398,6 +1776,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.selected_eye = state.options.eye = 1;
         state.rate = 90;
         state.options.stabilize = false;
+        state.options.compare_mode = 2;
         state.options.vertical_offset = -43.2;
         state.options.edge_reserve[0] = {true, 3.4, 8.7, 5.6, 12.3};
         state.source_executable = L"C:\\Preset test\\simulator.exe";
@@ -1420,6 +1799,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         const auto stored_snapshot = test_store.read(L"Complete round trip", preset_error);
         bool preset_ok = stored_snapshot.has_value() && read_render_settings(state.ini).eyes[1].left == 10;
         state.builtin(BuiltinPreset::natural);
+        state.options.compare_mode = 0;
         state.options.crop_left = 42;
         state.options.edge_reserve[0] = {};
         state.options.edge_reserve[1] = {};
@@ -1439,6 +1819,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         preset_ok =
             preset_ok && !state.window_mode && state.selected_eye == 1 && state.options.eye == 1 &&
             state.rate == 90 && !state.options.stabilize && !state.start_fullscreen &&
+            state.options.compare_mode == 2 && !state.options.compare_original &&
             state.options.output_width == 1920 && state.options.output_height == 1080 &&
             state.aspect_numerator == 21 && state.aspect_denominator == 9 && state.options.crop_left == 2 &&
             state.options.crop_right == 4.5 && state.options.crop_top == 6.7 &&
@@ -1459,6 +1840,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         const auto monitor_count = SendMessageW(state.monitor, CB_GETCOUNT, 0, 0);
         SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::load_id, 0);
         preset_ok = preset_ok && SendMessageW(state.monitor, CB_GETCOUNT, 0, 0) == monitor_count;
+        // Next preset wraps through the built-ins and the current saved list,
+        // including a complete snapshot loaded from the dialog.
+        state.paused = false;
+        state.renderer.demo(0);
+        state.last_received_ms = GetTickCount64();
+        SendMessageW(state.controls, WM_HOTKEY, compare_id, 0);
+        bool preset_shortcuts_ok = state.compare_until != 0;
+        SendMessageW(state.controls, WM_HOTKEY, next_preset_id, 0);
+        preset_shortcuts_ok = preset_shortcuts_ok && !state.compare_until && state.options.smoothing == 25 &&
+                              state.options.horizon_lock == 25 && state.options.vertical_offset == -43.2;
+        SendMessageW(state.controls, WM_HOTKEY, next_preset_id, 0);
+        preset_shortcuts_ok =
+            preset_shortcuts_ok && state.options.smoothing == 60 && state.options.horizon_lock == 50;
+        SendMessageW(state.controls, WM_COMMAND, next_preset_id, 0);
+        preset_shortcuts_ok =
+            preset_shortcuts_ok && state.options.smoothing == 70 && state.options.horizon_lock == 85;
+        SendMessageW(state.controls, WM_HOTKEY, next_preset_id, 0);
+        preset_shortcuts_ok = preset_shortcuts_ok && !state.options.stabilize &&
+                              state.options.vertical_offset == -43.2 && state.options.crop_left == 2 &&
+                              state.preset_cursor == L"saved:Complete round trip" &&
+                              read_render_settings(state.ini).eyes[1].left == 23.7;
+        state.paused = true;
+        state.heartbeat();
+        trace << "preset-shortcuts=" << preset_shortcuts_ok << '\n';
+        preset_ok = preset_shortcuts_ok && preset_ok;
         // An unchanged registered 0.6.0 layer still reads its own settings file.
         const auto installed_ini = state.ini + L"-installed.ini";
         RenderSettings old_render{};
@@ -1542,6 +1948,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         if (state.quit)
             break;
         const auto now = GetTickCount64();
+        state.refresh_comparison(now);
         if (now - last_heartbeat >= 200) {
             state.heartbeat();
             last_heartbeat = now;
@@ -1576,13 +1983,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 ++state.fps_frames;
             }
             if ((received || state.dirty) && !state.waiting(now))
-                state.renderer.draw(state.options);
+                state.renderer.draw(state.draw_options(now));
             state.dirty = false;
             if (!submitted_feed)
                 next_frame = std::max(next_frame + 1000. / state.rate, double(now));
         } else if (state.dirty && !state.waiting(now) && IsWindowVisible(state.output) &&
                    !IsIconic(state.output)) {
-            state.renderer.draw(state.options);
+            state.renderer.draw(state.draw_options(now));
             state.dirty = false;
         }
         const bool waiting = state.waiting(now);
@@ -1590,7 +1997,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         // a full swapchain queue on the first transition away from live video.
         if (waiting && IsWindowVisible(state.output) && !IsIconic(state.output) &&
             (!was_waiting || now - last_waiting_paint >= 250)) {
-            state.renderer.draw(state.options, true, state.waiting_text());
+            state.renderer.draw(state.draw_options(now), true, state.waiting_text());
             last_waiting_paint = now;
         }
         if (waiting != was_waiting) {

@@ -55,6 +55,7 @@ void openxr_defaults(obs_data_t *s) {
     obs_data_set_default_int(s, "output_width", o.output_width);
     obs_data_set_default_int(s, "output_height", o.output_height);
     obs_data_set_default_int(s, "eye", 0);
+    obs_data_set_default_int(s, "compare_mode", 0);
     obs_data_set_default_int(s, "fps", 60);
     obs_data_set_default_bool(s, "paused", false);
     for (unsigned eye = 0; eye < 2; ++eye) {
@@ -72,6 +73,7 @@ OpenXRSettings openxr_settings(obs_data_t *s) {
     c.options.output_width = unsigned(number(s, "output_width", 3840, 320, 7680));
     c.options.output_height = unsigned(number(s, "output_height", 2160, 180, 4320));
     c.options.eye = unsigned(number(s, "eye", 0, 0, 1));
+    c.options.compare_mode = unsigned(number(s, "compare_mode", 0, 0, 2));
     c.fps = unsigned(number(s, "fps", 60, 30, 90));
     if (c.fps != 30 && c.fps != 60 && c.fps != 90)
         c.fps = 60;
@@ -93,6 +95,7 @@ void openxr_store(obs_data_t *s, const OpenXRSettings &c) {
     obs_data_set_int(s, "output_width", c.options.output_width);
     obs_data_set_int(s, "output_height", c.options.output_height);
     obs_data_set_int(s, "eye", c.options.eye);
+    obs_data_set_int(s, "compare_mode", c.options.compare_mode);
     obs_data_set_int(s, "fps", c.fps);
     obs_data_set_bool(s, "paused", c.paused);
     for (unsigned eye = 0; eye < 2; ++eye) {
@@ -112,6 +115,11 @@ void openxr_add_properties(obs_properties_t *p) {
     for (auto value : {30, 60, 90})
         obs_property_list_add_int(fps, std::to_string(value).c_str(), value);
     obs_properties_add_bool(p, "paused", "Pause capture");
+    auto *compare = obs_properties_add_list(p, "compare_mode", "Comparison mode", OBS_COMBO_TYPE_LIST,
+                                            OBS_COMBO_FORMAT_INT);
+    obs_property_list_add_int(compare, "Original", 0);
+    obs_property_list_add_int(compare, "50/50 split (left stabilized / right original)", 1);
+    obs_property_list_add_int(compare, "Side by side (both full images)", 2);
     for (const auto &f : flags)
         obs_properties_add_bool(p, f.key, f.label);
     for (const auto &n : numbers)
@@ -169,6 +177,7 @@ bool openxr_import(obs_data_t *s, const std::wstring &path, std::string &error) 
     o.mirror = v(L"Mirror", 1, 0, 1) != 0;
     o.stabilize = v(L"Stabilize", 1, 0, 1) != 0;
     o.eye = v(L"Eye", 0, 0, 1);
+    o.compare_mode = v(L"CompareMode", 0, 0, 2);
     o.vertical_offset = v(L"VerticalOffsetTenths", 0, -1000, 1000) / 10.;
     c.fps = v(L"FPS", 60, 30, 90);
     if (c.fps != 30 && c.fps != 60 && c.fps != 90)

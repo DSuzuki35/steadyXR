@@ -1,11 +1,14 @@
-SteadyXR - Version 0.7.0
+SteadyXR - Version 0.8.0
 
 SINGLE-PC OBS - DIRECT OPENXR SOURCE
-Close OBS, then copy obs-plugins and data from Stream-PC directly into
-C:\Program Files\obs-studio on the gaming PC. Restart OBS and add the source
+Close OBS, then open Gaming-PC\SteadyXR-0.8.0. Copy its obs-plugins and data
+folders directly into C:\Program Files\obs-studio on the gaming PC.
+Both folders sit beside SteadyXR.exe, its layer DLL and INI, with no extra
+nesting. The same drop-in folders remain under Stream-PC.
+Restart OBS and add the source
 "SteadyXR OpenXR Capture". Close the standalone SteadyXR preview; the source
 captures and stabilizes directly and does not need a visible preview window.
-Use the source's settings import to select Gaming-PC\SteadyXR-0.7.0\SteadyXR.ini.
+Use the source's settings import to select Gaming-PC\SteadyXR-0.8.0\SteadyXR.ini.
 OBS stores its own settings in the scene collection; the INI stays unchanged.
 Reuse this existing source in other scenes instead of creating another capture.
 The working SteadyXR OpenXR connection must remain enabled. Existing render
@@ -17,15 +20,38 @@ Game audio remains a separate OBS audio source, as before.
 
 GAMING PC - STANDALONE PREVIEW
 Run Gaming-PC\Start-Preview.cmd after closing the previous preview app.
-The app is in Gaming-PC\SteadyXR-0.7.0: SteadyXR.exe and SteadyXR.ini. Existing settings are copied unchanged if SteadyXR.ini is missing.
-From a working 0.6.0/0.6.1: only restart the preview app; iRacing can stay running.
+The app is in Gaming-PC\SteadyXR-0.8.0: SteadyXR.exe and SteadyXR.ini.
+Your current 0.7 settings are copied unchanged if SteadyXR.ini is missing.
+From a working compatible 0.6/0.7 layer: only restart the preview app;
+iRacing can stay running. The existing registered layer keeps its own deadline.
 Keep previous Preview folders while their compatible OpenXR layer is registered. The new DLL is named SteadyXR-OpenXR.dll; the old working connection is still recognized.
 For first setup or a pre-0.6 layer: select OpenXR pose capture, click
 Upgrade connection (or Install connection), then restart iRacing once.
 Delivery does not change your registration or runtime automatically.
 Window capture still needs no game restart or connection.
 
-NEW IN 0.7.0 - STEADYXR AND OPENXR LAYERS
+NEW IN 0.8.0 - RESET HORIZON, COMPARISON AND HOTKEYS
+Hold the headset approximately upright, then press Reset horizon to refresh
+the preview's upright reference. Smoothing is retained. It does not recenter the HMD.
+A/B shows the selected comparison for three seconds: Original, 50/50 split
+(left stabilized, right original), or two complete views side by side.
+The same framing is retained and both views keep their aspect ratio. Press again to return immediately. The comparison is temporary and
+never becomes part of your saved settings or presets.
+Capture/FPS/comparison status stays in the controls, off the live image.
+The standalone status is live. In OBS, reopen properties or use Refresh status
+to update the status snapshot without disturbing active sliders.
+
+Standalone defaults: Ctrl+Alt+R resets the horizon; Ctrl+Alt+P pauses/resumes;
+Ctrl+Alt+N loads the next preset; Ctrl+Alt+B starts/ends the selected A/B comparison.
+Hotkeys / A/B... offers Ctrl+Alt, Ctrl+Alt+Shift or Off and reports conflicts.
+It also selects the comparison view, which is saved with complete presets.
+Next preset cycles Natural, Stream Comfort, Strong Leveling, then saved names.
+In OBS, assign your own bindings under Settings > Hotkeys for the SteadyXR
+source. Reset, pause, comparison, built-in tuning and three saved INI preset
+slots have native OBS actions. Loading a preset does not modify its file.
+See OBS-OpenXR-Guide.md and Gaming-PC\Preview-Guide.md for details.
+
+OPENXR LAYERS - INTRODUCED IN 0.7.0
 Horizon Lock VR is now SteadyXR. Your settings and presets are retained.
 Open OpenXR layers... in the preview or Gaming-PC\Start-Layer-Editor.cmd.
 Inspect installed 64/32-bit layers, status, runtime and file paths.
@@ -68,11 +94,12 @@ The receiver is part of the OBS filter.
 Complete binary ZIP, matching source ZIP and SHA-256 checksums are here.
 Previous versioned packages are preserved.
 
-Same-version filename correction: still 0.7.0. Earlier copies of this version's
-binary/source ZIPs and checksums are retained in Previous-packages.
+If a same-version package is corrected, its earlier binary/source ZIPs and
+checksums are retained together in Previous-packages.
 
 BUILD VALIDITY
-This build expires 30 days after its UTC build time, shown in the window title
-and SteadyXR-build.json. After expiry the preview stops capture and shows a
+The app, bundled capture DLL and direct OBS source share one release build
+time and expire 30 days later, shown in the window title and SteadyXR-build.json.
+After expiry the preview stops capture and shows a
 black Build expired screen. Install a newer build to resume; settings are kept.
 The layer editor remains available. Existing VR sessions keep their projection.

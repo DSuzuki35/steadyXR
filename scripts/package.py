@@ -13,7 +13,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
 p.add_argument('--openxr', type=Path, help='Include the standalone preview and its pinned OpenXR source headers')
-p.add_argument('--version', default='0.7.0')
+p.add_argument('--version', default='0.8.0')
 p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
 stage = root / 'dist' / f'SteadyXR-{a.version}-Windows-x64'
@@ -62,6 +62,9 @@ if a.openxr:
     copy(root / 'Start-Layer-Editor.cmd', 'Start-Layer-Editor.cmd')
     for name in ['LayerEditor.ps1', 'RegistryStore.cs']:
         copy(root / 'preview/layers' / name, Path('preview/layers') / name)
+    # Keep both OBS drop-in folders beside the standalone app in the ZIP and delivery.
+    # This stage was recreated above; no user settings or installed OBS files are touched.
+    shutil.copytree(stage / 'obs-install', stage / 'preview', dirs_exist_ok=True)
     for name in ['include/openxr/openxr.h', 'include/openxr/openxr_platform.h',
                  'include/openxr/openxr_platform_defines.h', 'include/openxr/openxr_loader_negotiation.h',
                  'LICENSE', 'LICENSES/MIT.txt']:

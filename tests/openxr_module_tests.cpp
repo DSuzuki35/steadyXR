@@ -1,4 +1,5 @@
 #include "../preview/transport.hpp"
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -102,6 +103,70 @@ bool color(const Capture &c, unsigned r, unsigned g, unsigned b) {
     return c.good && std::abs(int(c.red) - srgb(r)) <= 3 && std::abs(int(c.green) - srgb(g)) <= 3 &&
            std::abs(int(c.blue) - srgb(b)) <= 3 && c.alpha == 255;
 }
+obs_hotkey_id hotkey(obs_source_t *source, const char *name) {
+    struct Search {
+        obs_source_t *source;
+        const char *name;
+        obs_hotkey_id id{OBS_INVALID_HOTKEY_ID};
+    } search{source, name};
+    obs_enum_hotkeys(
+        [](void *data, obs_hotkey_id id, obs_hotkey_t *key) {
+            auto &s = *static_cast<Search *>(data);
+            if (obs_hotkey_get_registerer_type(key) == OBS_HOTKEY_REGISTERER_SOURCE &&
+                obs_weak_source_references_source(
+                    static_cast<obs_weak_source_t *>(obs_hotkey_get_registerer(key)), s.source) &&
+                std::strcmp(obs_hotkey_get_name(key), s.name) == 0)
+                s.id = id;
+            return true;
+        },
+        &search);
+    return search.id;
+}
+void press(obs_source_t *source, const char *name) {
+    const auto id = hotkey(source, name);
+    check(id != OBS_INVALID_HOTKEY_ID, "requested source hotkey is registered");
+    obs_hotkey_trigger_routed_callback(id, true);
+    obs_hotkey_trigger_routed_callback(id, false);
+}
+bool eventually(const std::function<bool()> &predicate, unsigned timeout = 1800) {
+    const auto deadline = GetTickCount64() + timeout;
+    do {
+        if (predicate())
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    } while (GetTickCount64() < deadline);
+    return false;
+}
+std::string status(obs_source_t *source) {
+    auto *properties = obs_source_properties(source);
+    auto *value = obs_properties_get(properties, "capture_status");
+    const std::string text = value ? obs_property_description(value) : "";
+    obs_properties_destroy(properties);
+    return text;
+}
+struct PropertyRefreshProbe {
+    obs_source_t *source;
+    std::atomic<unsigned> count{};
+    explicit PropertyRefreshProbe(obs_source_t *s) : source(s) {
+        signal_handler_connect(obs_source_get_signal_handler(source), "update_properties", refresh, this);
+    }
+    ~PropertyRefreshProbe() {
+        disconnect();
+    }
+    void disconnect() {
+        if (source)
+            signal_handler_disconnect(obs_source_get_signal_handler(source), "update_properties", refresh,
+                                      this);
+        source = nullptr;
+    }
+    static void refresh(void *data, calldata_t *call) {
+        auto *source = static_cast<obs_source_t *>(calldata_ptr(call, "source"));
+        auto *p = obs_source_properties(source);
+        if (obs_properties_get(p, "capture_status"))
+            ++static_cast<PropertyRefreshProbe *>(data)->count;
+        obs_properties_destroy(p);
+    }
+};
 struct Producer {
     Channel channel;
     ComPtr<ID3D11Device> device;
@@ -160,7 +225,7 @@ struct Producer {
         return r;
     }
     void publish(unsigned r, unsigned g, unsigned b, unsigned w = 512, unsigned h = 512,
-                 bool mismatch = false, bool invalid_handle = false) {
+                 bool mismatch = false, bool invalid_handle = false, double roll = 0, bool pattern = false) {
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = w;
         desc.Height = h;
@@ -179,7 +244,11 @@ struct Producer {
         HANDLE handle{};
         resource->GetSharedHandle(&handle);
         check(keyed->AcquireSync(0, 0) == S_OK, "synthetic producer owns writer key");
-        const std::vector<std::uint32_t> pixels(std::size_t(w) * h, 0xff000000u | (b << 16) | (g << 8) | r);
+        std::vector<std::uint32_t> pixels(std::size_t(w) * h, 0xff000000u | (b << 16) | (g << 8) | r);
+        if (pattern)
+            for (unsigned y = 0; y < h; ++y)
+                for (unsigned x = 0; x < w; ++x)
+                    pixels[std::size_t(y) * w + x] = 0xff400000u | ((255 * y / h) << 8) | (255 * x / w);
         context->UpdateSubresource(texture.Get(), 0, nullptr, pixels.data(), w * 4, 0);
         context->Flush();
         check(keyed->ReleaseSync(1) == S_OK, "synthetic producer publishes reader key");
@@ -205,8 +274,9 @@ struct Producer {
         v.format = desc.Format;
         // Exact identity view pose with symmetric tangents; pixels and metadata
         // are published in one channel critical section, as by the OpenXR layer.
-        v.orientation[0] = v.orientation[1] = v.orientation[2] = 0;
-        v.orientation[3] = 1;
+        v.orientation[0] = v.orientation[1] = 0;
+        v.orientation[2] = float(std::sin(roll / 2));
+        v.orientation[3] = float(std::cos(roll / 2));
         v.fov[0] = v.fov[3] = -1;
         v.fov[1] = v.fov[2] = 1;
         s.frame = f;
@@ -227,6 +297,7 @@ int main(int argc, char **argv) {
     std::filesystem::create_directories(argv[4]);
     if (!obs_startup("en-US", argv[4], nullptr))
         return 2;
+    obs_hotkey_enable_callback_rerouting(true);
     obs_add_data_path((obs_root + "/data/libobs/").c_str());
     obs_video_info video{};
     video.graphics_module = graphics.c_str();
@@ -261,17 +332,45 @@ int main(int argc, char **argv) {
         obs_data_set_bool(settings, "stabilize", false);
         source = obs_source_create("steadyxr_openxr_source", "Isolated SteadyXR capture", settings, nullptr);
         check(source != nullptr, "registered native OpenXR input source creates");
+        for (const auto *name :
+             {"steadyxr.reset", "steadyxr.reset_horizon", "steadyxr.pause", "steadyxr.compare",
+              "steadyxr.natural", "steadyxr.comfort", "steadyxr.strong", "steadyxr.preset_1",
+              "steadyxr.preset_2", "steadyxr.preset_3"})
+            check(hotkey(source, name) != OBS_INVALID_HOTKEY_ID,
+                  "native source registers each assignable SteadyXR hotkey");
         obs_source_inc_showing(source);
         check(waiting(until(source, waiting)), "waiting output is black with readable status pixels");
         auto *properties = obs_source_properties(source);
         check(obs_properties_get(properties, "import") && obs_properties_get(properties, "comfort") &&
-                  obs_properties_get(properties, "right_reserve_left"),
-              "source exposes import, comfort and per-eye reserves");
+                  obs_properties_get(properties, "right_reserve_left") &&
+                  obs_properties_get(properties, "reset_horizon") &&
+                  obs_properties_get(properties, "compare") &&
+                  obs_properties_get(properties, "preset_3_path") &&
+                  status(source).find("FPS") != std::string::npos,
+              "source exposes preset slots, comparison, horizon reset and compact capture status");
         obs_property_button_clicked(obs_properties_get(properties, "comfort"), source);
         auto *stored = obs_source_get_settings(source);
         check(obs_data_get_double(stored, "smoothing") == 60 && obs_data_get_double(stored, "crop") == 12 &&
                   obs_data_get_double(stored, "horizon_lock") == 50,
               "Stream Comfort button updates the source's native settings");
+        obs_data_release(stored);
+        press(source, "steadyxr.natural");
+        stored = obs_source_get_settings(source);
+        check(obs_data_get_double(stored, "smoothing") == 25 &&
+                  obs_data_get_double(stored, "horizon_lock") == 25 &&
+                  obs_data_get_int(stored, "output_width") == 640,
+              "Natural hotkey changes tuning and preserves output geometry");
+        obs_data_release(stored);
+        press(source, "steadyxr.strong");
+        stored = obs_source_get_settings(source);
+        check(obs_data_get_double(stored, "smoothing") == 70 &&
+                  obs_data_get_double(stored, "horizon_lock") == 85,
+              "Strong leveling hotkey applies its tuning");
+        obs_data_release(stored);
+        press(source, "steadyxr.comfort");
+        stored = obs_source_get_settings(source);
+        check(obs_data_get_double(stored, "smoothing") == 60 && obs_data_get_double(stored, "crop") == 12,
+              "Stream Comfort hotkey uses the same native source tuning as its button");
         obs_data_release(stored);
         const auto preset = std::filesystem::path(argv[4]) / "isolated-native-import.ini";
         const std::string ini =
@@ -282,12 +381,26 @@ int main(int argc, char **argv) {
             file << ini;
         }
         obs_data_set_string(settings, "import_path", preset.u8string().c_str());
+        obs_data_set_string(settings, "preset_1_path", preset.u8string().c_str());
         obs_source_update(source, settings);
         obs_property_button_clicked(obs_properties_get(properties, "import"), source);
         stored = obs_source_get_settings(source);
         check(obs_data_get_double(stored, "smoothing") == 42.7 &&
                   obs_data_get_double(stored, "right_reserve_right") == 20,
               "native Import button applies literal preset values");
+        obs_data_release(stored);
+        press(source, "steadyxr.strong");
+        press(source, "steadyxr.preset_1");
+        stored = obs_source_get_settings(source);
+        check(obs_data_get_double(stored, "smoothing") == 42.7 &&
+                  obs_data_get_double(stored, "right_reserve_right") == 20 &&
+                  std::string(obs_data_get_string(stored, "preset_1_path")) == preset.u8string(),
+              "saved preset hotkey imports its configured INI and retains the slot path");
+        obs_data_release(stored);
+        press(source, "steadyxr.preset_2");
+        stored = obs_source_get_settings(source);
+        check(obs_data_get_double(stored, "smoothing") == 42.7,
+              "unconfigured saved preset hotkey leaves current tuning unchanged");
         obs_data_release(stored);
         auto *saved = obs_save_source(source);
         auto *saved_settings = obs_data_get_obj(saved, "settings");
@@ -300,12 +413,88 @@ int main(int argc, char **argv) {
         check(std::string((std::istreambuf_iterator<char>(imported)), {}) == ini,
               "native import leaves the fixture INI unchanged");
         obs_property_button_clicked(obs_properties_get(properties, "reset"), source);
+        obs_property_button_clicked(obs_properties_get(properties, "reset_horizon"), source);
+        press(source, "steadyxr.reset");
+        press(source, "steadyxr.reset_horizon");
         obs_properties_destroy(properties);
         producer.publish(64, 128, 192);
         auto first = until(source, [](const auto &c) { return color(c, 64, 128, 192); });
         std::printf("First color: %u %u %u %u\n", first.red, first.green, first.blue, first.alpha);
         check(color(first, 64, 128, 192), "shared GPU frames preserve RGB and sRGB encoding through libobs");
         check(frame(source).checksum == first.checksum, "repeat render preserves the private output texture");
+        check(status(source).find("Connected") != std::string::npos,
+              "properties report an established OpenXR frame connection");
+        // Opening/closing fresh properties on the real update signal catches
+        // stale property storage and status-mutex reentrancy errors.
+        PropertyRefreshProbe refreshes(source);
+        properties = obs_source_properties(source);
+        const auto before_button = refreshes.count.load();
+        obs_property_button_clicked(obs_properties_get(properties, "reset_horizon"), source);
+        obs_properties_destroy(properties);
+        check(refreshes.count == before_button,
+              "property buttons never synchronously rebuild the callback's owning OBS widget");
+        stored = obs_source_get_settings(source);
+        obs_data_set_bool(stored, "stabilize", true);
+        obs_data_set_bool(stored, "adaptive_horizon", false);
+        obs_data_set_bool(stored, "mirror", false);
+        obs_data_set_double(stored, "horizon_lock", 100);
+        obs_data_set_double(stored, "smoothing", 0);
+        obs_source_update(source, stored);
+        obs_data_release(stored);
+        producer.publish(0, 0, 0, 512, 512, false, false, .35, true);
+        const auto stabilized =
+            until(source, [&](const auto &c) { return !waiting(c) && c.checksum != first.checksum; });
+        properties = obs_source_properties(source);
+        const auto compare_started = GetTickCount64();
+        obs_property_button_clicked(obs_properties_get(properties, "compare"), source);
+        obs_properties_destroy(properties);
+        check(eventually([&] { return status(source).find("Comparison") != std::string::npos; }),
+              "comparison button advertises its temporary original view in properties");
+        const auto original = frame(source);
+        const auto before_stream = refreshes.count.load();
+        check(original.width == stabilized.width && original.height == stabilized.height &&
+                  original.checksum != stabilized.checksum,
+              "comparison bypasses real horizon correction while retaining output dimensions");
+        saved = obs_save_source(source);
+        saved_settings = obs_data_get_obj(saved, "settings");
+        check(!obs_data_has_user_value(saved_settings, "compare_original") &&
+                  obs_data_get_double(saved_settings, "horizon_lock") == 100 &&
+                  obs_data_get_bool(saved_settings, "stabilize"),
+              "temporary comparison never changes serialized tuning or persists its runtime flag");
+        obs_data_release(saved_settings);
+        obs_data_release(saved);
+        auto republished = GetTickCount64();
+        check(eventually(
+                  [&] {
+                      if (GetTickCount64() - republished >= 250) {
+                          producer.publish(0, 0, 0, 512, 512, false, false, .35, true);
+                          republished = GetTickCount64();
+                      }
+                      return status(source).find("Comparison") == std::string::npos;
+                  },
+                  4000) &&
+                  GetTickCount64() - compare_started >= 2800 && frame(source).checksum == stabilized.checksum,
+              "comparison automatically restores the corrected pixels after three seconds");
+        check(refreshes.count == before_stream && status(source).find("0.0 FPS") == std::string::npos,
+              "measured status is available without unsolicited property rebuilds during capture");
+        properties = obs_source_properties(source);
+        check(obs_property_button_clicked(obs_properties_get(properties, "refresh_status"), source) &&
+                  std::string(obs_property_description(obs_properties_get(properties, "capture_status")))
+                          .find("Connected") != std::string::npos &&
+                  refreshes.count == before_stream,
+              "explicit status refresh updates the snapshot without reentrant OBS reloads");
+        obs_properties_destroy(properties);
+        refreshes.disconnect();
+        press(source, "steadyxr.preset_1");
+        producer.publish(64, 128, 192);
+        first = until(source, [](const auto &c) { return color(c, 64, 128, 192); });
+        press(source, "steadyxr.compare");
+        check(eventually([&] { return status(source).find("Comparison") != std::string::npos; }) &&
+                  frame(source).checksum == first.checksum,
+              "comparison hotkey adds no status pixels or framing changes to a bypassed source");
+        press(source, "steadyxr.compare");
+        check(eventually([&] { return status(source).find("Comparison") == std::string::npos; }, 500),
+              "pressing the comparison action again returns immediately");
         producer.lock();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         const auto contended = frame(source);
@@ -374,10 +563,19 @@ int main(int argc, char **argv) {
         producer.publish(32, 128, 64);
         check(color(until(source, [](const auto &c) { return color(c, 32, 128, 64); }), 32, 128, 64),
               "capture recovers from a failed texture open");
-        obs_data_set_bool(settings, "paused", true);
-        obs_source_update(source, settings);
+        press(source, "steadyxr.pause");
         check(waiting(until(source, waiting)) && !producer.active(),
-              "pause shows status and releases the consumer");
+              "pause hotkey shows status and releases the consumer");
+        check(status(source).find("Paused") != std::string::npos,
+              "properties distinguish pause from a disconnected capture");
+        press(source, "steadyxr.preset_1");
+        stored = obs_source_get_settings(source);
+        check(obs_data_get_bool(stored, "paused"), "loading a saved preset preserves capture pause");
+        obs_data_release(stored);
+        press(source, "steadyxr.pause");
+        check(eventually([&] { return producer.active(); }), "pause hotkey resumes the consumer");
+        press(source, "steadyxr.pause");
+        const auto removed_hotkey = hotkey(source, "steadyxr.reset_horizon");
         obs_source_dec_showing(source);
         obs_source_release(source);
         source = nullptr;
@@ -385,6 +583,21 @@ int main(int argc, char **argv) {
         settings = nullptr;
         obs_queue_task(OBS_TASK_GRAPHICS, [](void *) {}, nullptr, true);
         check(!producer.active(), "clean teardown leaves no active consumer");
+        check(eventually([&] {
+                  struct Search {
+                      obs_hotkey_id id;
+                      bool found{};
+                  } search{removed_hotkey};
+                  obs_enum_hotkeys(
+                      [](void *data, obs_hotkey_id id, obs_hotkey_t *) {
+                          auto &s = *static_cast<Search *>(data);
+                          s.found = s.found || id == s.id;
+                          return true;
+                      },
+                      &search);
+                  return !search.found;
+              }),
+              "source destruction unregisters action callbacks before their state is freed");
     } catch (const std::exception &e) {
         std::fprintf(stderr, "FAIL: %s\n", e.what());
         result = 1;

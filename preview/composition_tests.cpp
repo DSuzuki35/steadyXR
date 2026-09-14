@@ -323,6 +323,81 @@ int main() {
         // Captured read-only from Dan's running iRacing session while looking
         // normally ahead: old code interpreted this as +175.444 degrees roll.
         const auto actual = normalized(Quat{.617033, -.0105413, .784674, .0587049});
+        // Starting OBS while the headset hangs upside down chooses the opposite
+        // hemisphere. An explicit horizon reset with the headset upright must
+        // recover at all strengths, without waiting for a new frame/session.
+        for (const auto upright : {Quat{}, actual}) {
+            FrameStabilizer mounted;
+            Options reset_options;
+            reset_options.smoothing = 0;
+            reset_options.horizon_lock = 100;
+            const auto hanging = multiply(upright, axis_angle({0, 0, 1}, pi));
+            mounted.update(posed(1, hanging), reset_options);
+            const auto current = posed(2, upright);
+            check(angle_between(mounted.update(current, reset_options).warp.correction, {}) > 170 * pi / 180,
+                  "upside-down startup must reproduce the reported inverted horizon before reset");
+            mounted.reset_horizon();
+            FrameStabilizer fresh;
+            for (double percent : {0., 25., 50., 75., 100.}) {
+                reset_options.horizon_lock = percent;
+                const auto recovered = mounted.update(current, reset_options);
+                const auto expected = fresh.update(current, reset_options);
+                check(angle_between(recovered.warp.correction, expected.warp.correction) < 1e-6,
+                      "Reset horizon must recover upright leveling at every strength on the retained frame");
+            }
+        }
+        {
+            FrameStabilizer kept, reference;
+            Options smooth_options;
+            smooth_options.smoothing = 100;
+            kept.update(frame(1), smooth_options);
+            reference.update(frame(1), smooth_options);
+            kept.update(frame(2, .08), smooth_options);
+            reference.update(frame(2, .08), smooth_options);
+            kept.reset_horizon();
+            const auto next = kept.update(frame(3, .12), smooth_options);
+            const auto expected = reference.update(frame(3, .12), smooth_options);
+            check(angle_between(next.warp.correction, {}) > .01 &&
+                      angle_between(next.warp.correction, expected.warp.correction) < 1e-6,
+                  "Reset horizon must preserve the running smoothing trajectory");
+            kept.reset_horizon();
+            smooth_options.smoothing = 0;
+            smooth_options.horizon_lock = 100;
+            kept.update(posed(4, pq), smooth_options);
+            const auto recovered = kept.update(posed(5, actual), smooth_options);
+            check(angle_between(recovered.warp.correction, {}) < 5 * pi / 180,
+                  "a reset while looking vertically must defer selection until an unambiguous pose");
+        }
+        {
+            FrameStabilizer compared, uninterrupted;
+            Options tuning;
+            tuning.smoothing = 100;
+            tuning.horizon_lock = 75;
+            tuning.crop_left = 7;
+            tuning.vertical_offset = 35;
+            tuning.edge_reserve[0] = {true, 2, 20, 5, 7};
+            compared.update(frame(1), tuning);
+            uninterrupted.update(frame(1), tuning);
+            for (unsigned i = 2; i < 8; ++i) {
+                const auto input =
+                    posed(i, multiply(axis_angle({0, 1, 0}, i * .03), axis_angle({0, 0, 1}, .1)));
+                tuning.compare_original = true;
+                const auto original = compared.update(input, tuning);
+                tuning.compare_original = false;
+                const auto stable = uninterrupted.update(input, tuning);
+                check(angle_between(original.warp.correction, {}) < 1e-6,
+                      "A/B Original must bypass smoothing and horizon correction");
+                check(original.warp.output.left == stable.warp.output.left &&
+                          original.warp.output.right == stable.warp.output.right &&
+                          original.warp.output.up == stable.warp.output.up &&
+                          original.warp.output.down == stable.warp.output.down,
+                      "A/B must preserve the exact crop, aspect, reserve and vertical framing");
+            }
+            const auto resumed = posed(8, multiply(axis_angle({0, 1, 0}, .24), axis_angle({0, 0, 1}, .1)));
+            check(angle_between(compared.update(resumed, tuning).warp.correction,
+                                uninterrupted.update(resumed, tuning).warp.correction) < 1e-6,
+                  "returning after consecutive A/B frames must use uninterrupted smoothing history");
+        }
         FrameStabilizer live;
         Options live_options;
         live_options.adaptive_horizon = false;

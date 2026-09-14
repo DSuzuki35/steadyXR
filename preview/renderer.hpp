@@ -10,6 +10,8 @@ namespace vrst::preview {
 struct Options {
     double smoothing{40}, crop{10};
     bool mirror{true}, stabilize{true};
+    bool compare_original{}; // Transient A/B bypass; keep framing and continue motion history.
+    unsigned compare_mode{}; // 0 original, 1 same-framing split, 2 fitted side-by-side; inactive normally.
     double crop_left{}, crop_right{}, crop_top{}, crop_bottom{};
     double aspect{16. / 9.};
     unsigned output_width{3840}, output_height{2160};
@@ -34,6 +36,7 @@ class FrameStabilizer {
   public:
     Composition update(const Frame &, const Options &);
     void reset();
+    void reset_horizon(); // Re-select upright hemisphere without clearing smoothing history.
 
   private:
     PoseHistory history_;
@@ -59,6 +62,7 @@ class Renderer {
     bool demo(double seconds, bool quad = true);
     bool draw(const Options &, bool present = true, const wchar_t *waiting_text = nullptr);
     void reset();
+    void reset_horizon();
     std::wstring error() const;
     bool has_frame() const;
     std::uint64_t sequence() const;

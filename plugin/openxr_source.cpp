@@ -1,7 +1,10 @@
 #include "openxr_source.hpp"
 #include "../preview/build_expiry.hpp"
 #include "openxr_source_settings.hpp"
+#include <array>
 #include <atomic>
+#include <cstdio>
+#include <cstring>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <mutex>
@@ -10,12 +13,44 @@
 namespace {
 using namespace vrst::preview;
 using Microsoft::WRL::ComPtr;
+enum class Action {
+    reset,
+    reset_horizon,
+    pause,
+    compare,
+    natural,
+    comfort,
+    strong,
+    preset_1,
+    preset_2,
+    preset_3
+};
+struct ActionInfo {
+    const char *name, *label;
+    Action action;
+};
+constexpr ActionInfo actions[]{{"reset", "Reset stabilization", Action::reset},
+                               {"reset_horizon", "Reset horizon", Action::reset_horizon},
+                               {"pause", "Pause / resume capture", Action::pause},
+                               {"compare", "Compare A/B (3 seconds)", Action::compare},
+                               {"natural", "Natural", Action::natural},
+                               {"comfort", "Stream Comfort", Action::comfort},
+                               {"strong", "Strong leveling", Action::strong},
+                               {"preset_1", "Load saved preset 1", Action::preset_1},
+                               {"preset_2", "Load saved preset 2", Action::preset_2},
+                               {"preset_3", "Load saved preset 3", Action::preset_3}};
 struct Source {
     obs_source_t *source{};
     std::mutex settings_mutex;
     vrst_plugin::OpenXRSettings settings;
     std::uint64_t revision{1};
     std::atomic<bool> reset_requested{false};
+    std::atomic<bool> horizon_reset_requested{false};
+    std::atomic<std::uint64_t> compare_until{0};
+    std::array<obs_hotkey_id, std::size(actions)> hotkeys{};
+    std::mutex status_mutex;
+    std::string capture_status{"Inactive | 0.0 FPS / 60 requested"};
+    std::string action_status{"Choose an INI preset to import into this source."};
     std::atomic<std::uint64_t> dimensions{(std::uint64_t(3840) << 32) | 2160};
     // Graphics resources and capture state belong to the OBS graphics thread.
     Channel channel;
@@ -25,8 +60,44 @@ struct Source {
         draw_failure_since{};
     unsigned eye{};
     bool active{}, expired{}, valid_output{}, output_pending{}, request_fresh{};
+    bool comparing{};
+    unsigned requested_fps{60}, received_frames{};
+    std::uint64_t fps_since{};
+    double captured_fps{};
+    std::string connection{"Inactive"};
     LUID adapter{};
     std::wstring message, attach_error, capture_error, channel_name;
+    void feedback(const std::string &text, bool refresh_properties) {
+        {
+            std::lock_guard<std::mutex> lock(status_mutex);
+            action_status = text;
+        }
+        if (refresh_properties)
+            obs_source_update_properties(source);
+    }
+    void publish_status() {
+        const auto now = GetTickCount64();
+        if (!fps_since)
+            fps_since = now;
+        if (now - fps_since >= 1000) {
+            captured_fps = 1000. * received_frames / (now - fps_since);
+            received_frames = 0;
+            fps_since = now;
+        }
+        if (connection != "Connected") {
+            captured_fps = 0;
+            received_frames = 0;
+        }
+        char rate[96]{};
+        std::snprintf(rate, sizeof(rate), " | %.1f FPS / %u requested", captured_fps, requested_fps);
+        std::string text = connection + rate;
+        {
+            std::lock_guard<std::mutex> lock(status_mutex);
+            capture_status = std::move(text);
+        }
+        // The properties text is an explicit snapshot. Periodic OBS property
+        // reloads recreate every widget and interrupt sliders/numeric editing.
+    }
     void fallback_card(const std::wstring &text, unsigned width, unsigned height) {
         // This remains available when the offscreen D3D device cannot initialize.
         // GDI draws only a small status card; live game pixels never cross the CPU.
@@ -137,6 +208,7 @@ struct Source {
         return copied && released == 0;
     }
 };
+void hotkey(void *, obs_hotkey_id, obs_hotkey_t *, bool);
 void update(void *data, obs_data_t *settings) {
     auto &s = *static_cast<Source *>(data);
     auto next = vrst_plugin::openxr_settings(settings);
@@ -154,10 +226,17 @@ void *create(obs_data_t *settings, obs_source_t *source) {
     const auto length = GetEnvironmentVariableW(L"HORIZONLOCK_PREVIEW_CHANNEL", channel_name, 1024);
     s->channel_name = length && length < 1024 ? channel_name : default_channel;
     s->channel.open(true, s->channel_name);
+    for (std::size_t i = 0; i < std::size(actions); ++i) {
+        const auto name = std::string("steadyxr.") + actions[i].name;
+        s->hotkeys[i] = obs_hotkey_register_source(source, name.c_str(), actions[i].label, hotkey, s.get());
+    }
     return s.release();
 }
 void destroy(void *data) {
     auto *s = static_cast<Source *>(data);
+    // Unregistration waits for an in-flight hotkey callback before data is freed.
+    for (const auto id : s->hotkeys)
+        obs_hotkey_unregister(id);
     obs_enter_graphics();
     s->channel.release_consumer();
     s->copy_output(false);
@@ -169,6 +248,12 @@ void destroy(void *data) {
 }
 void tick(void *data, float) {
     auto &s = *static_cast<Source *>(data);
+    struct PublishStatus {
+        Source &s;
+        ~PublishStatus() {
+            s.publish_status();
+        }
+    } publish{s};
     vrst_plugin::OpenXRSettings c;
     std::uint64_t revision;
     {
@@ -178,6 +263,8 @@ void tick(void *data, float) {
     }
     obs_enter_graphics();
     const auto now = GetTickCount64();
+    s.requested_fps = c.fps;
+    const bool comparing = s.compare_until.load() > now;
     s.expired = s.expired || build_expired();
     const bool requested = obs_source_showing(s.source) && !c.paused && !s.expired;
     if (requested && !s.channel.data())
@@ -188,11 +275,14 @@ void tick(void *data, float) {
     const bool owned = requested && (claimed || s.channel.owns_consumer());
     const bool changed = revision != s.applied_revision;
     const bool source_changed = owned != s.active || c.options.eye != s.eye;
-    bool dirty = changed || source_changed || !s.valid_output;
+    bool dirty = changed || source_changed || !s.valid_output || comparing != s.comparing;
+    s.comparing = comparing;
+    c.options.compare_original = comparing;
     s.dimensions.store((std::uint64_t(c.options.output_width) << 32) | c.options.output_height);
     if (!requested)
         s.channel.release_consumer();
     if (!s.renderer && !s.attach()) {
+        s.connection = "Renderer unavailable";
         if (s.message != s.attach_error || !s.valid_output) {
             s.message = s.attach_error;
             s.fallback_card(s.message, c.options.output_width, c.options.output_height);
@@ -220,21 +310,30 @@ void tick(void *data, float) {
         s.renderer->reset();
         dirty = true;
     }
+    if (s.horizon_reset_requested.exchange(false)) {
+        s.renderer->reset_horizon();
+        dirty = true;
+    }
     s.active = owned;
     s.eye = c.options.eye;
     s.applied_revision = revision;
     std::wstring message;
-    if (s.expired)
+    if (s.expired) {
+        s.connection = "Build expired";
         message = L"SteadyXR build expired - install a fresh build";
-    else if (c.paused)
+    } else if (c.paused) {
+        s.connection = "Paused";
         message = L"SteadyXR capture paused";
-    else if (!requested)
+    } else if (!requested) {
+        s.connection = "Inactive";
         message = L"SteadyXR capture inactive";
-    else if (!s.channel.data())
+    } else if (!s.channel.data()) {
+        s.connection = "Channel unavailable";
         message = L"Could not open the SteadyXR capture channel";
-    else if (!owned)
+    } else if (!owned) {
+        s.connection = "Capture busy";
         message = L"SteadyXR capture busy - close the other capture";
-    else {
+    } else {
         // A reconnect request invalidates the previous image immediately.
         bool reconnect = false;
         if (claimed && s.channel.lock()) {
@@ -249,6 +348,7 @@ void tick(void *data, float) {
         }
         if (claimed && !s.request_fresh && s.renderer->consume(s.channel, true)) {
             s.last_received = now;
+            ++s.received_frames;
             s.capture_error.clear();
             dirty = true;
         } else if (!s.renderer->error().empty())
@@ -261,6 +361,9 @@ void tick(void *data, float) {
         }
         if (!s.renderer->has_frame())
             message = s.capture_error.empty() ? L"Waiting for OpenXR frames" : s.capture_error;
+        s.connection = message.empty()           ? "Connected"
+                       : s.capture_error.empty() ? "Waiting for OpenXR"
+                                                 : "Capture error";
     }
     if (message != s.message) {
         s.message = message;
@@ -268,6 +371,7 @@ void tick(void *data, float) {
         s.valid_output = false;
     }
     if (s.output_pending && !s.copy_output()) {
+        s.connection = "Output unavailable";
         s.valid_output = false;
         // An output-open/device failure must not strand writer key 1 forever.
         // Replacing both ends discards that generation and retries next tick.
@@ -290,6 +394,7 @@ void tick(void *data, float) {
             if (!s.copy_output())
                 s.valid_output = false;
         } else {
+            s.connection = "Output unavailable";
             s.valid_output = false;
             s.capture_error = s.renderer->error();
             s.renderer->source_changed();
@@ -325,29 +430,9 @@ void render(void *data, gs_effect_t *) {
         gs_draw_sprite(s.output, 0, uint32_t(dims >> 32), uint32_t(dims));
     gs_enable_framebuffer_srgb(previous);
 }
-bool reset(obs_properties_t *, obs_property_t *, void *data) {
-    if (data)
-        static_cast<Source *>(data)->reset_requested.store(true);
-    return false;
-}
-bool comfort(obs_properties_t *, obs_property_t *, void *data) {
-    if (!data)
-        return false;
-    auto *source = static_cast<Source *>(data)->source;
-    auto *settings = obs_source_get_settings(source);
-    auto c = vrst_plugin::openxr_settings(settings);
-    apply_stream_comfort(c.options);
-    vrst_plugin::openxr_store(settings, c);
-    obs_source_update(source, settings);
-    obs_data_release(settings);
-    return true;
-}
-bool import_settings(obs_properties_t *props, obs_property_t *, void *data) {
-    if (!data)
-        return false;
-    auto *source = static_cast<Source *>(data)->source;
-    auto *settings = obs_source_get_settings(source);
-    const char *path = obs_data_get_string(settings, "import_path");
+bool import_path(Source &s, const char *key, bool refresh_properties) {
+    auto *settings = obs_source_get_settings(s.source);
+    const char *path = obs_data_get_string(settings, key);
     const int length = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
     std::wstring wide(length ? length : 1, L'\0');
     if (length)
@@ -355,12 +440,115 @@ bool import_settings(obs_properties_t *props, obs_property_t *, void *data) {
     if (!wide.empty())
         wide.pop_back();
     std::string error;
-    if (vrst_plugin::openxr_import(settings, wide, error)) {
-        obs_source_update(source, settings);
+    const bool imported = vrst_plugin::openxr_import(settings, wide, error);
+    if (imported) {
+        obs_source_update(s.source, settings);
         error = "Settings imported into this OBS source. Extra render area stays unchanged.";
     }
-    obs_property_set_description(obs_properties_get(props, "import_status"), error.c_str());
     obs_data_release(settings);
+    s.feedback(error, refresh_properties);
+    return imported;
+}
+void perform(Source &s, Action action, bool refresh_properties) {
+    if (action == Action::reset) {
+        s.reset_requested.store(true);
+        s.feedback("Stabilization reset requested.", refresh_properties);
+        return;
+    }
+    if (action == Action::reset_horizon) {
+        s.horizon_reset_requested.store(true);
+        s.feedback("Horizon reset requested. Keep the headset approximately upright.", refresh_properties);
+        return;
+    }
+    if (action == Action::compare) {
+        const auto now = GetTickCount64();
+        auto previous = s.compare_until.load();
+        while (!s.compare_until.compare_exchange_weak(previous, previous > now ? 0 : now + 3000)) {
+        }
+        s.feedback(previous > now ? "A/B comparison ended."
+                                  : "A/B comparison started for 3 seconds; press again to return sooner.",
+                   refresh_properties);
+        return;
+    }
+    if (action >= Action::preset_1) {
+        const auto key =
+            std::string("preset_") + std::to_string(int(action) - int(Action::preset_1) + 1) + "_path";
+        import_path(s, key.c_str(), refresh_properties);
+        return;
+    }
+    auto *settings = obs_source_get_settings(s.source);
+    auto c = vrst_plugin::openxr_settings(settings);
+    if (action == Action::pause)
+        c.paused = !c.paused;
+    else if (action == Action::comfort)
+        apply_stream_comfort(c.options);
+    else {
+        const bool strong = action == Action::strong;
+        auto &o = c.options;
+        o.smoothing = strong ? 70 : 25;
+        o.horizon_lock = strong ? 85 : 25;
+        o.adaptive_horizon = true;
+        o.crop = strong ? 15 : 8;
+        o.mirror = o.stabilize = true;
+        o.mirror_limit = strong ? 12 : 10;
+        o.mirror_softness = strong ? 75 : 60;
+    }
+    vrst_plugin::openxr_store(settings, c);
+    obs_source_update(s.source, settings);
+    obs_data_release(settings);
+    if (refresh_properties)
+        obs_source_update_properties(s.source);
+}
+void hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *, bool pressed) {
+    if (!pressed)
+        return;
+    auto &s = *static_cast<Source *>(data);
+    for (std::size_t i = 0; i < s.hotkeys.size(); ++i)
+        if (s.hotkeys[i] == id) {
+            perform(s, actions[i].action, true);
+            break;
+        }
+}
+void refresh_status(obs_properties_t *properties, Source *s) {
+    std::string capture_status = "Inactive | 0.0 FPS / 60 requested", action_status;
+    if (s) {
+        {
+            std::lock_guard<std::mutex> lock(s->status_mutex);
+            capture_status = s->capture_status;
+            action_status = s->action_status;
+        }
+        const auto now = GetTickCount64(), deadline = s->compare_until.load();
+        if (deadline > now)
+            capture_status +=
+                " | Comparison (" + std::to_string((deadline - now + 999) / 1000) + "s remaining)";
+    }
+    capture_status = "Status snapshot: " + capture_status;
+    obs_property_set_description(obs_properties_get(properties, "capture_status"), capture_status.c_str());
+    obs_property_set_description(obs_properties_get(properties, "import_status"), action_status.c_str());
+}
+bool refresh_status_button(obs_properties_t *properties, obs_property_t *, void *data) {
+    refresh_status(properties, static_cast<Source *>(data));
+    return true;
+}
+bool action_button(obs_properties_t *properties, obs_property_t *property, void *data) {
+    if (!data)
+        return false;
+    for (const auto &action : actions)
+        if (std::strcmp(obs_property_name(property), action.name) == 0) {
+            // OBS queues RefreshProperties after this callback returns true.
+            // Signalling update_properties here would synchronously destroy
+            // the button's WidgetInfo while its ButtonClicked is on the stack.
+            perform(*static_cast<Source *>(data), action.action, false);
+            refresh_status(properties, static_cast<Source *>(data));
+            return true;
+        }
+    return false;
+}
+bool import_settings(obs_properties_t *properties, obs_property_t *, void *data) {
+    if (!data)
+        return false;
+    import_path(*static_cast<Source *>(data), "import_path", false);
+    refresh_status(properties, static_cast<Source *>(data));
     return true;
 }
 obs_properties_t *properties(void *data) {
@@ -369,23 +557,45 @@ obs_properties_t *properties(void *data) {
                             "Capture OpenXR directly. Enable the SteadyXR OpenXR layer before starting the "
                             "game. One active capture per channel.",
                             OBS_TEXT_INFO);
+    obs_properties_add_text(p, "capture_status", "Status snapshot", OBS_TEXT_INFO);
+    obs_properties_add_button2(p, "refresh_status", "Refresh status", refresh_status_button, data);
+    obs_properties_add_text(
+        p, "hotkey_help",
+        "Assign source hotkeys in OBS Settings > Hotkeys. For Reset horizon, keep the "
+        "headset approximately upright. Comparison returns after 3 seconds, or press again "
+        "to return sooner.",
+        OBS_TEXT_INFO);
     const auto *deadline = build_expiry_text();
     const int count = WideCharToMultiByte(CP_UTF8, 0, deadline, -1, nullptr, 0, nullptr, nullptr);
     std::string expiry(count > 0 ? count : 1, '\0');
     if (count > 0)
         WideCharToMultiByte(CP_UTF8, 0, deadline, -1, expiry.data(), count, nullptr, nullptr);
     expiry.pop_back();
-    const auto expiry_label = std::string("SteadyXR 0.7.0 build expires: ") + expiry;
+    const auto expiry_label = std::string("SteadyXR 0.8.0 build expires: ") + expiry;
     obs_properties_add_text(p, "build_expiry", expiry_label.c_str(), OBS_TEXT_INFO);
     vrst_plugin::openxr_add_properties(p);
-    obs_properties_add_button2(p, "reset", "Reset stabilization", reset, data);
-    obs_properties_add_button2(p, "comfort", "Stream Comfort", comfort, data);
+    for (const auto &action : actions)
+        if (action.action < Action::preset_1 && action.action != Action::pause)
+            obs_properties_add_button2(p, action.name, action.label, action_button, data);
+    auto *slots = obs_properties_create();
+    for (unsigned slot = 1; slot <= 3; ++slot) {
+        const auto key = std::string("preset_") + std::to_string(slot);
+        const auto label = "Saved preset " + std::to_string(slot) + " (INI)";
+        obs_properties_add_path(slots, (key + "_path").c_str(), label.c_str(), OBS_PATH_FILE,
+                                "INI settings (*.ini)", nullptr);
+        obs_properties_add_button2(slots, key.c_str(), actions[6 + slot].label, action_button, data);
+    }
+    obs_properties_add_group(p, "saved_presets", "Saved preset hotkey slots", OBS_GROUP_NORMAL, slots);
     obs_properties_add_path(p, "import_path", "SteadyXR settings or preset", OBS_PATH_FILE,
                             "INI settings (*.ini)", nullptr);
     obs_properties_add_button2(p, "import", "Import settings", import_settings, data);
-    obs_properties_add_text(p, "import_status",
-                            "Import reads the INI file without changing it or the game's extra render area.",
-                            OBS_TEXT_INFO);
+    obs_properties_add_text(p, "import_status", "", OBS_TEXT_INFO);
+    obs_properties_add_text(
+        p, "import_help",
+        "Preset slots and Import read INI files without changing them or the game's extra "
+        "render area. Slot paths and tuning are saved with this OBS source.",
+        OBS_TEXT_INFO);
+    refresh_status(p, static_cast<Source *>(data));
     return p;
 }
 const char *name(void *) {

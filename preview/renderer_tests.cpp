@@ -251,6 +251,69 @@ int main(int argc, char **argv) {
         require(pixels[(h / 2) * w + w / 2] == center, "waiting screen must not alter retained live image");
         require(((center >> 8) & 255) > ((center) & 255) + 80, "foveal inset must replace context at center");
         require(((side >> 16) & 255) > ((side >> 8) & 255), "outside inset must keep context");
+        // A/B must sample the very same captured quad-view frame in both halves.
+        // Distinct context/focus colors also catch bypassing the focus pose.
+        {
+            auto comparison = options;
+            comparison.output_width = 640;
+            comparison.output_height = 360;
+            comparison.stabilize = true;
+            comparison.smoothing = 100;
+            comparison.horizon_lock = 75;
+            require(renderer.demo(.05, true), "moving quad comparison fixture");
+            require(renderer.draw(comparison, false) && renderer.readback(pixels, w, h),
+                    "stabilized A frame");
+            const auto stable = pixels;
+            comparison.compare_original = true;
+            require(renderer.draw(comparison, false) && renderer.readback(pixels, w, h), "original B frame");
+            const auto original = pixels;
+            require(stable != original, "comparison fixture must have visible stabilization");
+            comparison.compare_mode = 1;
+            require(renderer.draw(comparison, false) && renderer.readback(pixels, w, h), "split comparison");
+            for (unsigned y = 0; y < h; ++y)
+                for (unsigned x = 0; x < w; ++x)
+                    require(
+                        pixels[y * w + x] == (x < w / 2 ? stable[y * w + x] : original[y * w + x]),
+                        "50/50 must keep stabilized pixels left and original pixels right without reframing");
+            comparison.compare_mode = 2;
+            require(renderer.draw(comparison, false) && renderer.readback(pixels, w, h),
+                    "side by side comparison");
+            require((pixels[w * 8 + 8] & 0xffffff) == 0 && (pixels[(h - 9) * w + w - 9] & 0xffffff) == 0,
+                    "side-by-side complete views must preserve aspect with black letterboxing");
+            // Produce half-size references with identical optical framing.
+            const auto side_by_side = pixels;
+            const unsigned full_w = w, full_h = h;
+            comparison.output_width /= 2;
+            comparison.output_height /= 2;
+            comparison.compare_mode = 0;
+            for (bool b : {false, true}) {
+                comparison.compare_original = b;
+                require(renderer.draw(comparison, false) && renderer.readback(pixels, w, h),
+                        "half-size comparison reference");
+                for (unsigned y = 0; y < h; ++y)
+                    for (unsigned x = 0; x < w; ++x) {
+                        const auto actual = side_by_side[(y + full_h / 4) * full_w + x + (b ? w : 0)],
+                                   expected = pixels[y * w + x];
+                        for (unsigned shift : {0u, 8u, 16u})
+                            if (std::abs(int((actual >> shift) & 255) - int((expected >> shift) & 255)) > 1) {
+                                std::cerr << "panel=" << b << " x=" << x << " y=" << y
+                                          << " actual=" << std::hex << actual << " expected=" << expected
+                                          << std::dec << "\n";
+                                require(
+                                    false,
+                                    "side-by-side must show both complete views at their original aspect");
+                            }
+                    }
+            }
+            comparison.output_width = full_w;
+            comparison.output_height = full_h;
+            comparison.compare_original = false;
+            require(renderer.draw(comparison, false) && renderer.readback(pixels, w, h) && pixels == stable,
+                    "ending comparison must restore identical stable output with no smoothing reset");
+            require(renderer.demo(0, true) && renderer.draw(options, false) &&
+                        renderer.readback(pixels, w, h),
+                    "restore original quad fixture after comparison");
+        }
         if (argc > 1) {
             std::ofstream out(argv[1], std::ios::binary);
             out << "P6\n" << w << ' ' << h << "\n255\n";
@@ -573,6 +636,22 @@ int main(int argc, char **argv) {
         require(std::abs(int((high_center >> 8) & 255) - 57) <= 2 &&
                     std::abs(int((low_center >> 8) & 255) - 198) <= 2,
                 "window vertical offset must use captured pixels behind the enabled edge reserves");
+        // Window capture uses 2D image-warp rows, including the original half.
+        const auto framed_window = pixels;
+        options.compare_original = true;
+        options.compare_mode = 1;
+        require(
+            renderer.draw(options, false) && renderer.readback(pixels, w, h) && pixels == framed_window,
+            "split window capture with stabilization off must preserve both halves of asymmetric framing");
+        options.compare_mode = 2;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h),
+                "side-by-side window capture");
+        const auto letterbox_y = unsigned((h - w / options.aspect) / 2) + 8;
+        require((pixels[letterbox_y * w + 8] & 0xffffff) == 0,
+                "side-by-side window capture must fit complete views without stretching");
+        options.compare_original = false;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h) && pixels == framed_window,
+                "stored comparison layout must not affect normal window capture");
         renderer.source_changed();
         require(!renderer.has_frame(), "window source change must discard pending history");
         std::cout << "Native GPU: window analysis/color, quad composition, resize, subrect bounds, keyed "

@@ -19,6 +19,7 @@ cbuffer Params : register(b0) {
  float4 inputFov, outputFov, correction, focusFov, focusCorrection;
  float4 rect0, rect1, clamp0, clamp1, flags;
  float4 imageRowX, imageRowY, imageMode, mirrorStyle;
+ float4 comparison, originalFocus, originalRowX, originalRowY;
 };
 Texture2D contextImage : register(t0);
 Texture2D focusImage : register(t1);
@@ -56,9 +57,16 @@ float3 mirrorColor(float2 uv,float2 originalUV) {
  return color*(1-edge);
 }
 float4 PS(Varying v):SV_TARGET {
+ bool original=comparison.x>.5 && v.uv.x>=.5;
+ if(comparison.x>1.5) {
+   // Two complete images fitted into half-width panels, without stretching.
+   v.uv=float2(frac(v.uv.x*2), (v.uv.y-.25)*2);
+   if(v.uv.y<0 || v.uv.y>1) return float4(0,0,0,1);
+ }
  if (imageMode.x>.5) {
    float3 at=float3(v.uv,1);
-   float2 uv=float2(dot(imageRowX.xyz,at),dot(imageRowY.xyz,at));
+   float2 uv=original ? float2(dot(originalRowX.xyz,at),dot(originalRowY.xyz,at)) :
+                       float2(dot(imageRowX.xyz,at),dot(imageRowY.xyz,at));
    float2 originalUV=uv;
    if (flags.x>.5) {
      if(any(uv < -imageMode.y)||any(uv > 1+imageMode.y))return float4(0,0,0,1);
@@ -68,7 +76,7 @@ float4 PS(Varying v):SV_TARGET {
    return float4(mirrorColor(uv,originalUV),1);
  }
  float3 targetRay=float3(lerp(outputFov.x,outputFov.y,v.uv.x),lerp(outputFov.z,outputFov.w,v.uv.y),-1);
- float3 ray=rotateQ(correction,targetRay);
+ float3 ray=original ? targetRay : rotateQ(correction,targetRay);
  float2 uv=project(ray,inputFov);
  float2 originalUV=uv;
  bool outside=any(uv<0)||any(uv>1)||ray.z>=-.05;
@@ -79,7 +87,7 @@ float4 PS(Varying v):SV_TARGET {
  else if (outside) return float4(0,0,0,1);
  float4 color=float4(mirrorColor(uv,originalUV),1);
  if (flags.y>.5 && !outside) {
-   float3 focusRay=rotateQ(focusCorrection,targetRay);
+   float3 focusRay=rotateQ(original ? originalFocus : focusCorrection,targetRay);
    float2 focusUV=project(focusRay,focusFov);
    if (focusRay.z<-.05 && all(focusUV>0) && all(focusUV<1)) {
      float2 edge=min(focusUV,1-focusUV)*flags.zw;
@@ -96,6 +104,7 @@ struct Params {
     float input[4], output[4], correction[4], focus[4], focus_correction[4];
     float rect0[4], rect1[4], clamp0[4], clamp1[4], flags[4];
     float image_row_x[4], image_row_y[4], image_mode[4], mirror_style[4];
+    float comparison[4], original_focus[4], original_row_x[4], original_row_y[4];
 };
 void put(float *to, Projection p) {
     to[0] = float(p.left);
@@ -685,6 +694,9 @@ void Renderer::reset() {
     impl_->image_result = {};
     impl_->pending.clear();
 }
+void Renderer::reset_horizon() {
+    impl_->stabilizer.reset_horizon();
+}
 std::wstring Renderer::error() const {
     return impl_->error;
 }
@@ -929,6 +941,9 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
         r.context->PSSetShaderResources(0, 1, &empty);
     } else if (r.frame.view_count) {
         Params p{};
+        const bool paired =
+            options.compare_original && options.compare_mode >= 1 && options.compare_mode <= 2;
+        p.comparison[0] = paired ? float(options.compare_mode) : 0.f;
         p.image_mode[1] =
             float(std::isfinite(options.mirror_limit) ? std::clamp(options.mirror_limit, 0., 50.) / 100 : 0.);
         p.mirror_style[0] =
@@ -943,7 +958,7 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
             settings.output_16_9 = false;
             settings.edge_reserve = sanitize_edge_reserve(options.edge_reserve[std::min(options.eye, 1u)]);
             auto result = r.image_result;
-            if (!options.stabilize)
+            if (!options.stabilize || (options.compare_original && !paired))
                 result.correction = {};
             double source_aspect = double(r.frame.views[0].width) / r.frame.views[0].height;
             if (settings.edge_reserve.enabled) {
@@ -966,17 +981,43 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
                     row[0] *= float(region.right - region.left);
                     row[1] *= float(region.bottom - region.top);
                 }
+            if (paired) {
+                auto original = result;
+                original.correction = {};
+                const auto original_warp =
+                    make_image_warp(r.frame.views[0].width, r.frame.views[0].height, settings, original,
+                                    final_framing ? std::array<double, 4>{region.left, region.right,
+                                                                          region.top, region.bottom}
+                                                  : std::array<double, 4>{0, 1, 0, 1});
+                std::copy(original_warp.row_x.begin(), original_warp.row_x.end(), p.original_row_x);
+                std::copy(original_warp.row_y.begin(), original_warp.row_y.end(), p.original_row_y);
+                if (!final_framing)
+                    for (auto row : {p.original_row_x, p.original_row_y}) {
+                        row[2] += float(row[0] * region.left + row[1] * region.top);
+                        row[0] *= float(region.right - region.left);
+                        row[1] *= float(region.bottom - region.top);
+                    }
+            }
             p.image_mode[0] = 1;
             rect(p.rect0, p.clamp0, r.frame.views[0]);
             p.flags[0] = options.mirror ? 1.f : 0.f;
         } else {
-            const auto composition = r.stabilizer.update(r.frame, options);
+            auto tuning = options;
+            if (paired)
+                tuning.compare_original = false;
+            const auto composition = r.stabilizer.update(r.frame, tuning);
             if (!composition.valid)
                 return r.fail(L"Invalid pose or projection");
             put(p.input, composition.warp.input);
             put(p.output, composition.warp.output);
             put(p.correction, composition.warp.correction);
             put(p.focus_correction, composition.focus_correction);
+            if (paired) {
+                // A redraw of this same frame does not advance pose history.
+                tuning.compare_original = true;
+                const auto original = r.stabilizer.update(r.frame, tuning);
+                put(p.original_focus, original.focus_correction);
+            }
             const auto &focus = r.frame.views[r.frame.view_count - 1];
             std::copy(focus.fov, focus.fov + 4, p.focus);
             rect(p.rect0, p.clamp0, r.frame.views[0]);

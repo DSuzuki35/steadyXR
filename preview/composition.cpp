@@ -97,12 +97,13 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     settings.mirror_edges = options.mirror;
     settings.output_16_9 = false;
     settings.edge_reserve = options.edge_reserve[frame.eye];
+    const bool stabilize = options.stabilize && !options.compare_original;
     const bool final_framing = settings.edge_reserve.enabled ||
                                (std::isfinite(options.vertical_offset) && options.vertical_offset != 0);
     result.warp =
         make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
-                  options.stabilize && !final_framing ? pose.correction : Quat{}, projection(frame.views[0]));
-    if (final_framing && options.stabilize)
+                  stabilize && !final_framing ? pose.correction : Quat{}, projection(frame.views[0]));
+    if (final_framing && stabilize)
         result.warp.correction = pose.correction;
     auto effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
     // Projection poses are expressed in the application's layer space, not
@@ -115,7 +116,7 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
         if (std::abs(source_up_y) > .25)
             horizon_up_sign_ = source_up_y > 0 ? 1 : -1;
     }
-    if (horizon_up_sign_ != 0 && options.stabilize && std::isfinite(options.horizon_lock) &&
+    if (horizon_up_sign_ != 0 && stabilize && std::isfinite(options.horizon_lock) &&
         options.horizon_lock > 0) {
         const auto right = rotate(effective_target, {1, 0, 0}), up = rotate(effective_target, {0, 1, 0});
         const double fade = std::clamp((std::hypot(up.y, right.y) - .05) / .20, 0., 1.);
@@ -156,6 +157,9 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
 void FrameStabilizer::reset() {
     history_.clear();
     previous_ = {};
+    horizon_up_sign_ = 0;
+}
+void FrameStabilizer::reset_horizon() {
     horizon_up_sign_ = 0;
 }
 } // namespace vrst::preview

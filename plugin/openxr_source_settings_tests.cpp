@@ -63,7 +63,8 @@ int main() {
             "[Preview]\nSmoothing=99\nSmoothingTenths=427\nCropTenths=123\nCropLeftTenths="
             "24\nCropRightTenths=35\nCropTopTenths=46\nCropBottomTenths=57\nHorizonTenths="
             "611\nAdaptiveHorizon=0\nMirrorLimitTenths=141\nMirrorSoftnessTenths=753\nOutputWidth="
-            "1280\nOutputHeight=720\nAspectNumerator=4\nAspectDenominator=3\nVerticalOffsetTenths=-675\nEye="
+            "1280\nOutputHeight=720\nCompareMode=2\nAspectNumerator=4\nAspectDenominator="
+            "3\nVerticalOffsetTenths=-675\nEye="
             "1\n[LeftEyeReserve]\nEnabled=1\nLeftTenths=34\nRightTenths=87\nTopTenths=56\nBottomTenths=123\n["
             "RightEyeReserve]\nEnabled=1\nLeftTenths=20\nRightTenths=200\nTopTenths=50\nBottomTenths=50\n["
             "Render]\nEnabled=0\nLeft=29\n";
@@ -73,6 +74,8 @@ int main() {
             f << modern;
         }
         check(vrst_plugin::openxr_import(s, current.wstring(), error), "literal modern INI imports");
+        check(obs_data_get_int(s, "compare_mode") == 2,
+              "saved side-by-side comparison mode imports from the shared Preview key");
         c = vrst_plugin::openxr_settings(s);
         check(c.options.smoothing == 42.7 && c.options.crop == 12.3 && c.options.crop_left == 2.4 &&
                   c.options.crop_right == 3.5 && c.options.crop_top == 4.6 && c.options.crop_bottom == 5.7 &&
@@ -102,6 +105,21 @@ int main() {
                   obs_properties_get(props, "vertical_offset") &&
                   obs_properties_get(props, "mirror_softness"),
               "native properties expose advanced rendering controls");
+        auto *compare = obs_properties_get(props, "compare_mode");
+        check(compare && obs_property_list_item_count(compare) == 3,
+              "native properties expose original, split and side-by-side comparison modes");
+        auto *roundtrip = obs_data_create();
+        c.options.compare_mode = 1;
+        c.options.compare_original = true;
+        vrst_plugin::openxr_store(roundtrip, c);
+        const auto restored = vrst_plugin::openxr_settings(roundtrip);
+        check(restored.options.compare_mode == 1 && !restored.options.compare_original &&
+                  !obs_data_has_user_value(roundtrip, "compare_original"),
+              "comparison layout persists while active comparison always remains transient");
+        obs_data_set_int(roundtrip, "compare_mode", 99);
+        check(vrst_plugin::openxr_settings(roundtrip).options.compare_mode == 2,
+              "unknown comparison mode is bounded before rendering");
+        obs_data_release(roundtrip);
         obs_properties_destroy(props);
         obs_data_release(s);
         // Deliberately retain the tiny isolated fixtures for review.
