@@ -6,7 +6,6 @@
 #include <fstream>
 #include <utility>
 #include <vector>
-#include <wincrypt.h>
 
 namespace vrst::preview {
 namespace {
@@ -55,41 +54,6 @@ bool same_file_contents(const std::filesystem::path &a, const std::filesystem::p
             return false;
     }
     return left.eof() && right.eof();
-}
-bool trusted_legacy_file(const std::filesystem::path &path) {
-    // This released 0.6.1/0.7.0 capture build shares the current IPC format but reads preview.ini.
-    // Read and hash it without loading or executing any DLL from the registered directory.
-    constexpr std::array<BYTE, 32> trusted_sha256{
-        0x66, 0xF1, 0x4B, 0xB5, 0xD7, 0xF9, 0x15, 0xAB, 0xEB, 0xC3, 0x87, 0x8E, 0xDB, 0x8F, 0xD7, 0x24,
-        0x2B, 0xFF, 0x38, 0x33, 0xD5, 0xFC, 0x3A, 0x94, 0xA0, 0x23, 0x1F, 0x9A, 0xCB, 0x86, 0x38, 0x28};
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        return false;
-    HCRYPTPROV provider{};
-    if (!CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
-        return false;
-    HCRYPTHASH hash{};
-    if (!CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)) {
-        CryptReleaseContext(provider, 0);
-        return false;
-    }
-    bool okay = true;
-    std::array<char, 64 * 1024> buffer{};
-    while (input) {
-        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        if (input.gcount() > 0 && !CryptHashData(hash, reinterpret_cast<const BYTE *>(buffer.data()),
-                                                 static_cast<DWORD>(input.gcount()), 0)) {
-            okay = false;
-            break;
-        }
-    }
-    std::array<BYTE, 32> digest{};
-    DWORD size = static_cast<DWORD>(digest.size());
-    okay = okay && input.eof() && CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &size, 0) &&
-           size == digest.size() && digest == trusted_sha256;
-    CryptDestroyHash(hash);
-    CryptReleaseContext(provider, 0);
-    return okay;
 }
 LONG entries(HKEY key, std::vector<Entry> &out) {
     for (DWORD index = 0;; ++index) {
@@ -188,8 +152,7 @@ std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &d
     const auto dll = registered_dll(*entry);
     if (same_file_contents(std::filesystem::path(directory) / capture_dll, dll))
         return capture_settings_path(registered_directory.wstring());
-    if (legacy_entry(*entry) && trusted_legacy_file(dll))
-        return (registered_directory / L"preview.ini").wstring();
+    // IPC v3 requires an explicit upgrade from every older capture DLL.
     return std::nullopt;
 }
 LONG set_layer_connection(const std::wstring &directory, bool enable, const LayerRegistryRoots &roots) {

@@ -8,6 +8,7 @@ struct ID3D11Texture2D;
 
 namespace vrst::preview {
 struct Options {
+    OverlaySelection overlays{};
     double smoothing{40}, crop{10};
     bool mirror{true}, stabilize{true};
     bool compare_original{}; // Transient A/B bypass; keep framing and continue motion history.

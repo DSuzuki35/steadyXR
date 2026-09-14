@@ -20,6 +20,7 @@ cbuffer Params : register(b0) {
  float4 rect0, rect1, clamp0, clamp1, flags;
  float4 imageRowX, imageRowY, imageMode, mirrorStyle;
  float4 comparison, originalFocus, originalRowX, originalRowY;
+ float4 overlayRotation, overlayPosition, overlayShape, overlayMode;
 };
 Texture2D contextImage : register(t0);
 Texture2D focusImage : register(t1);
@@ -99,13 +100,77 @@ float4 PS(Varying v):SV_TARGET {
  return float4(color.rgb,1);
 }
 float4 Downsample(Varying v):SV_TARGET { return contextImage.Sample(linearClamp,v.uv); }
+float4 Overlay(Varying v):SV_TARGET {
+ bool original=comparison.x>.5 && v.uv.x>=.5;
+ if(comparison.x>1.5) {
+   v.uv=float2(frac(v.uv.x*2),(v.uv.y-.25)*2);
+   if(v.uv.y<0 || v.uv.y>1) discard;
+ }
+ float3 ray=float3(lerp(outputFov.x,outputFov.y,v.uv.x),lerp(outputFov.z,outputFov.w,v.uv.y),-1);
+ if(!original) ray=rotateQ(correction,ray);
+ // Pose is already relative to the captured context eye. Transform both the
+ // eye origin and corrected viewing direction into the overlay's local space.
+ float4 inverseRotation=float4(-overlayRotation.xyz,overlayRotation.w);
+ float3 direction=rotateQ(inverseRotation,ray);
+ float3 origin=rotateQ(inverseRotation,-overlayPosition.xyz);
+ float2 uv;
+ if(overlayMode.x<1.5) {
+   if(direction.z>=-.000001) discard;
+   float t=-origin.z/direction.z;
+   if(t<=0) discard;
+   float3 hit=origin+t*direction;
+   uv=float2(hit.x/overlayShape.x+.5,.5-hit.y/overlayShape.y);
+ } else if(overlayMode.x<2.5) {
+   // OpenXR cylinder: inward-facing arc about local Y, centered on -Z.
+   // Height is radius*centralAngle/aspectRatio. Radius zero denotes infinity.
+   float3 hit;
+   if(overlayShape.z==0) {
+     float radial=length(direction.xz);
+     if(radial<.000001) discard;
+     hit=direction/radial;
+   } else {
+     float a=dot(direction.xz,direction.xz);
+     float b=dot(origin.xz,direction.xz);
+     float c=dot(origin.xz,origin.xz)-overlayShape.z*overlayShape.z;
+     float discriminant=b*b-a*c;
+     if(a<.000001 || discriminant<=0) discard;
+     // The exit intersection faces the viewer from inside the cylinder.
+     float t=(-b+sqrt(discriminant))/a;
+     if(t<=0) discard;
+     hit=(origin+t*direction)/overlayShape.z;
+   }
+   uv=float2(atan2(hit.x,-hit.z)/overlayShape.w+.5,
+             .5-hit.y*overlayMode.w/overlayShape.w);
+ } else {
+   if(direction.z>=-.000001) discard;
+   float2 tangent=direction.xy/-direction.z;
+   uv=float2((tangent.x-focusFov.x)/(focusFov.y-focusFov.x),
+             (focusFov.z-tangent.y)/(focusFov.z-focusFov.w));
+ }
+ if(any(uv<0)||any(uv>1)) discard;
+ float4 color=contextImage.Sample(linearClamp,clamp(rect0.xy+uv*rect0.zw,clamp0.xy,clamp0.zw));
+ if(overlayMode.y<.5) color.a=1;
+ else if(overlayMode.z>.5) color.rgb*=color.a;
+ return color;
+}
 )";
 struct Params {
     float input[4], output[4], correction[4], focus[4], focus_correction[4];
     float rect0[4], rect1[4], clamp0[4], clamp1[4], flags[4];
     float image_row_x[4], image_row_y[4], image_mode[4], mirror_style[4];
     float comparison[4], original_focus[4], original_row_x[4], original_row_y[4];
+    float overlay_rotation[4], overlay_position[4], overlay_shape[4], overlay_mode[4];
 };
+constexpr unsigned max_images = 2 + max_overlay_images;
+unsigned image_count(const Frame &f) {
+    return f.view_count + f.overlay_count;
+}
+const View &image_at(const Frame &f, unsigned i) {
+    return i < f.view_count ? f.views[i] : f.overlays[i - f.view_count].image;
+}
+View &image_at(Frame &f, unsigned i) {
+    return i < f.view_count ? f.views[i] : f.overlays[i - f.view_count].image;
+}
 void put(float *to, Projection p) {
     to[0] = float(p.left);
     to[1] = float(p.right);
@@ -173,11 +238,13 @@ struct Renderer::Impl {
     ComPtr<ID3D11VertexShader> vs;
     ComPtr<ID3D11PixelShader> ps;
     ComPtr<ID3D11PixelShader> downsample;
+    ComPtr<ID3D11PixelShader> overlay_shader;
+    ComPtr<ID3D11BlendState> overlay_blend;
     ComPtr<ID3D11Buffer> constants;
     ComPtr<ID3D11SamplerState> sampler;
-    ComPtr<ID3D11Texture2D> local[2], shared[2];
-    ComPtr<IDXGIKeyedMutex> keyed[2];
-    ComPtr<ID3D11ShaderResourceView> srv[2];
+    ComPtr<ID3D11Texture2D> local[max_images], shared[max_images];
+    ComPtr<IDXGIKeyedMutex> keyed[max_images];
+    ComPtr<ID3D11ShaderResourceView> srv[max_images];
     Frame frame{};
     Frame opened{};
     FrameStabilizer stabilizer;
@@ -222,7 +289,7 @@ struct Renderer::Impl {
             context->ClearState();
             context->Flush();
         }
-        for (unsigned i = 0; i < 2; ++i) {
+        for (unsigned i = 0; i < max_images; ++i) {
             srv[i].Reset();
             local[i].Reset();
             keyed[i].Reset();
@@ -235,6 +302,8 @@ struct Renderer::Impl {
         window_mode = false;
         last_window_time = 0;
         downsample.Reset();
+        overlay_shader.Reset();
+        overlay_blend.Reset();
         target.Reset();
         back.Reset();
         output_view.Reset();
@@ -324,6 +393,22 @@ struct Renderer::Impl {
             FAILED(hr = device->CreatePixelShader(small_blob->GetBufferPointer(), small_blob->GetBufferSize(),
                                                   nullptr, &downsample)))
             return fail(L"Analysis shader", hr);
+        ComPtr<ID3DBlob> overlay_blob;
+        hr = D3DCompile(shader, sizeof(shader) - 1, nullptr, nullptr, nullptr, "Overlay", "ps_5_0",
+                        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &overlay_blob, &errors);
+        if (FAILED(hr) ||
+            FAILED(hr = device->CreatePixelShader(overlay_blob->GetBufferPointer(),
+                                                  overlay_blob->GetBufferSize(), nullptr, &overlay_shader)))
+            return fail(L"Overlay shader", hr);
+        D3D11_BLEND_DESC blend{};
+        auto &b = blend.RenderTarget[0];
+        b.BlendEnable = TRUE;
+        b.SrcBlend = b.SrcBlendAlpha = D3D11_BLEND_ONE;
+        b.DestBlend = b.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        b.BlendOp = b.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        b.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        if (FAILED(hr = device->CreateBlendState(&blend, &overlay_blend)))
+            return fail(L"Overlay blending", hr);
         D3D11_BUFFER_DESC cb{};
         cb.ByteWidth = sizeof(Params);
         cb.Usage = D3D11_USAGE_DYNAMIC;
@@ -662,7 +747,7 @@ void Renderer::source_changed() {
     r.image_result = {};
     r.window_mode = false;
     r.last_window_time = 0;
-    for (unsigned i = 0; i < 2; ++i) {
+    for (unsigned i = 0; i < max_images; ++i) {
         r.local[i].Reset();
         r.srv[i].Reset();
         r.shared[i].Reset();
@@ -730,7 +815,7 @@ bool Renderer::consume(Channel &channel, bool require_consumer) {
         r.frame = {};
         r.opened = {};
         r.stabilizer.reset();
-        for (unsigned i = 0; i < 2; ++i) {
+        for (unsigned i = 0; i < max_images; ++i) {
             r.shared[i].Reset();
             r.keyed[i].Reset();
             r.local[i].Reset();
@@ -751,36 +836,46 @@ bool Renderer::consume(Channel &channel, bool require_consumer) {
             return false;
         }
     }
-    bool changed = packet.generation != r.opened.generation || packet.producer_pid != r.opened.producer_pid ||
-                   packet.view_count != r.opened.view_count || packet.session != r.opened.session;
+    bool base_changed = packet.generation != r.opened.generation ||
+                        packet.producer_pid != r.opened.producer_pid ||
+                        packet.view_count != r.opened.view_count || packet.session != r.opened.session;
     for (unsigned i = 0; i < packet.view_count; ++i)
-        changed = changed || packet.views[i].texture_handle != r.opened.views[i].texture_handle;
+        base_changed = base_changed || packet.views[i].texture_handle != r.opened.views[i].texture_handle;
+    bool changed = base_changed || packet.overlay_count != r.opened.overlay_count;
+    const unsigned count = image_count(packet);
+    if (!changed)
+        for (unsigned i = 0; i < count; ++i) {
+            const auto &a = image_at(packet, i), &b = image_at(r.opened, i);
+            changed = changed || a.texture_handle != b.texture_handle || a.width != b.width ||
+                      a.height != b.height || a.format != b.format;
+        }
     if (changed) {
         // Every retained texture has matching retained metadata. If replacement
         // opening or acquisition fails, never draw its predecessor's pose.
         r.frame = {};
         r.opened = {};
-        r.stabilizer.reset();
-        for (unsigned i = 0; i < 2; ++i) {
+        if (base_changed)
+            r.stabilizer.reset();
+        for (unsigned i = 0; i < max_images; ++i) {
             r.shared[i].Reset();
             r.keyed[i].Reset();
             r.local[i].Reset();
             r.srv[i].Reset();
         }
-        for (unsigned i = 0; i < packet.view_count; ++i) {
-            HRESULT hr = r.device->OpenSharedResource(
-                reinterpret_cast<HANDLE>(packet.views[i].texture_handle), IID_PPV_ARGS(&r.shared[i]));
+        for (unsigned i = 0; i < count; ++i) {
+            const auto &v = image_at(packet, i);
+            HRESULT hr = r.device->OpenSharedResource(reinterpret_cast<HANDLE>(v.texture_handle),
+                                                      IID_PPV_ARGS(&r.shared[i]));
             if (FAILED(hr))
                 return recover(L"Open game image", hr);
             D3D11_TEXTURE2D_DESC d{};
             r.shared[i]->GetDesc(&d);
-            if (d.Width != packet.views[i].width || d.Height != packet.views[i].height ||
-                d.Format != packet.views[i].format || d.ArraySize != 1 || d.MipLevels != 1 ||
-                d.SampleDesc.Count != 1)
+            if (d.Width != v.width || d.Height != v.height || d.Format != v.format || d.ArraySize != 1 ||
+                d.MipLevels != 1 || d.SampleDesc.Count != 1)
                 return recover(L"Image format does not match metadata");
             hr = r.shared[i].As(&r.keyed[i]);
-            d.Width = packet.views[i].rect_width;
-            d.Height = packet.views[i].rect_height;
+            d.Width = v.rect_width;
+            d.Height = v.rect_height;
             if (FAILED(hr) || !r.make_local(i, d))
                 return recover(L"GPU image connection", hr);
         }
@@ -788,26 +883,26 @@ bool Renderer::consume(Channel &channel, bool require_consumer) {
     }
     // A runtime may resize its submitted subrect without replacing the shared
     // texture. Resize only the private eye image; do not reset pose history.
-    for (unsigned i = 0; i < packet.view_count; ++i) {
+    for (unsigned i = 0; i < count; ++i) {
+        const auto &v = image_at(packet, i);
         D3D11_TEXTURE2D_DESC d{};
         r.local[i]->GetDesc(&d);
-        if (d.Width != unsigned(packet.views[i].rect_width) ||
-            d.Height != unsigned(packet.views[i].rect_height)) {
+        if (d.Width != unsigned(v.rect_width) || d.Height != unsigned(v.rect_height)) {
             r.frame = {}; // The retained pixels are being replaced, even if acquisition must retry.
-            d.Width = packet.views[i].rect_width;
-            d.Height = packet.views[i].rect_height;
+            d.Width = v.rect_width;
+            d.Height = v.rect_height;
             if (!r.make_local(i, d))
                 return recover(L"Resize private eye image");
         }
     }
     unsigned acquired = 0;
     HRESULT acquisition = S_OK;
-    for (; acquired < packet.view_count; ++acquired) {
+    for (; acquired < count; ++acquired) {
         acquisition = r.keyed[acquired]->AcquireSync(1, 0);
         if (acquisition != S_OK)
             break;
     }
-    if (acquired != packet.view_count) {
+    if (acquired != count) {
         // Keep the published frame pending; acquired views return to reader key.
         for (unsigned i = 0; i < acquired; ++i) {
             const auto hr = r.keyed[i]->ReleaseSync(1);
@@ -818,14 +913,14 @@ bool Renderer::consume(Channel &channel, bool require_consumer) {
             return recover(L"Rebuilding GPU connection", acquisition);
         return false;
     }
-    for (unsigned i = 0; i < packet.view_count; ++i) {
-        const auto &v = packet.views[i];
+    for (unsigned i = 0; i < count; ++i) {
+        const auto &v = image_at(packet, i);
         const D3D11_BOX box{UINT(v.x), UINT(v.y), 0, UINT(v.x + v.rect_width), UINT(v.y + v.rect_height), 1};
         r.context->CopySubresourceRegion(r.local[i].Get(), 0, 0, 0, 0, r.shared[i].Get(), 0, &box);
     }
     r.context->Flush();
     HRESULT release = S_OK;
-    for (unsigned i = 0; i < packet.view_count; ++i) {
+    for (unsigned i = 0; i < count; ++i) {
         auto hr = r.keyed[i]->ReleaseSync(0);
         if (FAILED(hr))
             release = hr;
@@ -834,8 +929,8 @@ bool Renderer::consume(Channel &channel, bool require_consumer) {
         return recover(L"Release GPU image", release);
     s.ready = 0;
     r.frame = packet;
-    for (unsigned i = 0; i < packet.view_count; ++i) {
-        auto &v = r.frame.views[i];
+    for (unsigned i = 0; i < count; ++i) {
+        auto &v = image_at(r.frame, i);
         v.x = v.y = 0;
         v.width = v.rect_width;
         v.height = v.rect_height;
@@ -910,6 +1005,7 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
     }
     const bool black = waiting_text || r.offscreen;
     const float clear[4] = {black ? 0.f : .005f, black ? 0.f : .009f, black ? 0.f : .016f, 1};
+    r.context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
     r.context->ClearRenderTargetView(r.output_target.Get(), clear);
     if (waiting_text) {
         if (!r.make_waiting(waiting_text))
@@ -1061,6 +1157,47 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
         r.context->Draw(3, 0);
         ID3D11ShaderResourceView *empty[2] = {};
         r.context->PSSetShaderResources(0, 2, empty);
+        if (!r.window_mode) {
+            r.context->PSSetShader(r.overlay_shader.Get(), nullptr, 0);
+            r.context->OMSetBlendState(r.overlay_blend.Get(), nullptr, 0xffffffff);
+            for (unsigned i = 0; i < r.frame.overlay_count; ++i) {
+                const auto &overlay = r.frame.overlays[i];
+                if (!overlay_selected(options.overlays, r.frame.producer_pid, r.frame.session, overlay.slot))
+                    continue;
+                auto op = p;
+                std::copy_n(overlay.orientation, 4, op.overlay_rotation);
+                // Normalize within the transport's accepted quaternion tolerance.
+                const float length = std::sqrt(op.overlay_rotation[0] * op.overlay_rotation[0] +
+                                               op.overlay_rotation[1] * op.overlay_rotation[1] +
+                                               op.overlay_rotation[2] * op.overlay_rotation[2] +
+                                               op.overlay_rotation[3] * op.overlay_rotation[3]);
+                for (auto &component : op.overlay_rotation)
+                    component /= length;
+                std::copy_n(overlay.position, 3, op.overlay_position);
+                op.overlay_shape[0] = overlay.width;
+                op.overlay_shape[1] = overlay.height;
+                op.overlay_shape[2] = std::isfinite(overlay.radius) ? overlay.radius : 0;
+                op.overlay_shape[3] = overlay.central_angle;
+                op.overlay_mode[0] = float(overlay.type);
+                op.overlay_mode[1] = (overlay.flags & 1) ? 1.f : 0.f;
+                op.overlay_mode[2] = (overlay.flags & 2) ? 1.f : 0.f;
+                op.overlay_mode[3] = overlay.aspect_ratio;
+                std::copy_n(overlay.image.fov, 4, op.focus);
+                rect(op.rect0, op.clamp0, overlay.image);
+                hr = r.context->Map(r.constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+                if (FAILED(hr)) {
+                    r.context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+                    return r.fail(L"Update overlay parameters", hr);
+                }
+                std::memcpy(mapped.pData, &op, sizeof(op));
+                r.context->Unmap(r.constants.Get(), 0);
+                auto *overlay_view = r.srv[r.frame.view_count + i].Get();
+                r.context->PSSetShaderResources(0, 1, &overlay_view);
+                r.context->Draw(3, 0);
+            }
+            r.context->PSSetShaderResources(0, 2, empty);
+            r.context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+        }
     }
     if (r.offscreen) {
         r.context->OMSetRenderTargets(0, nullptr, nullptr);

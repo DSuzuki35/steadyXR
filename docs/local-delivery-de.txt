@@ -1,36 +1,44 @@
-SteadyXR - Version 0.8.0
+SteadyXR - Version 0.9.0
 
 SINGLE-PC OBS - DIRECT OPENXR SOURCE
-Close OBS, then open Gaming-PC\SteadyXR-0.8.0. Copy its obs-plugins and data
+Close OBS, then open Gaming-PC\SteadyXR-0.9.0. Copy its obs-plugins and data
 folders directly into C:\Program Files\obs-studio on the gaming PC.
 Both folders sit beside SteadyXR.exe, its layer DLL and INI, with no extra
 nesting. The same drop-in folders remain under Stream-PC.
 Restart OBS and add the source
 "SteadyXR OpenXR Capture". Close the standalone SteadyXR preview; the source
 captures and stabilizes directly and does not need a visible preview window.
-Use the source's settings import to select Gaming-PC\SteadyXR-0.8.0\SteadyXR.ini.
+Use the source's settings import to select Gaming-PC\SteadyXR-0.9.0\SteadyXR.ini.
 OBS stores its own settings in the scene collection; the INI stays unchanged.
 Reuse this existing source in other scenes instead of creating another capture.
 The working SteadyXR OpenXR connection must remain enabled. Existing render
 extension settings still apply. OBS and the OpenXR game must use the same GPU.
-No game restart is needed if the compatible layer is already loaded.
+Version 0.9 requires Upgrade connection in the new app and a game restart.
 If no frames arrive, the source shows a black waiting screen. It pauses capture
 when hidden, and follows the same 30-day build validity as the standalone app.
 Game audio remains a separate OBS audio source, as before.
 
 GAMING PC - STANDALONE PREVIEW
 Run Gaming-PC\Start-Preview.cmd after closing the previous preview app.
-The app is in Gaming-PC\SteadyXR-0.8.0: SteadyXR.exe and SteadyXR.ini.
-Your current 0.7 settings are copied unchanged if SteadyXR.ini is missing.
-From a working compatible 0.6/0.7 layer: only restart the preview app;
-iRacing can stay running. The existing registered layer keeps its own deadline.
-Keep previous Preview folders while their compatible OpenXR layer is registered. The new DLL is named SteadyXR-OpenXR.dll; the old working connection is still recognized.
+The app is in Gaming-PC\SteadyXR-0.9.0: SteadyXR.exe and SteadyXR.ini.
+Your current settings are copied unchanged if SteadyXR.ini is missing.
+Version 0.9 uses a new capture format. Click Upgrade connection in the new app,
+then restart iRacing. Older capture DLLs are not compatible with the new format.
+Keep previous Preview folders while their compatible OpenXR layer is registered. The new DLL is named SteadyXR-OpenXR.dll; the previous connection must be upgraded for 0.9.
 For first setup or a pre-0.6 layer: select OpenXR pose capture, click
 Upgrade connection (or Install connection), then restart iRacing once.
 Delivery does not change your registration or runtime automatically.
 Window capture still needs no game restart or connection.
 
-NEW IN 0.8.0 - RESET HORIZON, COMPARISON AND HOTKEYS
+NEW IN 0.9.0 - SELECTABLE OPENXR OVERLAYS
+Overlay layers... in the app and OpenXR overlay layers in OBS provide None,
+All supported and individual checkboxes for detected composition layers.
+Individual choices apply only to the current game session. After a restart,
+select them again. All/None preferences persist. Refresh the list explicitly.
+Quad, cylinder and color projection overlays follow the stabilized image.
+See openxr-overlays.md for injector order and supported format limits.
+
+FROM 0.8.0 - RESET HORIZON, COMPARISON AND HOTKEYS
 Hold the headset approximately upright, then press Reset horizon to refresh
 the preview's upright reference. Smoothing is retained. It does not recenter the HMD.
 A/B shows the selected comparison for twenty seconds: Original, 50/50 split

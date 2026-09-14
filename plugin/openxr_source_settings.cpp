@@ -1,6 +1,8 @@
 #include "openxr_source_settings.hpp"
+#include "../preview/overlay_settings.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 
 namespace vrst_plugin {
@@ -56,6 +58,10 @@ void openxr_defaults(obs_data_t *s) {
     obs_data_set_default_int(s, "output_height", o.output_height);
     obs_data_set_default_int(s, "eye", 0);
     obs_data_set_default_int(s, "compare_mode", 0);
+    obs_data_set_default_int(s, "overlay_mode", 0);
+    obs_data_set_default_int(s, "overlay_mask", 0);
+    obs_data_set_default_int(s, "overlay_producer_pid", 0);
+    obs_data_set_default_string(s, "overlay_session", "0");
     obs_data_set_default_int(s, "fps", 60);
     obs_data_set_default_bool(s, "paused", false);
     for (unsigned eye = 0; eye < 2; ++eye) {
@@ -74,6 +80,15 @@ OpenXRSettings openxr_settings(obs_data_t *s) {
     c.options.output_height = unsigned(number(s, "output_height", 2160, 180, 4320));
     c.options.eye = unsigned(number(s, "eye", 0, 0, 1));
     c.options.compare_mode = unsigned(number(s, "compare_mode", 0, 0, 2));
+    c.options.overlays.mode = unsigned(number(s, "overlay_mode", 0, 0, 2));
+    c.options.overlays.mask = unsigned(obs_data_get_int(s, "overlay_mask")) & 0xffff;
+    c.options.overlays.producer_pid = unsigned(obs_data_get_int(s, "overlay_producer_pid"));
+    const char *session = obs_data_get_string(s, "overlay_session");
+    char *end{};
+    c.options.overlays.session =
+        session && *session >= '0' && *session <= '9' ? std::strtoull(session, &end, 10) : 0;
+    if (end && *end)
+        c.options.overlays.session = 0;
     c.fps = unsigned(number(s, "fps", 60, 30, 90));
     if (c.fps != 30 && c.fps != 60 && c.fps != 90)
         c.fps = 60;
@@ -96,6 +111,10 @@ void openxr_store(obs_data_t *s, const OpenXRSettings &c) {
     obs_data_set_int(s, "output_height", c.options.output_height);
     obs_data_set_int(s, "eye", c.options.eye);
     obs_data_set_int(s, "compare_mode", c.options.compare_mode);
+    obs_data_set_int(s, "overlay_mode", c.options.overlays.mode);
+    obs_data_set_int(s, "overlay_mask", c.options.overlays.mask);
+    obs_data_set_int(s, "overlay_producer_pid", c.options.overlays.producer_pid);
+    obs_data_set_string(s, "overlay_session", std::to_string(c.options.overlays.session).c_str());
     obs_data_set_int(s, "fps", c.fps);
     obs_data_set_bool(s, "paused", c.paused);
     for (unsigned eye = 0; eye < 2; ++eye) {
@@ -159,6 +178,7 @@ bool openxr_import(obs_data_t *s, const std::wstring &path, std::string &error) 
     };
     OpenXRSettings c;
     auto &o = c.options;
+    o.overlays = vrst::preview::read_overlay_settings(path);
     o.smoothing = v(L"SmoothingTenths", v(L"Smoothing", 40, 0, 100) * 10, 0, 1000) / 10.;
     o.crop = v(L"CropTenths", v(L"Crop", 10, 0, 35) * 10, 0, 350) / 10.;
     o.crop_left = v(L"CropLeftTenths", 0, 0, 450) / 10.;

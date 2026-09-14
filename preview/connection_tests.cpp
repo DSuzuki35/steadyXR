@@ -219,10 +219,8 @@ int main(int argc, char **argv) {
                        sizeof(zero));
         const auto trusted_directory = compatible_layer_directory(current.wstring(), key.c_str());
         const auto trusted_settings = compatible_layer_settings_path(current.wstring(), key.c_str());
-        const bool trusted_compatible =
-            trusted_directory && std::filesystem::equivalent(*trusted_directory, trusted) &&
-            trusted_settings && std::filesystem::path(*trusted_settings) == trusted / L"preview.ini";
-        std::cout << "exact trusted legacy capture stays compatible and keeps adjacent preview.ini: "
+        const bool trusted_compatible = !trusted_directory && !trusted_settings;
+        std::cout << "IPC v2 legacy capture requires an explicit connection upgrade: "
                   << trusted_compatible << '\n';
         okay = trusted_compatible && okay;
         RegSetValueExW(machine_handle, trusted_path.c_str(), 0, REG_DWORD,
@@ -230,10 +228,8 @@ int main(int argc, char **argv) {
         RegSetValueExW(handle, current_path.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&zero),
                        sizeof(zero));
         const auto trusted_machine_settings = compatible_layer_settings_path(current.wstring(), scopes);
-        const bool trusted_machine_first =
-            trusted_machine_settings &&
-            std::filesystem::path(*trusted_machine_settings) == trusted / L"preview.ini";
-        std::cout << "trusted legacy machine capture keeps its settings ahead of current user layer: "
+        const bool trusted_machine_first = !trusted_machine_settings;
+        std::cout << "old machine layer cannot be mistaken for IPC v3 through a masked user layer: "
                   << trusted_machine_first << '\n';
         okay = trusted_machine_first && okay;
         RegDeleteValueW(machine_handle, trusted_path.c_str());

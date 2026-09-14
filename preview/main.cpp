@@ -1,8 +1,9 @@
-#define UNICODE
+﻿#define UNICODE
 #define _UNICODE
 #include "advanced.hpp"
 #include "build_expiry.hpp"
 #include "connection.hpp"
+#include "overlays.hpp"
 #include "presets.hpp"
 #include "render_settings.hpp"
 #include "renderer.hpp"
@@ -30,7 +31,7 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127,
               mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130, advanced_id = 131,
               presets_id = 132, layers_id = 133, compare_id = 134, next_preset_id = 135, hotkeys_id = 136,
-              compact_status_id = 137;
+              compact_status_id = 137, overlays_id = 138;
 constexpr int hotkeys_default_id = 2100, hotkeys_alternate_id = 2101, hotkeys_off_id = 2102;
 constexpr int comparison_original_id = 2110, comparison_split_id = 2111, comparison_side_by_side_id = 2112;
 constexpr UINT_PTR save_timer = 4101, comparison_timer = 4102;
@@ -72,6 +73,7 @@ struct App {
     Theme theme;
     AdvancedSettings advanced;
     PresetsDialog presets;
+    OverlayPanel overlays;
     HANDLE layer_editor_process{};
     Channel channel;
     Renderer renderer;
@@ -344,6 +346,7 @@ struct App {
         if (controls)
             KillTimer(controls, save_timer);
         bool saved = write_edge_settings(ini, options);
+        saved = write_overlay_settings(ini, options.overlays) && saved;
         auto write = [&](const wchar_t *key, int value) {
             saved =
                 WritePrivateProfileStringW(L"Preview", key, std::to_wstring(value).c_str(), ini.c_str()) &&
@@ -397,6 +400,7 @@ struct App {
         return saved;
     }
     void read() {
+        options.overlays = read_overlay_settings(ini);
         auto value = [&](const wchar_t *key, int initial, int lo, int hi) {
             return std::clamp(int(GetPrivateProfileIntW(L"Preview", key, initial, ini.c_str())), lo, hi);
         };
@@ -520,6 +524,8 @@ struct App {
         const bool previous_conflict = capture_conflict;
         if (active() && !window_mode && !demo) {
             const bool claimed = channel.heartbeat(selected_eye, rate);
+            if (claimed)
+                channel.select_overlays(options.overlays);
             capture_conflict = !claimed && !channel.owns_consumer();
         } else {
             channel.release_consumer();
@@ -705,6 +711,8 @@ struct App {
         KillTimer(controls, save_timer);
         WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());
         read();
+        if (IsWindow(overlays.window))
+            overlays.refresh();
         register_hotkeys();
         preset_cursor.clear();
         set_tuning(options);
@@ -1097,6 +1105,12 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         case presets_id:
             app->presets.open();
             return 0;
+        case overlays_id:
+            app->overlays.open(app->controls, app->theme, app->channel, app->options.overlays, [] {
+                app->queue_save();
+                app->dirty = true;
+            });
+            return 0;
         case layers_id:
             app->open_layer_editor();
             return 0;
@@ -1277,7 +1291,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    const auto control_title = std::wstring(L"SteadyXR – Preview 0.8.0 | Expires ") + build_expiry_text();
+    const auto control_title = std::wstring(L"SteadyXR – Preview 0.9.0 | Expires ") + build_expiry_text();
     state.controls =
         CreateWindowExW(0, L"HorizonLockControls", control_title.c_str(),
                         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, 100, 100,
@@ -1355,7 +1369,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     child(state.controls, L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 22, 668, 145, 34, comfort_id);
     child(state.controls, L"BUTTON", L"Undo tuning", BS_PUSHBUTTON, 177, 668, 129, 34, undo_comfort_id);
     child(state.controls, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 316, 668, 115, 34, presets_id);
-    child(state.controls, L"BUTTON", L"OpenXR layers…", BS_PUSHBUTTON, 441, 668, 175, 34, layers_id);
+    child(state.controls, L"BUTTON", L"Layer order…", BS_PUSHBUTTON, 441, 668, 175, 34, layers_id);
     child(state.controls, L"STATIC", L"FRAMING / OUTPUT", 0, 655, 18, 360, 28);
     const double trim_values[] = {state.options.crop_left, state.options.crop_right, state.options.crop_top,
                                   state.options.crop_bottom};
@@ -1407,6 +1421,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.auto_fullscreen = child(state.controls, L"BUTTON", L"Start preview in fullscreen", BS_AUTOCHECKBOX,
                                   655, 675, 350, 28, auto_fullscreen_id);
     SendMessageW(state.auto_fullscreen, BM_SETCHECK, state.start_fullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
+    child(state.controls, L"BUTTON", L"Overlay capture…", BS_PUSHBUTTON, 28, 714, 200, 32, overlays_id);
     state.advanced.initialize(
         state.controls, state.theme, state.options, state.render_ini,
         [&] {
@@ -1493,8 +1508,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             MSG msg{};
             while (!state.quit && GetTickCount64() < until) {
                 while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                    if (!state.presets.route(msg) && !state.advanced.route(msg) &&
-                        !IsDialogMessageW(state.controls, &msg)) {
+                    if (!state.overlays.route(msg) && !state.presets.route(msg) &&
+                        !state.advanced.route(msg) && !IsDialogMessageW(state.controls, &msg)) {
                         TranslateMessage(&msg);
                         DispatchMessageW(&msg);
                     }
@@ -1527,6 +1542,53 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         bool interactions_ok = !state.paused && IsWindow(state.comparison) &&
                                IsWindow(GetDlgItem(state.controls, next_preset_id)) &&
                                IsWindow(GetDlgItem(state.controls, hotkeys_id));
+        if (state.channel.lock()) {
+            auto &catalog = state.channel.data()->overlay_catalog;
+            catalog = {};
+            catalog.producer_pid = 4242;
+            catalog.session = 701;
+            catalog.updated_ms = GetTickCount64();
+            catalog.count = 2;
+            catalog.layers[0] = {0, 1, 1, 512, 256};
+            wcscpy_s(catalog.layers[0].label, L"Quad 512 x 256 - slot 1");
+            catalog.layers[1] = {1, 999, 0, 0, 0};
+            wcscpy_s(catalog.layers[1].label, L"Unsupported type 999 - slot 2");
+            state.channel.unlock();
+        } else
+            interactions_ok = false;
+        SendMessageW(state.controls, WM_COMMAND, overlays_id, 0);
+        const auto overlay_window = state.overlays.window;
+        interactions_ok =
+            interactions_ok && IsWindowVisible(overlay_window) && IsWindow(GetDlgItem(overlay_window, 3));
+        SendMessageW(overlay_window, WM_COMMAND, 1, 0);
+        interactions_ok = interactions_ok && state.options.overlays.mode == 1;
+        SendMessageW(overlay_window, WM_COMMAND, 3, 0);
+        SendMessageW(overlay_window, WM_COMMAND, 2, 0);
+        interactions_ok = interactions_ok && state.options.overlays.mode == 0 &&
+                          IsWindowEnabled(GetDlgItem(overlay_window, 100)) &&
+                          !IsWindowEnabled(GetDlgItem(overlay_window, 101));
+        SendDlgItemMessageW(overlay_window, 100, BM_SETCHECK, BST_CHECKED, 0);
+        SendMessageW(overlay_window, WM_COMMAND, 100, 0);
+        interactions_ok = interactions_ok && state.options.overlays.mode == 2 &&
+                          state.options.overlays.mask == 1 && state.options.overlays.producer_pid == 4242 &&
+                          state.options.overlays.session == 701;
+        interactions_ok = save_controls(overlay_window, state.directory + L"\\preview-overlays-test.bmp") &&
+                          interactions_ok;
+        if (state.channel.lock()) {
+            state.channel.data()->overlay_catalog.session = 702;
+            state.channel.unlock();
+        } else
+            interactions_ok = false;
+        SendDlgItemMessageW(overlay_window, 100, BM_SETCHECK, BST_UNCHECKED, 0);
+        SendMessageW(overlay_window, WM_COMMAND, 100, 0);
+        interactions_ok =
+            interactions_ok && state.options.overlays.session == 701 && state.options.overlays.mask == 1;
+        SendMessageW(overlay_window, WM_COMMAND, 2, 0);
+        if (state.channel.lock()) {
+            state.channel.data()->overlay_catalog = {};
+            state.channel.unlock();
+        }
+        SendMessageW(overlay_window, WM_CLOSE, 0, 0);
         // A/B changes only the draw copy, returns at its deadline, and preserves
         // the complete serialized configuration (including framing and presets).
         state.last_received_ms = GetTickCount64();
@@ -1779,6 +1841,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.rate = 90;
         state.options.stabilize = false;
         state.options.compare_mode = 2;
+        state.options.overlays = {2, 0x8021, 4242, 18446744073709551000ull};
         state.options.vertical_offset = -43.2;
         state.options.edge_reserve[0] = {true, 3.4, 8.7, 5.6, 12.3};
         state.source_executable = L"C:\\Preset test\\simulator.exe";
@@ -1802,6 +1865,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         bool preset_ok = stored_snapshot.has_value() && read_render_settings(state.ini).eyes[1].left == 10;
         state.builtin(BuiltinPreset::natural);
         state.options.compare_mode = 0;
+        state.options.overlays = {};
         state.options.crop_left = 42;
         state.options.edge_reserve[0] = {};
         state.options.edge_reserve[1] = {};
@@ -1817,13 +1881,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SetWindowTextW(state.aspect, L"4:3");
         state.apply_output();
         state.save();
+        if (state.channel.lock()) {
+            auto &catalog = state.channel.data()->overlay_catalog;
+            catalog = {};
+            catalog.producer_pid = 4242;
+            catalog.session = 18446744073709551000ull;
+            catalog.updated_ms = GetTickCount64();
+            catalog.count = 3;
+            catalog.layers[0] = {0, 1, 1, 512, 256};
+            catalog.layers[1] = {1, 1, 1, 512, 256};
+            catalog.layers[2] = {5, 1, 1, 512, 256};
+            for (auto &entry : catalog.layers)
+                wcscpy_s(entry.label, L"Preset test quad");
+            state.channel.unlock();
+        } else
+            preset_ok = false;
+        SendMessageW(state.controls, WM_COMMAND, overlays_id, 0);
+        const auto preset_overlay_panel = state.overlays.window;
+        preset_ok =
+            preset_ok && SendDlgItemMessageW(preset_overlay_panel, 100, BM_GETCHECK, 0, 0) == BST_UNCHECKED;
         SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::load_id, 0);
         preset_ok =
             preset_ok && !state.window_mode && state.selected_eye == 1 && state.options.eye == 1 &&
             state.rate == 90 && !state.options.stabilize && !state.start_fullscreen &&
             state.options.compare_mode == 2 && !state.options.compare_original &&
-            state.options.output_width == 1920 && state.options.output_height == 1080 &&
-            state.aspect_numerator == 21 && state.aspect_denominator == 9 && state.options.crop_left == 2 &&
+            state.options.overlays.mode == 2 && state.options.overlays.mask == 0x8021 &&
+            state.options.overlays.producer_pid == 4242 &&
+            state.options.overlays.session == 18446744073709551000ull && state.options.output_width == 1920 &&
+            state.options.output_height == 1080 && state.aspect_numerator == 21 &&
+            state.aspect_denominator == 9 && state.options.crop_left == 2 &&
             state.options.crop_right == 4.5 && state.options.crop_top == 6.7 &&
             state.options.crop_bottom == 8.9 && state.options.vertical_offset == -43.2 &&
             state.options.edge_reserve[0].enabled && state.options.edge_reserve[0].left == 3.4 &&
@@ -1836,6 +1922,45 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             SendMessageW(state.eye, CB_GETCURSEL, 0, 0) == 1 &&
             SendMessageW(state.bypass, BM_GETCHECK, 0, 0) == BST_CHECKED &&
             SendMessageW(GetDlgItem(panel, AdvancedSettings::vertical_id), TBM_GETPOS, 0, 0) == -432;
+        preset_ok = preset_ok &&
+                    SendDlgItemMessageW(preset_overlay_panel, 100, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+                    SendDlgItemMessageW(preset_overlay_panel, 101, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
+                    SendDlgItemMessageW(preset_overlay_panel, 105, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        SendDlgItemMessageW(preset_overlay_panel, 101, BM_SETCHECK, BST_CHECKED, 0);
+        SendMessageW(preset_overlay_panel, WM_COMMAND, 101, 0);
+        preset_ok = preset_ok && state.options.overlays.mask == 0x8023;
+        // A temporarily absent selected layer must survive an unrelated edit.
+        if (state.channel.lock()) {
+            auto &catalog = state.channel.data()->overlay_catalog;
+            catalog.layers[0] = catalog.layers[1];
+            catalog.layers[1] = catalog.layers[2];
+            catalog.count = 2;
+            catalog.updated_ms = GetTickCount64();
+            state.channel.unlock();
+        } else
+            preset_ok = false;
+        SendMessageW(preset_overlay_panel, WM_COMMAND, 3, 0);
+        preset_ok = preset_ok && !IsWindow(GetDlgItem(preset_overlay_panel, 100));
+        SendDlgItemMessageW(preset_overlay_panel, 101, BM_SETCHECK, BST_UNCHECKED, 0);
+        SendMessageW(preset_overlay_panel, WM_COMMAND, 101, 0);
+        preset_ok = preset_ok && state.options.overlays.mask == 0x8021;
+        if (state.channel.lock()) {
+            auto &catalog = state.channel.data()->overlay_catalog;
+            catalog.layers[2] = {0, 1, 1, 512, 256};
+            wcscpy_s(catalog.layers[2].label, L"Returning preset test quad");
+            catalog.count = 3;
+            catalog.updated_ms = GetTickCount64();
+            state.channel.unlock();
+        } else
+            preset_ok = false;
+        SendMessageW(preset_overlay_panel, WM_COMMAND, 3, 0);
+        preset_ok =
+            preset_ok && SendDlgItemMessageW(preset_overlay_panel, 100, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        SendMessageW(preset_overlay_panel, WM_CLOSE, 0, 0);
+        if (state.channel.lock()) {
+            state.channel.data()->overlay_catalog = {};
+            state.channel.unlock();
+        }
         wchar_t retained[64]{};
         GetPrivateProfileStringW(L"FutureSettings", L"RetainMe", L"", retained, 64, state.ini.c_str());
         preset_ok = preset_ok && std::wstring(retained) == L"complete snapshot";
@@ -1941,7 +2066,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 state.quit = true;
                 break;
             }
-            if (!state.presets.route(msg) && !state.advanced.route(msg) &&
+            if (!state.overlays.route(msg) && !state.presets.route(msg) && !state.advanced.route(msg) &&
                 !IsDialogMessageW(state.controls, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);

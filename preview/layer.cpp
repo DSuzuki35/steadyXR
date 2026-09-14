@@ -23,9 +23,17 @@
 #include <unordered_map>
 #include <vector>
 #include <windows.h>
+#ifdef VRST_PREVIEW_TEST_CLOCK
+extern "C" void vrst_preview_test_copy_queued();
+#endif
 
 namespace {
 using namespace vrst::preview;
+inline void record_copy_queued() {
+#ifdef VRST_PREVIEW_TEST_CLOCK
+    vrst_preview_test_copy_queued();
+#endif
+}
 constexpr char layer_name[] = "XR_APILAYER_HORIZONLOCK_preview";
 template <class T> struct Com {
     T *p{};
@@ -72,11 +80,14 @@ struct Instance {
     PROC(CreateSession)
     PROC(DestroySession)
     PROC(LocateViews)
+    PROC(LocateSpace)
     PROC(EnumerateViewConfigurationViews)
     PROC(GetVisibilityMaskKHR)
     PROC(CreateSwapchain)
-    PROC(DestroySwapchain) PROC(EnumerateSwapchainImages) PROC(AcquireSwapchainImage) PROC(WaitSwapchainImage)
-        PROC(ReleaseSwapchainImage) PROC(WaitFrame) PROC(EndFrame) PROC(PollEvent)
+    PROC(DestroySwapchain)
+    PROC(EnumerateSwapchainImages)
+    PROC(AcquireSwapchainImage)
+    PROC(WaitSwapchainImage) PROC(ReleaseSwapchainImage) PROC(WaitFrame) PROC(EndFrame) PROC(PollEvent)
 #undef PROC
 };
 struct Output {
@@ -84,6 +95,8 @@ struct Output {
     Com<IDXGIKeyedMutex> key;
     HANDLE handle{};
     D3D11_TEXTURE2D_DESC desc{};
+    std::uint64_t copied_swapchain{}, copied_revision{};
+    UINT copied_slice{};
 };
 struct Session {
     Instance *instance{};
@@ -98,6 +111,19 @@ struct Session {
     Com<ID3D11DeviceContext> context;
     LUID adapter{};
     std::array<Output, 2> outputs;
+    std::array<Output, max_overlay_layers> overlay_outputs;
+    struct Identity {
+        XrStructureType type{};
+        std::uint64_t swapchain{};
+        unsigned slice{};
+        std::int32_t x{}, y{}, width{}, height{};
+        bool ambiguous{}; // A collision cannot become distinguishable again within this session.
+        bool operator==(const Identity &other) const {
+            return type == other.type && swapchain == other.swapchain && slice == other.slice &&
+                   x == other.x && y == other.y && width == other.width && height == other.height;
+        }
+    };
+    std::vector<Identity> overlay_identities; // Never recycle a slot within this session.
 };
 struct Acquisition {
     std::uint32_t index{};
@@ -110,6 +136,10 @@ struct Swapchain {
     std::deque<Acquisition> acquired;
     Com<ID3D11Texture2D> snapshot, scratch;
     bool snapshot_valid{};
+    bool overlay_seen{};
+    bool released_once{};
+    std::uint64_t identity{};
+    std::uint64_t snapshot_revision{};
 };
 std::uint64_t monotonic_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -121,7 +151,12 @@ std::unordered_map<XrInstance, std::unique_ptr<Instance>> instances;
 std::unordered_map<XrSession, std::unique_ptr<Session>> sessions;
 std::unordered_map<XrSwapchain, std::unique_ptr<Swapchain>> swapchains;
 Channel channel;
-std::uint64_t next_cookie = 1, next_generation = 1;
+std::uint64_t next_cookie = [] {
+    FILETIME time{};
+    GetSystemTimePreciseAsFileTime(&time);
+    return (std::uint64_t(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+}();
+std::uint64_t next_generation = 1, next_swapchain_identity = 1;
 Session *owner{};
 PFN_xrGetInstanceProcAddr global_next{};
 struct ChannelLock {
@@ -163,12 +198,12 @@ void status(Shared &shared, Session &s, std::uint32_t code, const wchar_t *text)
 }
 void invalidate(Session &s) {
     s.outputs = {};
+    s.overlay_outputs = {};
     s.generation = ++next_generation;
     s.connected = false;
     s.limiter.reset();
-    for (auto &item : swapchains)
-        if (item.second->session == &s)
-            item.second->snapshot_valid = false;
+    // Private snapshots retain the last successful release, including STATIC_IMAGE
+    // swapchains that can never be acquired again. Only shared outputs are invalidated.
 }
 // Called only while the shared header mutex is held; never waits for a viewer.
 bool eligible(Session &s, Shared &shared, std::uint64_t now) {
@@ -231,6 +266,7 @@ void release_owner(Session &s) {
     if (lock && channel.data()->producer_pid == GetCurrentProcessId()) {
         channel.data()->ready = 0;
         channel.data()->producer_pid = 0;
+        channel.data()->overlay_catalog = {};
         channel.data()->status_code = 1;
         std::wcsncpy(channel.data()->status, L"OpenXR session ended", 191);
     }
@@ -247,12 +283,24 @@ bool supported_format(std::int64_t format) {
 bool snapshot_before_release(Swapchain &sc) {
     Session &s = *sc.session;
     if (!s.device || !s.context || sc.acquired.empty() || !sc.acquired.front().waited ||
-        !(sc.info.usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT) ||
         (sc.info.createFlags & XR_SWAPCHAIN_CREATE_PROTECTED_CONTENT_BIT) ||
         !supported_format(sc.info.format))
         return false;
     ChannelLock lock;
-    if (!lock || !eligible(s, *channel.data(), GetTickCount64()))
+    const bool static_image = (sc.info.createFlags & XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT) != 0;
+    // Static content may be released before a viewer exists. This is its only legal
+    // capture opportunity; never read a released runtime texture to recover later.
+    bool capture = static_image;
+    if (!capture && lock) {
+        const auto now = GetTickCount64();
+        capture = eligible(s, *channel.data(), now);
+        // Publishing may be throttled or backpressured, but a known overlay can
+        // update only once. Retain that fresh legal release for its next submission.
+        if (!capture && (sc.overlay_seen || !sc.released_once))
+            capture = owner == &s && channel.data()->producer_pid == GetCurrentProcessId() &&
+                      viewer_active(*channel.data(), now);
+    }
+    if (build_expired() || !capture)
         return false;
     const auto index = sc.acquired.front().index;
     if (index >= sc.images.size() || !sc.images[index].texture)
@@ -282,6 +330,7 @@ bool snapshot_before_release(Swapchain &sc) {
     }
     for (UINT slice = 0; slice < src.ArraySize; ++slice) {
         const UINT source_sub = D3D11CalcSubresource(0, slice, src.MipLevels);
+        record_copy_queued();
         if (src.SampleDesc.Count > 1)
             s.context->ResolveSubresource(sc.scratch.p, slice, source, source_sub, desc.Format);
         else
@@ -291,7 +340,7 @@ bool snapshot_before_release(Swapchain &sc) {
     s.context->Flush();
     return true;
 }
-bool prepare_output(Session &s, Output &o, const D3D11_TEXTURE2D_DESC &source) {
+bool prepare_output(Session &s, Output &o, const D3D11_TEXTURE2D_DESC &source, bool base = true) {
     if (o.texture && o.desc.Width == source.Width && o.desc.Height == source.Height &&
         o.desc.Format == source.Format)
         return true;
@@ -312,14 +361,270 @@ bool prepare_output(Session &s, Output &o, const D3D11_TEXTURE2D_DESC &source) {
             o.texture->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void **>(resource.put()))) ||
         FAILED(resource->GetSharedHandle(&o.handle)))
         return false;
-    s.generation = ++next_generation;
+    if (base)
+        s.generation = ++next_generation;
     return true;
+}
+XrQuaternionf multiply(XrQuaternionf a, XrQuaternionf b) {
+    return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+            a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+XrVector3f rotate(XrQuaternionf q, XrVector3f p) {
+    auto r = multiply(multiply(q, {p.x, p.y, p.z, 0}), {-q.x, -q.y, -q.z, q.w});
+    return {r.x, r.y, r.z};
+}
+bool normalized_pose(XrPosef &p) {
+    auto &q = p.orientation;
+    float norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    if (!std::isfinite(norm) || norm < .25f || norm > 4 || !std::isfinite(p.position.x) ||
+        !std::isfinite(p.position.y) || !std::isfinite(p.position.z))
+        return false;
+    const float n = std::sqrt(norm);
+    q.x /= n;
+    q.y /= n;
+    q.z /= n;
+    q.w /= n;
+    return true;
+}
+XrPosef compose(XrPosef a, XrPosef b) {
+    auto p = rotate(a.orientation, b.position);
+    return {multiply(a.orientation, b.orientation),
+            {a.position.x + p.x, a.position.y + p.y, a.position.z + p.z}};
+}
+bool relative_pose(Session &s, XrSpace space, XrSpace base, XrTime time, XrPosef pose, XrPosef eye,
+                   OverlayImage &image) {
+    if (!normalized_pose(pose) || !normalized_pose(eye))
+        return false;
+    if (space != base) {
+        XrSpaceLocation located{XR_TYPE_SPACE_LOCATION};
+        constexpr auto valid = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+        if (!s.instance->LocateSpace || XR_FAILED(s.instance->LocateSpace(space, base, time, &located)) ||
+            (located.locationFlags & valid) != valid || !normalized_pose(located.pose))
+            return false;
+        pose = compose(located.pose, pose);
+    }
+    XrPosef inverse{};
+    inverse.orientation = {-eye.orientation.x, -eye.orientation.y, -eye.orientation.z, eye.orientation.w};
+    inverse.position = rotate(inverse.orientation, {-eye.position.x, -eye.position.y, -eye.position.z});
+    pose = compose(inverse, pose);
+    image.orientation[0] = pose.orientation.x;
+    image.orientation[1] = pose.orientation.y;
+    image.orientation[2] = pose.orientation.z;
+    image.orientation[3] = pose.orientation.w;
+    image.position[0] = pose.position.x;
+    image.position[1] = pose.position.y;
+    image.position[2] = pose.position.z;
+    return true;
+}
+bool subimage_view(Session &s, const XrSwapchainSubImage &sub, View &view, Swapchain *&source) {
+    const auto found = swapchains.find(sub.swapchain);
+    if (found == swapchains.end())
+        return false;
+    auto &sc = *found->second;
+    if (sc.session == &s)
+        sc.overlay_seen = true;
+    if (sc.session != &s || !sc.snapshot_valid || !sc.snapshot || sc.info.faceCount != 1 ||
+        sub.imageArrayIndex >= sc.info.arraySize ||
+        (sc.info.createFlags & XR_SWAPCHAIN_CREATE_PROTECTED_CONTENT_BIT))
+        return false;
+    view.texture_handle = 1;
+    view.width = sc.info.width;
+    view.height = sc.info.height;
+    view.format = std::uint32_t(sc.info.format);
+    view.x = sub.imageRect.offset.x;
+    view.y = sub.imageRect.offset.y;
+    view.rect_width = sub.imageRect.extent.width;
+    view.rect_height = sub.imageRect.extent.height;
+    source = &sc;
+    return valid_view(view);
+}
+bool projection_fov(const XrFovf &fov, View &view) {
+    const float angles[]{fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown};
+    for (unsigned j = 0; j < 4; ++j) {
+        if (!std::isfinite(angles[j]) || std::abs(angles[j]) >= 1.5707963f)
+            return false;
+        view.fov[j] = std::tan(angles[j]);
+    }
+    return true;
+}
+Session::Identity overlay_identity(const XrCompositionLayerBaseHeader &layer) {
+    Session::Identity identity{};
+    identity.type = layer.type;
+    const XrSwapchainSubImage *sub{};
+    if (layer.type == XR_TYPE_COMPOSITION_LAYER_QUAD)
+        sub = &reinterpret_cast<const XrCompositionLayerQuad &>(layer).subImage;
+    else if (layer.type == XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR)
+        sub = &reinterpret_cast<const XrCompositionLayerCylinderKHR &>(layer).subImage;
+    else if (layer.type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+        const auto &projection = reinterpret_cast<const XrCompositionLayerProjection &>(layer);
+        if (projection.views && (projection.viewCount == 2 || projection.viewCount == 4))
+            sub = &projection.views[0].subImage; // Identity remains stable when the captured eye changes.
+    }
+    if (sub) {
+        const auto found = swapchains.find(sub->swapchain);
+        if (found != swapchains.end())
+            identity.swapchain = found->second->identity;
+        identity.slice = sub->imageArrayIndex;
+        identity.x = sub->imageRect.offset.x;
+        identity.y = sub->imageRect.offset.y;
+        identity.width = sub->imageRect.extent.width;
+        identity.height = sub->imageRect.extent.height;
+    }
+    return identity;
+}
+// Enumerate metadata independently of selection. Unknown layers are never cast to
+// extension structures. Identity includes a non-reused swapchain cookie, not a pointer.
+bool collect_overlays(Session &s, Shared &shared, const XrFrameEndInfo &end,
+                      const XrCompositionLayerProjection &primary, unsigned eye, Frame &frame,
+                      Swapchain **sources, UINT *slices, Output **outputs) {
+    OverlayCatalog catalog{};
+    catalog.producer_pid = GetCurrentProcessId();
+    catalog.session = s.cookie;
+    catalog.updated_ms = GetTickCount64();
+    std::vector<Session::Identity> seen;
+    bool limited = end.layerCount > 256, skipped_primary = false;
+    for (unsigned i = 0; i < std::min(end.layerCount, 256u) && end.layers; ++i) {
+        const auto *layer = end.layers[i];
+        if (!layer)
+            continue;
+        if (!skipped_primary && layer == reinterpret_cast<const XrCompositionLayerBaseHeader *>(&primary)) {
+            skipped_primary = true;
+            continue;
+        }
+        OverlayImage image{};
+        const XrSwapchainSubImage *sub{};
+        XrPosef pose{{0, 0, 0, 1}, {}};
+        XrEyeVisibility visibility = XR_EYE_VISIBILITY_BOTH;
+        const wchar_t *name = L"Unsupported OpenXR type";
+        bool metadata = true;
+        if (layer->type == XR_TYPE_COMPOSITION_LAYER_QUAD) {
+            const auto &q = *reinterpret_cast<const XrCompositionLayerQuad *>(layer);
+            image.type = 1;
+            name = L"Quad";
+            sub = &q.subImage;
+            pose = q.pose;
+            visibility = q.eyeVisibility;
+            image.width = q.size.width;
+            image.height = q.size.height;
+        } else if (layer->type == XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR) {
+            const auto &c = *reinterpret_cast<const XrCompositionLayerCylinderKHR *>(layer);
+            image.type = 2;
+            name = L"Cylinder";
+            sub = &c.subImage;
+            pose = c.pose;
+            visibility = c.eyeVisibility;
+            image.radius = c.radius;
+            image.central_angle = c.centralAngle;
+            image.aspect_ratio = c.aspectRatio;
+        } else if (layer->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+            const auto &p = *reinterpret_cast<const XrCompositionLayerProjection *>(layer);
+            image.type = 3;
+            name = p.viewCount == 4 ? L"Projection (context only)" : L"Projection";
+            if (!p.views || (p.viewCount != 2 && p.viewCount != 4))
+                metadata = false;
+            else {
+                // Quad-view context indices remain left=0/right=1; focus views are not a separate overlay.
+                const auto &v = p.views[eye];
+                sub = &v.subImage;
+                pose = v.pose;
+                metadata = projection_fov(v.fov, image.image);
+            }
+        }
+        const auto key = overlay_identity(*layer);
+        if (std::find(seen.begin(), seen.end(), key) != seen.end())
+            continue; // One disabled catalog entry represents indistinguishable submissions.
+        bool ambiguous = false;
+        for (unsigned j = i + 1; j < std::min(end.layerCount, 256u); ++j)
+            if (end.layers[j] && overlay_identity(*end.layers[j]) == key)
+                ambiguous = true;
+        seen.push_back(key);
+        unsigned slot = 0;
+        for (; slot < s.overlay_identities.size(); ++slot) {
+            const auto &known = s.overlay_identities[slot];
+            if (known == key)
+                break;
+        }
+        if (slot == s.overlay_identities.size()) {
+            if (slot == max_overlay_layers) {
+                limited = true;
+                continue;
+            }
+            s.overlay_identities.push_back(key);
+        }
+        if (ambiguous)
+            s.overlay_identities[slot].ambiguous = true;
+        image.slot = slot;
+        auto &info = catalog.layers[catalog.count++];
+        info.slot = slot;
+        info.type = image.type;
+        if (sub) {
+            info.width = std::uint32_t(std::max(0, sub->imageRect.extent.width));
+            info.height = std::uint32_t(std::max(0, sub->imageRect.extent.height));
+        }
+        const bool visible = visibility == XR_EYE_VISIBILITY_BOTH ||
+                             (eye == 0 && visibility == XR_EYE_VISIBILITY_LEFT) ||
+                             (eye == 1 && visibility == XR_EYE_VISIBILITY_RIGHT);
+        Swapchain *source{};
+        const wchar_t *reason = L"";
+        if (!skipped_primary)
+            reason = L"behind game projection";
+        else if (s.overlay_identities[slot].ambiguous)
+            reason = L"ambiguous shared image";
+        else if (!image.type)
+            reason = L"unsupported layer type";
+        else if (layer->next)
+            reason = L"unsupported layer extension chain";
+        else if (!metadata || !sub)
+            reason = L"unsupported view metadata";
+        else if (!subimage_view(s, *sub, image.image, source))
+            reason = L"image unavailable or unsupported";
+        else {
+            image.flags =
+                ((layer->layerFlags & XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT) ? 1u : 0u) |
+                ((layer->layerFlags & XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT) ? 2u : 0u);
+            // Catalog discovery does not require tracking or issue xrLocateSpace calls.
+            info.supported = valid_overlay(image) ? 1u : 0u;
+            if (!info.supported)
+                reason = L"invalid geometry";
+        }
+        const bool selected =
+            overlay_selected(shared.overlay_selection, catalog.producer_pid, s.cookie, slot);
+        if (info.supported && visible && selected) {
+            if (frame.overlay_count == max_overlay_images) {
+                limited = true;
+                reason = L"8-image capture limit";
+            } else if (!relative_pose(s, layer->space, primary.space, end.displayTime, pose,
+                                      primary.views[eye].pose, image))
+                reason = L"space pose unavailable";
+            else {
+                std::copy(std::begin(image.orientation), std::end(image.orientation),
+                          image.image.orientation);
+                if (valid_overlay(image)) {
+                    const auto n = frame.overlay_count++;
+                    frame.overlays[n] = image;
+                    sources[n] = source;
+                    slices[n] = sub->imageArrayIndex;
+                    outputs[n] = &s.overlay_outputs[slot];
+                } else
+                    reason = L"invalid relative pose";
+            }
+        } else if (info.supported && !visible)
+            reason = L"other eye";
+        std::swprintf(info.label, 128, L"%ls %ux%u [%u]%ls%ls", name, info.width, info.height, slot + 1,
+                      *reason ? L" - " : L"", reason);
+    }
+    shared.overlay_catalog = catalog;
+    return limited;
 }
 void publish(Session &s, const XrFrameEndInfo &end) {
     ChannelLock lock;
     if (!lock || !eligible(s, *channel.data(), GetTickCount64()))
         return;
     Shared &shared = *channel.data();
+    shared.overlay_catalog = {};
+    shared.overlay_catalog.producer_pid = GetCurrentProcessId();
+    shared.overlay_catalog.session = s.cookie;
+    shared.overlay_catalog.updated_ms = GetTickCount64();
     const XrCompositionLayerProjection *projection{};
     for (std::uint32_t i = 0; i < end.layerCount && end.layers; ++i)
         if (end.layers[i] && end.layers[i]->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
@@ -345,8 +650,11 @@ void publish(Session &s, const XrFrameEndInfo &end) {
     }
     s.space = projection->space;
     frame.reference_epoch = s.epoch;
-    Swapchain *sources[2]{};
-    UINT slices[2]{};
+    Swapchain *sources[2 + max_overlay_images]{};
+    UINT slices[2 + max_overlay_images]{};
+    Output *outputs[2 + max_overlay_images]{&s.outputs[0], &s.outputs[1]};
+    const bool overlay_limited = collect_overlays(s, shared, end, *projection, eye, frame, sources + count,
+                                                  slices + count, outputs + count);
     // Validate every selected view before allocating, locking or copying a frame.
     for (unsigned i = 0; i < count; ++i) {
         const auto &xr = projection->views[eye + i * 2];
@@ -383,18 +691,21 @@ void publish(Session &s, const XrFrameEndInfo &end) {
             return;
         }
     }
-    for (unsigned i = 0; i < count; ++i) {
+    const unsigned total = count + frame.overlay_count;
+    if (overlay_limited)
+        status(shared, s, 0, L"Capturing OpenXR views; overlay limit (16 slots / 8 images)");
+    for (unsigned i = 0; i < total; ++i) {
         D3D11_TEXTURE2D_DESC desc{};
         sources[i]->snapshot->GetDesc(&desc);
-        if (!prepare_output(s, s.outputs[i], desc)) {
+        if (!prepare_output(s, *outputs[i], desc, i < count)) {
             status(shared, s, 5, L"Unable to create shared preview textures");
             return;
         }
     }
     unsigned acquired = 0;
     bool reset_needed = false;
-    for (; acquired < count; ++acquired) {
-        auto &o = s.outputs[acquired];
+    for (; acquired < total; ++acquired) {
+        auto &o = *outputs[acquired];
         HRESULT hr = o.key->AcquireSync(0, 0);
         // ready is zero under the header mutex: key 1 can only be a discarded unread frame.
         if (hr == WAIT_TIMEOUT)
@@ -404,28 +715,42 @@ void publish(Session &s, const XrFrameEndInfo &end) {
             break;
         }
     }
-    if (acquired != count) {
+    if (acquired != total) {
         for (unsigned i = 0; i < acquired; ++i)
-            if (FAILED(s.outputs[i].key->ReleaseSync(0)))
+            if (FAILED(outputs[i]->key->ReleaseSync(0)))
                 reset_needed = true;
         if (reset_needed)
             invalidate(s);
         ++shared.dropped_frames;
         return;
     }
-    for (unsigned i = 0; i < count; ++i) {
-        auto &o = s.outputs[i];
-        s.context->CopySubresourceRegion(o.texture.p, 0, 0, 0, 0, sources[i]->snapshot.p, slices[i], nullptr);
-        frame.views[i].texture_handle = reinterpret_cast<std::uint64_t>(o.handle);
+    for (unsigned i = 0; i < total; ++i) {
+        auto &o = *outputs[i];
+        const auto &source = *sources[i];
+        // The consumer reads shared images without modifying them. Reused overlay
+        // snapshots only need ownership transfer; base-view copying is unchanged.
+        if (i < count || o.copied_swapchain != source.identity ||
+            o.copied_revision != source.snapshot_revision || o.copied_slice != slices[i]) {
+            record_copy_queued();
+            s.context->CopySubresourceRegion(o.texture.p, 0, 0, 0, 0, source.snapshot.p, slices[i], nullptr);
+        }
+        auto &view = i < count ? frame.views[i] : frame.overlays[i - count].image;
+        view.texture_handle = reinterpret_cast<std::uint64_t>(o.handle);
     }
     s.context->Flush();
     bool released = true;
-    for (unsigned i = 0; i < count; ++i)
-        if (FAILED(s.outputs[i].key->ReleaseSync(1)))
+    for (unsigned i = 0; i < total; ++i)
+        if (FAILED(outputs[i]->key->ReleaseSync(1)))
             released = false;
     if (!released) {
         invalidate(s);
         return;
+    }
+    // Commit cache state only after every copy was submitted and every key released.
+    for (unsigned i = count; i < total; ++i) {
+        outputs[i]->copied_swapchain = sources[i]->identity;
+        outputs[i]->copied_revision = sources[i]->snapshot_revision;
+        outputs[i]->copied_slice = slices[i];
     }
     frame.generation = s.generation;
     frame.sequence = ++s.sequence;
@@ -610,10 +935,11 @@ XrResult XRAPI_CALL layer_create_swapchain(XrSession handle, const XrSwapchainCr
         try {
             auto sc = std::make_unique<Swapchain>();
             sc->session = &s;
+            sc->identity = next_swapchain_identity++;
             sc->info = *info;
             sc->info.next = nullptr;
             if (s.device && supported_format(info->format) &&
-                (info->usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT)) {
+                !(info->createFlags & XR_SWAPCHAIN_CREATE_PROTECTED_CONTENT_BIT)) {
                 uint32_t n{};
                 if (XR_SUCCEEDED(s.instance->EnumerateSwapchainImages(*out, 0, &n, nullptr)) && n &&
                     n <= 256) {
@@ -698,11 +1024,13 @@ XrResult XRAPI_CALL layer_release(XrSwapchain handle, const XrSwapchainImageRele
     }
     auto result = sc.session->instance->ReleaseSwapchainImage(handle, info);
     if (XR_SUCCEEDED(result)) {
+        sc.released_once = true;
         if (!sc.acquired.empty())
             sc.acquired.pop_front();
         sc.snapshot_valid = captured;
         if (captured) {
             std::swap(sc.snapshot, sc.scratch);
+            ++sc.snapshot_revision;
         }
     } else
         sc.snapshot_valid = false;
@@ -787,11 +1115,13 @@ XrResult XRAPI_CALL layer_gipa(XrInstance handle, const char *name, PFN_xrVoidFu
     HOOK("xrCreateSwapchain", layer_create_swapchain)
     HOOK("xrDestroySwapchain", layer_destroy_swapchain)
     HOOK("xrAcquireSwapchainImage", layer_acquire)
-    HOOK("xrWaitSwapchainImage", layer_wait_image) HOOK("xrReleaseSwapchainImage", layer_release)
-        HOOK("xrWaitFrame", layer_wait_frame) HOOK("xrEndFrame", layer_end_frame)
-            HOOK("xrPollEvent", layer_poll)
+    HOOK("xrWaitSwapchainImage", layer_wait_image)
+    HOOK("xrReleaseSwapchainImage", layer_release)
+    HOOK("xrWaitFrame", layer_wait_frame)
+    HOOK("xrEndFrame", layer_end_frame)
+    HOOK("xrPollEvent", layer_poll)
 #undef HOOK
-                auto it = instances.find(handle);
+    auto it = instances.find(handle);
     auto next = it == instances.end() ? global_next : it->second->gipa;
     if (next)
         return next(handle, name, out);
@@ -849,15 +1179,21 @@ XrResult XRAPI_CALL layer_create_instance(const XrInstanceCreateInfo *info, cons
         LOAD(CreateSession)
         LOAD(DestroySession)
         LOAD(LocateViews)
+        LOAD(LocateSpace)
         LOAD(EnumerateViewConfigurationViews)
         LOAD(GetVisibilityMaskKHR)
         LOAD(CreateSwapchain)
-        LOAD(DestroySwapchain) LOAD(EnumerateSwapchainImages) LOAD(AcquireSwapchainImage)
-            LOAD(WaitSwapchainImage) LOAD(ReleaseSwapchainImage) LOAD(WaitFrame) LOAD(EndFrame)
-                LOAD(PollEvent)
+        LOAD(DestroySwapchain)
+        LOAD(EnumerateSwapchainImages)
+        LOAD(AcquireSwapchainImage)
+        LOAD(WaitSwapchainImage)
+        LOAD(ReleaseSwapchainImage)
+        LOAD(WaitFrame)
+        LOAD(EndFrame)
+        LOAD(PollEvent)
 #undef LOAD
-                    MultiByteToWideChar(CP_UTF8, 0, info->applicationInfo.applicationName, -1,
-                                        instance->application, 128);
+        MultiByteToWideChar(CP_UTF8, 0, info->applicationInfo.applicationName, -1, instance->application,
+                            128);
         global_next = instance->gipa;
         instances[*out] = std::move(instance);
     } catch (...) {

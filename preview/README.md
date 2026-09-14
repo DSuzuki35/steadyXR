@@ -1,4 +1,4 @@
-# SteadyXR Preview 0.8.0
+# SteadyXR Preview 0.9.0
 
 Version **0.8.0** adds **Reset horizon**, global hotkeys, a temporary **20-second A/B comparison**, and compact capture/FPS feedback in the controls. The OBS drop-in folders now sit directly beside the standalone app in the delivered version folder. Existing settings and presets remain supported.
 
@@ -12,15 +12,19 @@ When no new frame arrives for two seconds, the output becomes a plain black scre
 
 Standalone gaming-PC preview with OpenXR pose stabilization or existing-window capture. Preview stabilization affects only the stream output. Optional render extension asks the game to render a wider eye projection; the runtime receives that actual projection for correct headset composition. No OBS or video encoder is required on the gaming PC.
 
-## Upgrade from a working OpenXR preview
+## Upgrade to 0.9.0
 
-Close only the previous preview app, then run **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in Gaming-PC/SteadyXR-0.8.0. The previous viewer's settings, including 0.7 tuning, are copied unchanged into SteadyXR.ini when it has no settings yet. A preview.ini copied beside the new EXE is also migrated once on startup; an existing SteadyXR.ini takes precedence. OpenXR mode and previous tuning are retained; new settings use their defaults.
+Close the previous app and start **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in **Gaming-PC/SteadyXR-0.9.0** and inherits your previous SteadyXR.ini unchanged when its own INI is missing.
 
-For OBS on the same PC, close OBS and copy **obs-plugins** and **data** directly from Gaming-PC/SteadyXR-0.8.0 into **C:\Program Files\obs-studio**. These are the same folders supplied under Stream-PC. They need no additional folder nesting. The complete ZIP also includes both folders beside the app under `preview`. The delivery root includes OBS-OpenXR-Guide.md with source setup details.
+**The OpenXR connection must be upgraded for 0.9.0.** Its overlay-capable capture format is incompatible with older capture DLLs. Use **Upgrade connection** (or **Install connection**) in the new app, then restart the OpenXR game. Delivery itself never changes registrations or restarts anything. Existing-window capture needs neither connection setup nor a game restart. Keep older directories until their layer is unregistered.
 
-**Upgrading from a working compatible 0.6 or 0.7 preview:** only restart the preview app. SteadyXR reuses an enabled registered layer when its DLL is byte-identical to the bundled layer, or matches the exact SHA-256 of the previously delivered compatible 0.6/0.7 capture DLL. Unknown modified binaries still require upgrading the connection. Keep the old preview directory: its registered DLL and adjacent render settings are still used. Explicit render saves and preset loads update that actual settings destination, so changed render expansion takes effect on the next game launch.
+For OBS, close OBS and copy **obs-plugins** and **data** from Gaming-PC/SteadyXR-0.9.0 directly into **C:\Program Files\obs-studio**. The same folders remain under Stream-PC and beside the app under preview in the ZIP. OBS uses the upgraded OpenXR layer without a running standalone app. Keep one active consumer: close/hide the standalone output while using OBS.
 
-**First setup or upgrading from before 0.6:** select OpenXR pose capture and click **Upgrade connection** (or **Install connection**), then restart iRacing once. This enables the current Horizon Lock layer and disables older Horizon Lock registrations for this Windows user; it leaves other API layers and the active runtime alone. Delivery itself never changes registration or restarts anything. Window capture needs no connection or game restart.
+## Additional OpenXR overlays
+
+Open **Overlay layers…** to inspect layers detected from the current game. None is the default. All supported includes future supported layers; individual checkboxes capture only the selected slots in this specific game session. The choices are included in complete presets, but a restarted game requires individual layers to be selected again. This avoids silently substituting a different overlay. Refresh the list after opening or closing an overlay. Layer labels describe type and dimensions, not an inferred program name.
+
+Selected overlays use their own submitted geometry, positions and transparency and follow the stabilized game view, including 20-second A/B comparisons. No separate CPU video capture or encoder is used. Extra texture copying and drawing has a cost proportional to selected image sizes. See the packaged **docs/openxr-overlays.md** in the complete ZIP or the repository guide for setup, call order and format limits.
 
 ## Build validity
 

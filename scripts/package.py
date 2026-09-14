@@ -13,7 +13,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
 p.add_argument('--openxr', type=Path, help='Include the standalone preview and its pinned OpenXR source headers')
-p.add_argument('--version', default='0.8.0')
+p.add_argument('--version', default='0.9.0')
 p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
 stage = root / 'dist' / f'SteadyXR-{a.version}-Windows-x64'
@@ -47,7 +47,7 @@ copy(output(Path('plugin/vr-stabilizer.dll')), 'obs-install/obs-plugins/64bit/vr
 for item in (root / 'plugin/data').rglob('*'):
     if item.is_file():
         copy(item, Path('obs-install/data/obs-plugins/vr-stabilizer') / item.relative_to(root / 'plugin/data'))
-for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'Start-Delay-Check.cmd', 'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1', 'docs/obs-openxr-source.md']:
+for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'Start-Delay-Check.cmd', 'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1', 'docs/obs-openxr-source.md', 'docs/openxr-overlays.md']:
     copy(root / name, name)
 copy(a.openvr / 'LICENSE', 'licenses/OpenVR-LICENSE.txt')
 if a.openxr:
@@ -149,6 +149,7 @@ if a.delivery_dir:
         shutil.copy2(stage / 'preview/README.md', delivery / 'Gaming-PC/Preview-Anleitung.md')
     shutil.copy2(root / 'docs/local-delivery-de.txt', delivery / 'LIESMICH.txt')
     shutil.copy2(root / 'docs/obs-openxr-source.md', delivery / 'OBS-OpenXR-Guide.md')
+    shutil.copy2(root / 'docs/openxr-overlays.md', delivery / 'openxr-overlays.md')
     print(f'Ready-to-use files: {delivery}')
 print(archive)
 print(f'{archive.stat().st_size:,} bytes; {len(checks)} files; ZIP integrity passed')

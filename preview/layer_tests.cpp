@@ -20,6 +20,10 @@
 #include <vector>
 #include <windows.h>
 using namespace vrst::preview;
+std::uint64_t gpu_copies{};
+extern "C" void vrst_preview_test_copy_queued() {
+    ++gpu_copies;
+}
 extern "C" XrResult XRAPI_CALL xrNegotiateLoaderApiLayerInterface(const XrNegotiateLoaderInfo *, const char *,
                                                                   XrNegotiateApiLayerRequest *);
 #define CHECK(x)                                                                                             \
@@ -46,6 +50,16 @@ XrResult release_result = XR_SUCCESS, end_result = XR_SUCCESS;
 bool check_runtime_progress{};
 PFN_xrGetInstanceProcAddr layer_lookup{};
 int release_calls{}, end_calls{};
+int locate_space_calls{};
+bool valid_space = true;
+XrResult XRAPI_CALL fake_locate_space(XrSpace space, XrSpace base, XrTime time, XrSpaceLocation *out) {
+    CHECK(space == reinterpret_cast<XrSpace>(91) && base == XR_NULL_HANDLE && time == 123456);
+    ++locate_space_calls;
+    out->locationFlags =
+        valid_space ? XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT : 0;
+    out->pose = {{0, 0, 0, 1}, {2, 0, 0}};
+    return XR_SUCCESS;
+}
 XrSwapchainCreateInfo swap_info{};
 bool reference_event{};
 XrResult view_result = XR_SUCCESS, mask_result = XR_SUCCESS;
@@ -125,50 +139,6 @@ XrResult XRAPI_CALL fake_mask(XrSession, XrViewConfigurationType type, uint32_t 
         mask->indices[i] = i;
     }
     return XR_SUCCESS;
-}
-std::uint64_t gpu_copies{};
-using CopyRegion = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, ID3D11Resource *, UINT, UINT, UINT, UINT,
-                                             ID3D11Resource *, UINT, const D3D11_BOX *);
-using CopyWhole = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, ID3D11Resource *, ID3D11Resource *);
-using Resolve = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, ID3D11Resource *, UINT, ID3D11Resource *,
-                                          UINT, DXGI_FORMAT);
-CopyRegion original_region{};
-CopyWhole original_whole{};
-Resolve original_resolve{};
-void STDMETHODCALLTYPE count_region(ID3D11DeviceContext *c, ID3D11Resource *d, UINT ds, UINT x, UINT y,
-                                    UINT z, ID3D11Resource *s, UINT ss, const D3D11_BOX *b) {
-    ++gpu_copies;
-    original_region(c, d, ds, x, y, z, s, ss, b);
-}
-void STDMETHODCALLTYPE count_whole(ID3D11DeviceContext *c, ID3D11Resource *d, ID3D11Resource *s) {
-    ++gpu_copies;
-    original_whole(c, d, s);
-}
-void STDMETHODCALLTYPE count_resolve(ID3D11DeviceContext *c, ID3D11Resource *d, UINT ds, ID3D11Resource *s,
-                                     UINT ss, DXGI_FORMAT f) {
-    ++gpu_copies;
-    original_resolve(c, d, ds, s, ss, f);
-}
-void *replace_slot(unsigned index, void *fn) {
-    auto **table = *reinterpret_cast<void ***>(context);
-    DWORD old{};
-    CHECK(VirtualProtect(table + index, sizeof(void *), PAGE_READWRITE, &old));
-    auto *previous = table[index];
-    table[index] = fn;
-    DWORD ignored{};
-    CHECK(VirtualProtect(table + index, sizeof(void *), old, &ignored));
-    return previous;
-}
-// Slots are the published ID3D11DeviceContext COM ABI, not private layer hooks.
-void instrument() {
-    original_region = reinterpret_cast<CopyRegion>(replace_slot(46, reinterpret_cast<void *>(count_region)));
-    original_whole = reinterpret_cast<CopyWhole>(replace_slot(47, reinterpret_cast<void *>(count_whole)));
-    original_resolve = reinterpret_cast<Resolve>(replace_slot(57, reinterpret_cast<void *>(count_resolve)));
-}
-void uninstrument() {
-    replace_slot(46, reinterpret_cast<void *>(original_region));
-    replace_slot(47, reinterpret_cast<void *>(original_whole));
-    replace_slot(57, reinterpret_cast<void *>(original_resolve));
 }
 void paint(float r, float g, float b) {
     D3D11_TEXTURE2D_DESC d{};
@@ -294,6 +264,7 @@ XrResult XRAPI_CALL fake_gipa(XrInstance, const char *name, PFN_xrVoidFunction *
     }
     ENTRY("xrDestroyInstance", fake_destroy_instance)
     ENTRY("xrLocateViews", fake_locate)
+    ENTRY("xrLocateSpace", fake_locate_space)
     ENTRY("xrEnumerateViewConfigurationViews", fake_view_sizes)
     ENTRY("xrGetVisibilityMaskKHR", fake_mask)
     ENTRY("xrCreateSession", fake_create_session)
@@ -301,9 +272,11 @@ XrResult XRAPI_CALL fake_gipa(XrInstance, const char *name, PFN_xrVoidFunction *
     ENTRY("xrCreateSwapchain", fake_create_swapchain)
     ENTRY("xrDestroySwapchain", fake_destroy_swapchain)
     ENTRY("xrEnumerateSwapchainImages", fake_enumerate)
-    ENTRY("xrAcquireSwapchainImage", fake_acquire) ENTRY("xrWaitSwapchainImage", fake_wait_image)
-        ENTRY("xrReleaseSwapchainImage", fake_release) ENTRY("xrWaitFrame", fake_wait_frame)
-            ENTRY("xrEndFrame", fake_end) ENTRY("xrPollEvent", fake_poll) *out = nullptr;
+    ENTRY("xrAcquireSwapchainImage", fake_acquire)
+    ENTRY("xrWaitSwapchainImage", fake_wait_image)
+    ENTRY("xrReleaseSwapchainImage", fake_release)
+    ENTRY("xrWaitFrame", fake_wait_frame)
+    ENTRY("xrEndFrame", fake_end) ENTRY("xrPollEvent", fake_poll) *out = nullptr;
     return XR_ERROR_FUNCTION_UNSUPPORTED;
 }
 template <class T> T fn(PFN_xrGetInstanceProcAddr g, const char *name) {
@@ -795,7 +768,6 @@ int main(int argc, char **) {
     CHECK(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
                                       D3D11_SDK_VERSION, &device, &level, &context)));
     make_texture();
-    instrument();
     CHECK(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
                                       D3D11_SDK_VERSION, &reader_device, &level, &reader_context)));
     XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};
@@ -832,6 +804,8 @@ int main(int argc, char **) {
     end.layers = layers;
     submitted = &end;
     bool renew_heartbeat = true, mutex_busy = false;
+    unsigned extra_reuses = 0;
+    bool paint_green = false;
     auto frame = [&](bool expected) {
         Sleep(20);
         if (!mutex_busy) {
@@ -848,7 +822,7 @@ int main(int argc, char **) {
         XrFrameState state{XR_TYPE_FRAME_STATE};
         CHECK(fn<PFN_xrWaitFrame>(g, "xrWaitFrame")(session, &wait, &state) == XR_SUCCESS);
         CHECK(state.predictedDisplayTime == 123456);
-        paint(1, 0, 0);
+        paint(paint_green ? 0.f : 1.f, paint_green ? 1.f : 0.f, 0);
         uint32_t index = 99;
         XrSwapchainImageAcquireInfo ac{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         CHECK(fn<PFN_xrAcquireSwapchainImage>(g, "xrAcquireSwapchainImage")(swapchain, &ac, &index) ==
@@ -940,6 +914,274 @@ int main(int argc, char **) {
     check_pixels(viewer.data()->frame.views[1], true);
     viewer.data()->ready = 0;
     viewer.unlock();
+    // Additional composition layers are discoverable while None is selected, and retain
+    // slot identities across visibility changes. The same runtime image is safe to reuse.
+    XrCompositionLayerQuad overlay{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    overlay.subImage = views[1].subImage;
+    overlay.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    overlay.pose = {{0, 0, 0, 1}, {0, 0, -2}};
+    overlay.size = {1, .5f};
+    overlay.layerFlags =
+        XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+    XrCompositionLayerCylinderKHR cylinder{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+    cylinder.subImage = views[1].subImage;
+    cylinder.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    cylinder.pose.orientation.w = 1;
+    cylinder.radius = 2;
+    cylinder.centralAngle = 1;
+    cylinder.aspectRatio = 2;
+    XrCompositionLayerProjection extra = projection;
+    XrCompositionLayerBaseHeader unsupported{};
+    unsupported.type = XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR;
+    const XrCompositionLayerBaseHeader *overlay_layers[]{
+        layers[0], reinterpret_cast<XrCompositionLayerBaseHeader *>(&overlay),
+        reinterpret_cast<XrCompositionLayerBaseHeader *>(&cylinder),
+        reinterpret_cast<XrCompositionLayerBaseHeader *>(&extra), &unsupported};
+    end.layers = overlay_layers;
+    end.layerCount = 5;
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->overlay_catalog.count == 4);
+    CHECK(viewer.data()->overlay_catalog.layers[3].supported == 0);
+    CHECK(viewer.data()->frame.overlay_count == 0);
+    viewer.data()->ready = 0;
+    viewer.data()->overlay_selection.mode = 1;
+    viewer.unlock();
+    frame(true);
+    CHECK(viewer.lock());
+    auto with_overlays = viewer.data()->frame;
+    CHECK(with_overlays.overlay_count == 3);
+    CHECK(with_overlays.overlays[0].type == 1 && with_overlays.overlays[0].flags == 3);
+    CHECK(with_overlays.overlays[1].type == 2 && with_overlays.overlays[1].radius == 2);
+    CHECK(with_overlays.overlays[2].type == 3 &&
+          with_overlays.overlays[2].image.fov[1] == with_overlays.views[0].fov[1]);
+    CHECK(with_overlays.overlays[0].position[2] == -2);
+    CHECK(locate_space_calls == 0);
+    for (unsigned i = 0; i < with_overlays.overlay_count; ++i)
+        check_pixels(with_overlays.overlays[i].image, true);
+    const auto stable_generation = with_overlays.generation;
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    // A busy overlay must roll back already-acquired base keys without partial publication.
+    ID3D11Texture2D *busy_overlay{};
+    CHECK(SUCCEEDED(reader_device->OpenSharedResource(
+        reinterpret_cast<HANDLE>(with_overlays.overlays[0].image.texture_handle), __uuidof(ID3D11Texture2D),
+        reinterpret_cast<void **>(&busy_overlay))));
+    IDXGIKeyedMutex *busy_key{};
+    CHECK(SUCCEEDED(
+        busy_overlay->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void **>(&busy_key))));
+    CHECK(busy_key->AcquireSync(0, 0) == S_OK);
+    frame(false);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.sequence == with_overlays.sequence);
+    viewer.unlock();
+    CHECK(SUCCEEDED(busy_key->ReleaseSync(0)));
+    busy_key->Release();
+    busy_overlay->Release();
+    overlay.space = reinterpret_cast<XrSpace>(91);
+    overlay.eyeVisibility = XR_EYE_VISIBILITY_LEFT; // viewer is right eye
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 2);
+    CHECK(viewer.data()->frame.overlays[0].slot == 1);
+    CHECK(viewer.data()->frame.generation == stable_generation);
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    overlay.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 3);
+    CHECK(viewer.data()->frame.overlays[0].slot == 0);
+    CHECK(viewer.data()->frame.overlays[0].position[0] == 2);
+    CHECK(locate_space_calls > 0);
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    valid_space = false;
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 2);
+    CHECK(std::wcsstr(viewer.data()->overlay_catalog.layers[0].label, L"space pose unavailable"));
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    valid_space = true;
+    // Eye inverse includes both translation and rotation, including a canted context eye.
+    views[1].pose = {{0, 0, 1, 0}, {1, 0, 0}};
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(std::abs(viewer.data()->frame.overlays[0].position[0] + 1) < 1e-6f);
+    CHECK(std::abs(viewer.data()->frame.overlays[0].orientation[2] + 1) < 1e-6f);
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    views[1].pose = {{0, 0, 0, 1}, {0, 0, 0}};
+    CHECK(viewer.lock());
+    viewer.data()->overlay_selection = {2, 2, GetCurrentProcessId(), with_overlays.session};
+    viewer.unlock();
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 1 && viewer.data()->frame.overlays[0].slot == 1);
+    viewer.data()->ready = 0;
+    viewer.data()->overlay_selection = {};
+    viewer.unlock();
+    // Atlas rectangles/slices remain distinct when an earlier quad disappears.
+    XrCompositionLayerQuad atlas_second = overlay;
+    atlas_second.subImage.imageRect = {{0, 0}, {1, 1}};
+    const XrCompositionLayerBaseHeader *atlas_layers[]{
+        layers[0], overlay_layers[1], reinterpret_cast<XrCompositionLayerBaseHeader *>(&atlas_second)};
+    end.layers = atlas_layers;
+    end.layerCount = 3;
+    CHECK(viewer.lock());
+    viewer.data()->overlay_selection.mode = 1;
+    viewer.unlock();
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 2);
+    auto atlas_selected = viewer.data()->frame.overlays[0].slot;
+    auto atlas_other = viewer.data()->frame.overlays[1].slot;
+    CHECK(atlas_selected != atlas_other);
+    viewer.data()->ready = 0;
+    viewer.data()->overlay_selection = {2, 1u << atlas_selected, GetCurrentProcessId(),
+                                        with_overlays.session};
+    viewer.unlock();
+    atlas_layers[1] = atlas_layers[2];
+    end.layerCount = 2;
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 0);
+    CHECK(viewer.data()->overlay_catalog.layers[0].slot == atlas_other);
+    viewer.data()->ready = 0;
+    viewer.data()->overlay_selection.mode = 1;
+    viewer.unlock();
+    atlas_layers[1] = overlay_layers[1];
+    end.layerCount = 3;
+    atlas_second.subImage.imageRect = overlay.subImage.imageRect;
+    atlas_second.subImage.imageArrayIndex = 0;
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 2); // Same rectangle, different array slice.
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    atlas_second.subImage.imageArrayIndex = overlay.subImage.imageArrayIndex;
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 0); // Indistinguishable quads fail closed.
+    CHECK(viewer.data()->overlay_catalog.count == 1 &&
+          viewer.data()->overlay_catalog.layers[0].supported == 0);
+    CHECK(std::wcsstr(viewer.data()->overlay_catalog.layers[0].label, L"ambiguous shared image"));
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    atlas_layers[1] = atlas_layers[2];
+    end.layerCount = 2;
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 0 && viewer.data()->overlay_catalog.layers[0].supported == 0);
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    // A new unambiguous subimage has a new selection identity.
+    overlay.subImage.imageRect.offset.x = 2;
+    end.layers = overlay_layers;
+    end.layerCount = 5;
+    frame(true);
+    frame(true); // Releases a fresh update while the previous frame still owns ready=1.
+    CHECK(viewer.lock());
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    Sleep(20);
+    CHECK(fn<PFN_xrEndFrame>(g, "xrEndFrame")(session, &end) == XR_SUCCESS);
+    ++extra_reuses;
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->ready == 1 && viewer.data()->frame.overlay_count == 3);
+    check_pixels(viewer.data()->frame.overlays[0].image, true);
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    // Unchanged overlays need no repeated producer shared-texture copy. Base copies remain.
+    auto overlay_copy_start = gpu_copies;
+    Sleep(20);
+    CHECK(fn<PFN_xrEndFrame>(g, "xrEndFrame")(session, &end) == XR_SUCCESS);
+    ++extra_reuses;
+    if (gpu_copies - overlay_copy_start != 2)
+        std::fprintf(stderr, "Repeated frame copies: expected 2 base, observed %llu total\n",
+                     static_cast<unsigned long long>(gpu_copies - overlay_copy_start));
+    CHECK(gpu_copies - overlay_copy_start == 2);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->ready == 1 && viewer.data()->frame.overlay_count == 3);
+    for (unsigned i = 0; i < 3; ++i)
+        check_pixels(viewer.data()->frame.overlays[i].image, true);
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    // A successful new release changes pixels and requires all three overlay copies.
+    paint_green = true;
+    overlay_copy_start = gpu_copies;
+    frame(true);
+    CHECK(gpu_copies - overlay_copy_start == 7); // 2 snapshot slices + 2 base + 3 overlay.
+    CHECK(viewer.lock());
+    for (unsigned i = 0; i < 3; ++i)
+        check_pixels(viewer.data()->frame.overlays[i].image, false);
+    viewer.data()->ready = 2;
+    viewer.unlock();
+    // Consumer recovery recreates outputs and must copy even cached content.
+    overlay_copy_start = gpu_copies;
+    Sleep(20);
+    CHECK(fn<PFN_xrEndFrame>(g, "xrEndFrame")(session, &end) == XR_SUCCESS);
+    ++extra_reuses;
+    CHECK(gpu_copies - overlay_copy_start == 5);
+    CHECK(viewer.lock());
+    for (unsigned i = 0; i < 3; ++i)
+        check_pixels(viewer.data()->frame.overlays[i].image, false);
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    paint_green = false;
+    const XrCompositionLayerBaseHeader *underlay_layers[]{overlay_layers[1], layers[0], overlay_layers[2],
+                                                          overlay_layers[3], overlay_layers[4]};
+    end.layers = underlay_layers;
+    CHECK(viewer.lock());
+    viewer.data()->overlay_selection.mode = 1;
+    viewer.unlock();
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 2);
+    CHECK(viewer.data()->overlay_catalog.layers[0].supported == 0);
+    CHECK(std::wcsstr(viewer.data()->overlay_catalog.layers[0].label, L"behind game projection"));
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    // Overflow is visible and bounded; previously assigned identities are never reassigned.
+    XrCompositionLayerQuad many_quads[20];
+    const XrCompositionLayerBaseHeader *many_layers[21]{layers[0]};
+    for (unsigned i = 0; i < 20; ++i) {
+        many_quads[i] = overlay;
+        many_quads[i].subImage.imageRect = {{int(i % 8), int(i / 8)}, {1, 1}};
+        many_layers[i + 1] = reinterpret_cast<XrCompositionLayerBaseHeader *>(&many_quads[i]);
+    }
+    end.layers = many_layers;
+    end.layerCount = 21;
+    CHECK(viewer.lock());
+    viewer.data()->overlay_selection.mode = 1;
+    viewer.unlock();
+    frame(true);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->frame.overlay_count == 8);
+    CHECK(viewer.data()->overlay_catalog.count <= 16);
+    CHECK(std::wcsstr(viewer.data()->status, L"overlay limit"));
+    viewer.data()->ready = 0;
+    viewer.data()->overlay_selection = {};
+    viewer.unlock();
+    end.layers = overlay_layers;
+    end.layerCount = 5;
+    views[1].subImage.imageRect.offset.x = -1;
+    frame(false);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->overlay_catalog.count == 4); // Inventory refreshes despite unusable base subrect.
+    viewer.unlock();
+    views[1].subImage.imageRect.offset.x = 1;
+    end.layerCount = 0;
+    frame(false);
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->overlay_catalog.count == 0);
+    viewer.unlock();
+    end.layers = layers;
+    end.layerCount = 1;
+    // Subsequent legacy zero-copy tests use a base-only swapchain again.
+    CHECK(fn<PFN_xrDestroySwapchain>(g, "xrDestroySwapchain")(swapchain) == XR_SUCCESS);
+    CHECK(fn<PFN_xrCreateSwapchain>(g, "xrCreateSwapchain")(session, &sc, &swapchain) == XR_SUCCESS);
     release_result = XR_ERROR_RUNTIME_FAILURE;
     frame(false);
     release_result = XR_SUCCESS;
@@ -1087,7 +1329,68 @@ int main(int argc, char **) {
     check_pixels(viewer.data()->frame.views[0], true);
     viewer.data()->ready = 0;
     viewer.unlock();
+    // An as-yet undiscovered sparse overlay's first release also survives backpressure.
+    frame(true);
+    CHECK(fn<PFN_xrDestroySwapchain>(g, "xrDestroySwapchain")(swapchain) == XR_SUCCESS);
+    CHECK(fn<PFN_xrCreateSwapchain>(g, "xrCreateSwapchain")(session, &sc, &swapchain) == XR_SUCCESS);
+    frame(true);
+    CHECK(viewer.lock());
+    viewer.data()->ready = 0;
+    viewer.data()->overlay_selection.mode = 1;
+    viewer.unlock();
+    end.layers = overlay_layers;
+    end.layerCount = 5;
+    Sleep(20);
+    CHECK(fn<PFN_xrEndFrame>(g, "xrEndFrame")(session, &end) == XR_SUCCESS);
+    ++extra_reuses;
+    CHECK(viewer.lock());
+    CHECK(viewer.data()->ready == 1 && viewer.data()->frame.overlay_count == 3);
+    check_pixels(viewer.data()->frame.overlays[0].image, true);
+    viewer.data()->ready = 0;
+    viewer.unlock();
+    end.layers = layers;
+    end.layerCount = 1;
     CHECK(fn<PFN_xrDestroySession>(g, "xrDestroySession")(session) == XR_SUCCESS);
+    // Static images released while paused remain available after claim and texture reset,
+    // without reacquiring or rereading the blue image now owned by the fake runtime.
+    CHECK(fn<PFN_xrCreateSession>(g, "xrCreateSession")(instance, &si, &session) == XR_SUCCESS);
+    sc.createFlags = XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT;
+    sc.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+    CHECK(fn<PFN_xrCreateSwapchain>(g, "xrCreateSwapchain")(session, &sc, &swapchain) == XR_SUCCESS);
+    CHECK(viewer.lock());
+    viewer.data()->paused = 1;
+    viewer.unlock();
+    frame(false);
+    for (unsigned reuse = 0; reuse < 3; ++reuse) {
+        CHECK(viewer.lock());
+        viewer.data()->paused = 0;
+        viewer.data()->ready = reuse == 2 ? 2 : 0;
+        viewer.data()->heartbeat_ms = GetTickCount64();
+        viewer.data()->overlay_selection.mode = 1;
+        viewer.unlock();
+        end.layers = overlay_layers;
+        end.layerCount = 5;
+        Sleep(20);
+        const auto static_copy_start = gpu_copies;
+        CHECK(fn<PFN_xrEndFrame>(g, "xrEndFrame")(session, &end) == XR_SUCCESS);
+        CHECK(gpu_copies - static_copy_start == (reuse == 1 ? 1u : 4u));
+        ++extra_reuses;
+        CHECK(viewer.lock());
+        CHECK(viewer.data()->ready == 1 && viewer.data()->frame.overlay_count == 3);
+        check_pixels(viewer.data()->frame.views[0], true);
+        for (unsigned i = 0; i < 3; ++i)
+            check_pixels(viewer.data()->frame.overlays[i].image, true);
+        viewer.data()->ready = 0;
+        viewer.unlock();
+    }
+    CHECK(fn<PFN_xrDestroySession>(g, "xrDestroySession")(session) == XR_SUCCESS);
+    sc.createFlags = 0;
+    sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    end.layers = layers;
+    end.layerCount = 1;
+    CHECK(viewer.lock());
+    viewer.data()->overlay_selection = {};
+    viewer.unlock();
     si.next = &binding;
     CHECK(fn<PFN_xrCreateSession>(g, "xrCreateSession")(instance, &si, &session) == XR_SUCCESS);
     sc.format = DXGI_FORMAT_D32_FLOAT;
@@ -1112,8 +1415,8 @@ int main(int argc, char **) {
     CHECK(g(instance, "xrNonexistentTestFunction", &missing) == XR_ERROR_FUNCTION_UNSUPPORTED);
     CHECK(!missing);
     CHECK(fn<PFN_xrDestroyInstance>(g, "xrDestroyInstance")(instance) == XR_SUCCESS);
-    CHECK(release_calls + 1 == end_calls);
-    uninstrument();
+    CHECK(release_calls + 1 + int(extra_reuses) == end_calls);
+
     runtime_texture->Release();
     reader_context->Release();
     reader_device->Release();
@@ -1128,6 +1431,8 @@ int main(int argc, char **) {
         "transport validation; before-release pixels; quad/array/rect; unchanged calls/results; "
         "pause; backpressure; failed release; invalid bounds; reference epoch; MSAA stereo; producer "
         "exclusivity; zero-copy inactive/paused/backpressure/rate-limit; stale reconnect; "
-        "discarded-key recovery; lock contention; reused submission; recreated/unsupported session");
+        "discarded-key recovery; lock contention; reused submission; recreated/unsupported session; "
+        "overlay None/All/Selected catalog; quad/cylinder/projection; eye visibility; relative spaces; "
+        "overlay busy rollback; stable generations; capacity; static inactive release/reconnect");
     return 0;
 }

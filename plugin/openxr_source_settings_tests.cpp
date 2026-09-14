@@ -1,3 +1,4 @@
+#include "../preview/overlay_settings.hpp"
 #include "openxr_source_settings.hpp"
 #include <filesystem>
 #include <fstream>
@@ -22,6 +23,38 @@ int main() {
                   c.options.stabilize && c.options.smoothing == 40 && c.options.crop == 10 &&
                   c.options.mirror && c.options.eye == 0 && c.options.aspect == 16. / 9.,
               "native source defaults");
+        check(c.options.overlays.mode == 0, "overlay capture defaults to None");
+        c.options.overlays = {2, 0x8005, 1234, 18446744073709551000ull};
+        vrst_plugin::openxr_store(s, c);
+        auto restored_overlay = vrst_plugin::openxr_settings(s).options.overlays;
+        check(restored_overlay.mode == 2 && restored_overlay.mask == 0x8005 &&
+                  restored_overlay.producer_pid == 1234 &&
+                  restored_overlay.session == 18446744073709551000ull,
+              "OBS overlay selection preserves 64-bit session without floating-point loss");
+        const auto overlay_ini = dir / "overlay-selection.ini";
+        check(vrst::preview::write_overlay_settings(overlay_ini.wstring(), restored_overlay),
+              "writes overlay INI selection");
+        std::string overlay_error;
+        check(vrst_plugin::openxr_import(s, overlay_ini.wstring(), overlay_error),
+              "imports overlay selection INI");
+        restored_overlay = vrst_plugin::openxr_settings(s).options.overlays;
+        check(restored_overlay.mode == 2 && restored_overlay.mask == 0x8005 &&
+                  restored_overlay.producer_pid == 1234 &&
+                  restored_overlay.session == 18446744073709551000ull,
+              "shared INI and OBS import preserve the complete selection snapshot");
+        vrst::preview::OverlayCatalog scope{};
+        scope.producer_pid = 1234;
+        scope.session = restored_overlay.session;
+        check(vrst::preview::overlay_scope_matches(restored_overlay, scope),
+              "saved overlay selection matches its producer session");
+        ++scope.session;
+        check(!vrst::preview::overlay_scope_matches(restored_overlay, scope),
+              "game restart invalidates saved individual selection");
+        --scope.session;
+        ++scope.producer_pid;
+        check(!vrst::preview::overlay_scope_matches(restored_overlay, scope),
+              "another producer cannot inherit individual selection");
+        vrst_plugin::openxr_defaults(s);
         obs_data_set_double(s, "smoothing", std::numeric_limits<double>::quiet_NaN());
         obs_data_set_double(s, "crop", -23);
         obs_data_set_double(s, "mirror_limit", 999);

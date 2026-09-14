@@ -16,20 +16,20 @@ class PackageTests(unittest.TestCase):
         self.root = Path(self.fixture.name)
         self.delivery = self.root / 'delivery'
         self.gaming = self.delivery / 'Gaming-PC'
-        self.viewer = self.gaming / 'SteadyXR-0.8.0'
-        self.previous = self.gaming / 'SteadyXR-0.7.0' / 'SteadyXR.ini'
+        self.viewer = self.gaming / 'SteadyXR-0.9.0'
+        self.previous = self.gaming / 'SteadyXR-0.8.0' / 'SteadyXR.ini'
         self.settings = b'[Preview]\r\nMode=OpenXR\r\nCropLeft=0.173\r\nFutureKey=keep me\r\n'
         self.write(self.previous, self.settings)
         self.write(self.gaming / 'Start-Preview.cmd',
-                   b'@start "" "%~dp0SteadyXR-0.7.0\\SteadyXR.exe"\r\n')
-        self.write(self.delivery / 'SteadyXR-0.7.0-Windows-x64.zip', b'previous release')
+                   b'@start "" "%~dp0SteadyXR-0.8.0\\SteadyXR.exe"\r\n')
+        self.write(self.delivery / 'SteadyXR-0.8.0-Windows-x64.zip', b'previous release')
         required = [
             'AGENTS.md', 'CMakeLists.txt', '.clang-format', '.gitignore', 'LICENSE',
             'README.md', 'THIRD-PARTY-NOTICES.md', 'TODO.md',
             'Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd',
             'Start-Delay-Check.cmd', 'Start-Preview.cmd', 'Start-Layer-Editor.cmd',
             'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1',
-            'docs/obs-openxr-source.md', 'docs/local-delivery-de.txt',
+            'docs/obs-openxr-source.md', 'docs/openxr-overlays.md', 'docs/local-delivery-de.txt',
             'preview/README.md', 'preview/assets/SteadyXR.ico',
             'preview/assets/SteadyXR.png', 'preview/layers/LayerEditor.ps1',
             'preview/layers/RegistryStore.cs', 'preview/main.cpp',
@@ -59,7 +59,7 @@ class PackageTests(unittest.TestCase):
     def package(self):
         result = subprocess.run([
             sys.executable, str(self.root / 'scripts/package.py'),
-            '--build', str(self.root / 'build'), '--version', '0.8.0',
+            '--build', str(self.root / 'build'), '--version', '0.9.0',
             '--openvr', str(self.root / 'openvr'), '--openxr', str(self.root / 'openxr'),
             '--delivery-dir', str(self.delivery),
         ], capture_output=True, text=True, check=False)
@@ -80,9 +80,9 @@ class PackageTests(unittest.TestCase):
         self.assertTrue((self.viewer / 'SteadyXR.exe').is_file())
         self.assertTrue((self.viewer / 'SteadyXR-OpenXR.dll').is_file())
         self.assertFalse((self.viewer / 'obs-install').exists())
-        archive = self.delivery / 'SteadyXR-0.8.0-Windows-x64.zip'
+        archive = self.delivery / 'SteadyXR-0.9.0-Windows-x64.zip'
         with zipfile.ZipFile(archive) as binary:
-            prefix = 'SteadyXR-0.8.0-Windows-x64/'
+            prefix = 'SteadyXR-0.9.0-Windows-x64/'
             self.assertEqual(binary.read(prefix + 'preview/obs-plugins/64bit/vr-stabilizer.dll'),
                              b'plugin/vr-stabilizer.dll')
             self.assertEqual(binary.read(prefix + 'preview/data/obs-plugins/vr-stabilizer/stabilize.effect'),
@@ -91,9 +91,9 @@ class PackageTests(unittest.TestCase):
             for line in binary.read(prefix + 'SHA256SUMS.txt').decode('ascii').splitlines():
                 expected, name = line.split('  ', 1)
                 self.assertEqual(hashlib.sha256(binary.read(prefix + name)).hexdigest(), expected)
-        source_archive = self.delivery / 'SteadyXR-0.8.0-Source.zip'
+        source_archive = self.delivery / 'SteadyXR-0.9.0-Source.zip'
         with zipfile.ZipFile(source_archive) as source:
-            prefix = 'SteadyXR-0.8.0-Source/'
+            prefix = 'SteadyXR-0.9.0-Source/'
             for name in ('scripts/package.py', 'scripts/preview_delivery.py',
                          'scripts/package_tests.py', 'preview/main.cpp', 'plugin/openxr_source.cpp',
                          'third_party/openxr/include/openxr/openxr.h'):
@@ -107,25 +107,25 @@ class PackageTests(unittest.TestCase):
         self.package()
         self.assertEqual((self.viewer / 'SteadyXR.ini').read_bytes(), self.settings)
         self.assertEqual(self.previous.read_bytes(), self.settings)
-        self.assertIn('SteadyXR-0.8.0\\SteadyXR.exe',
+        self.assertIn('SteadyXR-0.9.0\\SteadyXR.exe',
                       (self.gaming / 'Start-Preview.cmd').read_text())
-        self.assertIn('SteadyXR-0.8.0\\layers\\LayerEditor.ps1',
+        self.assertIn('SteadyXR-0.9.0\\layers\\LayerEditor.ps1',
                       (self.gaming / 'Start-Layer-Editor.cmd').read_text())
         latest = b'[Preview]\r\nMode=OpenXR\r\nCropLeft=0.227\r\nFutureKey=latest tuning\r\n'
         (self.viewer / 'SteadyXR.ini').write_bytes(latest)
-        binary_name = 'SteadyXR-0.8.0-Windows-x64.zip'
+        binary_name = 'SteadyXR-0.9.0-Windows-x64.zip'
         previous_archive = (self.delivery / binary_name).read_bytes()
         self.write(self.root / 'build/plugin/vr-stabilizer.dll', b'corrected plugin')
         self.package()
         self.assertEqual((self.viewer / 'SteadyXR.ini').read_bytes(), latest)
         self.assertEqual(self.previous.read_bytes(), self.settings)
-        self.assertEqual((self.delivery / 'SteadyXR-0.7.0-Windows-x64.zip').read_bytes(),
+        self.assertEqual((self.delivery / 'SteadyXR-0.8.0-Windows-x64.zip').read_bytes(),
                          b'previous release')
-        backups = list((self.delivery / 'Previous-packages').glob('SteadyXR-0.8.0-*'))
+        backups = list((self.delivery / 'Previous-packages').glob('SteadyXR-0.9.0-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual((backups[0] / binary_name).read_bytes(), previous_archive)
-        self.assertTrue((backups[0] / 'SteadyXR-0.8.0-Source.zip').is_file())
-        self.assertTrue((backups[0] / 'SteadyXR-0.8.0-Source.zip.sha256').is_file())
+        self.assertTrue((backups[0] / 'SteadyXR-0.9.0-Source.zip').is_file())
+        self.assertTrue((backups[0] / 'SteadyXR-0.9.0-Source.zip.sha256').is_file())
         self.assertTrue((backups[0] / (binary_name + '.sha256')).is_file())
 
 

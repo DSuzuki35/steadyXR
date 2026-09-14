@@ -1,5 +1,6 @@
 #include "openxr_source.hpp"
 #include "../preview/build_expiry.hpp"
+#include "../preview/overlay_settings.hpp"
 #include "openxr_source_settings.hpp"
 #include <array>
 #include <atomic>
@@ -270,6 +271,8 @@ void tick(void *data, float) {
     if (requested && !s.channel.data())
         s.channel.open(true, s.channel_name);
     const bool claimed = requested && s.channel.heartbeat(c.options.eye, c.fps);
+    if (claimed)
+        s.channel.select_overlays(c.options.overlays);
     // heartbeat's zero-timeout mutex probe can fail while our existing claim
     // remains valid. Skip consumption that tick without resetting pose history.
     const bool owned = requested && (claimed || s.channel.owns_consumer());
@@ -544,12 +547,158 @@ bool action_button(obs_properties_t *properties, obs_property_t *property, void 
         }
     return false;
 }
+void overlay_properties(obs_properties_t *, Source *);
 bool import_settings(obs_properties_t *properties, obs_property_t *, void *data) {
     if (!data)
         return false;
     import_path(*static_cast<Source *>(data), "import_path", false);
+    overlay_properties(properties, static_cast<Source *>(data));
     refresh_status(properties, static_cast<Source *>(data));
     return true;
+}
+// The property context owns a catalog snapshot so an old checkbox cannot target
+// a different producer after a restart. No property callback emits update_properties.
+struct OverlayProperties {
+    Source *source{};
+    OverlayCatalog catalog{};
+};
+OverlayCatalog read_catalog(Source *s) {
+    Channel reader;
+    if (!s || !reader.open(false, s->channel_name))
+        return {};
+    return reader.overlay_catalog();
+}
+bool overlay_modified(void *data, obs_properties_t *properties, obs_property_t *property,
+                      obs_data_t *settings) {
+    auto unchanged = [&] {
+        obs_data_unset_user_value(settings, obs_property_name(property));
+        return false;
+    };
+    auto *ctx = static_cast<OverlayProperties *>(data);
+    if (!ctx || !ctx->source)
+        return unchanged();
+    const auto current = read_catalog(ctx->source);
+    if (!overlay_catalog_live(current) || current.producer_pid != ctx->catalog.producer_pid ||
+        current.session != ctx->catalog.session)
+        return unchanged();
+    unsigned slot{};
+    if (sscanf_s(obs_property_name(property), "overlay_slot_%u", &slot) != 1 || slot >= max_overlay_layers)
+        return unchanged();
+    bool supported = false;
+    for (unsigned i = 0; i < std::min(current.count, max_overlay_layers); ++i)
+        if (current.layers[i].slot == slot)
+            supported = current.layers[i].supported != 0;
+    if (!supported)
+        return unchanged();
+    auto config = vrst_plugin::openxr_settings(settings);
+    auto &selected = config.options.overlays;
+    const bool checked = obs_data_get_bool(settings, obs_property_name(property));
+    const bool expected =
+        selected.mode == 1 ||
+        (selected.mode == 2 && overlay_scope_matches(selected, current) && (selected.mask & (1u << slot)));
+    if (checked == expected)
+        return unchanged(); // OBS also calls this while applying initial settings.
+    std::uint32_t mask = selected.mode == 2 && overlay_scope_matches(selected, current) ? selected.mask : 0;
+    if (selected.mode == 1)
+        for (unsigned i = 0; i < std::min(current.count, max_overlay_layers); ++i)
+            if (current.layers[i].supported && current.layers[i].slot < max_overlay_layers)
+                mask |= 1u << current.layers[i].slot;
+    if (checked)
+        mask |= 1u << slot;
+    else
+        mask &= ~(1u << slot);
+    selected = {2, mask, current.producer_pid, current.session};
+    vrst_plugin::openxr_store(settings, config);
+    for (unsigned i = 0; i < max_overlay_layers; ++i) {
+        const auto key = "overlay_slot_" + std::to_string(i);
+        obs_data_set_default_bool(settings, key.c_str(), (mask & (1u << i)) != 0);
+        obs_data_unset_user_value(settings, key.c_str());
+    }
+    // OBS invokes modified callbacks after its immediate source update. Apply
+    // the derived selection now, without signalling a properties reload.
+    obs_source_update(ctx->source->source, settings);
+    obs_property_set_description(
+        obs_properties_get(properties, "overlay_help"),
+        "Selected layers in this game session. OpenXR only; keep the source active and Refresh layers. "
+        "Layer order: game > overlay injector > SteadyXR > runtime. "
+        "Update the connection and restart the game for 0.9.0 (IPC 3).");
+    return true;
+}
+void overlay_properties(obs_properties_t *, Source *);
+bool refresh_overlay_button(obs_properties_t *p, obs_property_t *, void *data) {
+    overlay_properties(p, static_cast<Source *>(data));
+    return true;
+}
+bool overlay_mode_button(obs_properties_t *p, obs_property_t *property, void *data) {
+    auto *s = static_cast<Source *>(data);
+    if (!s)
+        return false;
+    auto *settings = obs_source_get_settings(s->source);
+    auto c = vrst_plugin::openxr_settings(settings);
+    c.options.overlays = {};
+    c.options.overlays.mode = std::strcmp(obs_property_name(property), "overlays_all") == 0 ? 1 : 0;
+    vrst_plugin::openxr_store(settings, c);
+    obs_source_update(s->source, settings);
+    obs_data_release(settings);
+    overlay_properties(p, s);
+    return true;
+}
+void overlay_properties(obs_properties_t *p, Source *s) {
+    auto *ctx = static_cast<OverlayProperties *>(obs_properties_get_param(p));
+    if (!ctx) {
+        ctx = new OverlayProperties{};
+        obs_properties_set_param(p, ctx, [](void *v) { delete static_cast<OverlayProperties *>(v); });
+    }
+    ctx->source = s;
+    ctx->catalog = read_catalog(s);
+    for (unsigned i = 0; i < max_overlay_layers; ++i)
+        obs_properties_remove_by_name(p, ("overlay_slot_" + std::to_string(i)).c_str());
+    auto *settings = s ? obs_source_get_settings(s->source) : obs_data_create();
+    const auto selected = vrst_plugin::openxr_settings(settings).options.overlays;
+    const auto &catalog = ctx->catalog;
+    const bool live = overlay_catalog_live(catalog), scope = overlay_scope_matches(selected, catalog);
+    std::string help =
+        "OpenXR only. Activate this source and Refresh layers. Layer order: game > overlay injector > "
+        "SteadyXR > runtime. Update the connection and restart the game for 0.9.0 (IPC 3). ";
+    if (selected.mode == 2 && !scope)
+        help += "Saved selection belongs to another game session; reselect layers. ";
+    if (!live || !catalog.count)
+        help += "No live additional layers: check source activity and layer order.";
+    else
+        help += selected.mode == 1   ? "All supported layers, including new layers."
+                : selected.mode == 0 ? "Additional layers disabled."
+                                     : "Selected layers in this game session.";
+    if (auto *existing = obs_properties_get(p, "overlay_help"))
+        obs_property_set_description(existing, help.c_str());
+    else
+        obs_properties_add_text(p, "overlay_help", help.c_str(), OBS_TEXT_INFO);
+    if (!obs_properties_get(p, "overlays_all")) {
+        obs_properties_add_button2(p, "overlays_all", "All supported overlays", overlay_mode_button, s);
+        obs_properties_add_button2(p, "overlays_none", "No overlays", overlay_mode_button, s);
+        obs_properties_add_button2(p, "refresh_overlays", "Refresh layers", refresh_overlay_button, s);
+    }
+    for (unsigned i = 0; i < std::min(catalog.count, max_overlay_layers); ++i) {
+        const auto &item = catalog.layers[i];
+        if (item.slot >= max_overlay_layers)
+            continue;
+        const auto key = "overlay_slot_" + std::to_string(item.slot);
+        const int length = int(wcsnlen(item.label, 128));
+        const int bytes = WideCharToMultiByte(CP_UTF8, 0, item.label, length, nullptr, 0, nullptr, nullptr);
+        std::string label(bytes, '\0');
+        if (bytes)
+            WideCharToMultiByte(CP_UTF8, 0, item.label, length, label.data(), bytes, nullptr, nullptr);
+        if (!item.supported)
+            label += " (unsupported)";
+        auto *property = obs_properties_add_bool(p, key.c_str(), label.c_str());
+        obs_data_set_default_bool(
+            settings, key.c_str(),
+            item.supported &&
+                (selected.mode == 1 || (selected.mode == 2 && scope && (selected.mask & (1u << item.slot)))));
+        obs_data_unset_user_value(settings, key.c_str());
+        obs_property_set_enabled(property, live && item.supported);
+        obs_property_set_modified_callback2(property, overlay_modified, ctx);
+    }
+    obs_data_release(settings);
 }
 obs_properties_t *properties(void *data) {
     auto *p = obs_properties_create();
@@ -571,9 +720,10 @@ obs_properties_t *properties(void *data) {
     if (count > 0)
         WideCharToMultiByte(CP_UTF8, 0, deadline, -1, expiry.data(), count, nullptr, nullptr);
     expiry.pop_back();
-    const auto expiry_label = std::string("SteadyXR 0.8.0 build expires: ") + expiry;
+    const auto expiry_label = std::string("SteadyXR 0.9.0 build expires: ") + expiry;
     obs_properties_add_text(p, "build_expiry", expiry_label.c_str(), OBS_TEXT_INFO);
     vrst_plugin::openxr_add_properties(p);
+    overlay_properties(p, static_cast<Source *>(data));
     for (const auto &action : actions)
         if (action.action < Action::preset_1 && action.action != Action::pause)
             obs_properties_add_button2(p, action.name, action.label, action_button, data);
@@ -618,6 +768,7 @@ void register_openxr_source() {
     info.destroy = destroy;
     info.get_defaults = vrst_plugin::openxr_defaults;
     info.get_properties = properties;
+
     info.update = update;
     info.video_tick = tick;
     info.video_render = render;

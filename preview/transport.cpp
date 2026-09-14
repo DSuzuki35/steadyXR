@@ -7,6 +7,62 @@
 #include <mutex>
 
 namespace vrst::preview {
+bool valid_overlay(const OverlayImage &o) {
+    if (o.slot >= max_overlay_layers || o.type < 1 || o.type > 3 || (o.flags & ~3u) || !valid_view(o.image))
+        return false;
+    double norm = 0;
+    for (float q : o.orientation) {
+        if (!std::isfinite(q))
+            return false;
+        norm += double(q) * q;
+    }
+    if (norm < .25 || norm > 4)
+        return false;
+    for (float p : o.position)
+        if (!std::isfinite(p))
+            return false;
+    const auto positive = [](float v) { return std::isfinite(v) && v > 0; };
+    if (o.type == 1)
+        return positive(o.width) && positive(o.height);
+    if (o.type == 2)
+        return !std::isnan(o.radius) && o.radius >= 0 && positive(o.central_angle) &&
+               o.central_angle <= float(6.283185307179586) && positive(o.aspect_ratio);
+    return true;
+}
+bool overlay_selected(const OverlaySelection &s, std::uint32_t pid, std::uint64_t session, unsigned slot) {
+    if (slot >= max_overlay_layers)
+        return false;
+    return s.mode == 1 || (s.mode == 2 && pid && session && s.producer_pid == pid &&
+                           s.session == session && (s.mask & (1u << slot)));
+}
+bool Channel::select_overlays(const OverlaySelection &selection) {
+    if (!lock(true))
+        return false;
+    auto next = selection;
+    if (next.mode > 2)
+        next = {};
+    next.mask &= (1u << max_overlay_layers) - 1;
+    shared_->overlay_selection = next;
+    unlock();
+    return true;
+}
+OverlayCatalog Channel::overlay_catalog() {
+    if (!lock())
+        return {};
+    auto result = shared_->overlay_catalog;
+    unlock();
+    if (result.count > max_overlay_layers)
+        return {};
+    std::uint32_t slots = 0;
+    for (unsigned i = 0; i < result.count; ++i) {
+        auto &info = result.layers[i];
+        if (info.slot >= max_overlay_layers || (slots & (1u << info.slot)))
+            return {};
+        slots |= 1u << info.slot;
+        info.label[std::size(info.label) - 1] = 0;
+    }
+    return result;
+}
 namespace {
 std::mutex consumers_mutex;
 std::map<std::wstring, const Channel *> consumers;
@@ -47,6 +103,21 @@ bool valid_frame(const Frame &f) {
     for (std::uint32_t i = 0; i < f.view_count; ++i)
         if (!valid_view(f.views[i]))
             return false;
+    if (f.overlay_count > max_overlay_images)
+        return false;
+    std::uint32_t slots = 0;
+    for (unsigned i = 0; i < f.overlay_count; ++i) {
+        const auto &overlay = f.overlays[i];
+        if (!valid_overlay(overlay) || (slots & (1u << overlay.slot)))
+            return false;
+        for (unsigned j = 0; j < f.view_count; ++j)
+            if (overlay.image.texture_handle == f.views[j].texture_handle)
+                return false;
+        for (unsigned j = 0; j < i; ++j)
+            if (overlay.image.texture_handle == f.overlays[j].image.texture_handle)
+                return false;
+        slots |= 1u << overlay.slot;
+    }
     return true;
 }
 bool viewer_active(const Shared &s, std::uint64_t now) {
@@ -88,8 +159,10 @@ bool Channel::heartbeat(unsigned eye, unsigned fps) {
         const bool foreign_busy =
             shared_->consumer_pid != GetCurrentProcessId() && viewer_active(*shared_, now);
         if (!local_busy && !foreign_busy) {
-            if (owner == consumers.end() || shared_->consumer_pid != GetCurrentProcessId() || shared_->paused)
+            if (owner == consumers.end() || shared_->consumer_pid != GetCurrentProcessId() || shared_->paused) {
                 shared_->ready = 2;
+                shared_->overlay_selection = {};
+            }
             consumers[name_] = this;
             shared_->consumer_pid = GetCurrentProcessId();
             shared_->heartbeat_ms = now;
@@ -117,6 +190,7 @@ void Channel::release_consumer() {
                 shared_->consumer_pid = 0;
                 shared_->heartbeat_ms = 0;
                 shared_->ready = 2;
+                shared_->overlay_selection = {};
             }
             consumers.erase(owner);
         }

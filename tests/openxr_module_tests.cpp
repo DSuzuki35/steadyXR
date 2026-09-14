@@ -485,6 +485,57 @@ int main(int argc, char **argv) {
                   refreshes.count == before_stream,
               "explicit status refresh updates the snapshot without reentrant OBS reloads");
         obs_properties_destroy(properties);
+        producer.lock();
+        auto &catalog = producer.channel.data()->overlay_catalog;
+        catalog = {};
+        catalog.producer_pid = GetCurrentProcessId();
+        catalog.session = 701;
+        catalog.updated_ms = GetTickCount64();
+        catalog.count = 2;
+        catalog.layers[0] = {0, 1, 1, 512, 256};
+        wcscpy_s(catalog.layers[0].label, L"Quad 512 x 256 - slot 1");
+        catalog.layers[1] = {1, 999, 0, 0, 0};
+        wcscpy_s(catalog.layers[1].label, L"Unsupported type 999 - slot 2");
+        producer.channel.unlock();
+        properties = obs_source_properties(source);
+        check(obs_properties_get(properties, "overlay_slot_0") &&
+                  !obs_property_enabled(obs_properties_get(properties, "overlay_slot_1")),
+              "live layer properties expose supported checkbox and disabled unsupported entry");
+        check(obs_property_button_clicked(obs_properties_get(properties, "overlays_all"), source) &&
+                  refreshes.count == before_stream,
+              "All overlays button applies without a reentrant property signal");
+        stored = obs_source_get_settings(source);
+        check(obs_data_get_int(stored, "overlay_mode") == 1, "All overlay mode persists explicitly");
+        obs_data_set_bool(stored, "overlay_slot_0", false);
+        check(obs_property_modified(obs_properties_get(properties, "overlay_slot_0"), stored) &&
+                  obs_data_get_int(stored, "overlay_mode") == 2 &&
+                  obs_data_get_int(stored, "overlay_mask") == 0 &&
+                  std::string(obs_data_get_string(stored, "overlay_session")) == "701",
+              "editing a live checkbox creates an individual selection scoped to the catalog session");
+        check(eventually([&] {
+                  producer.lock();
+                  const auto selected = producer.channel.data()->overlay_selection;
+                  producer.channel.unlock();
+                  return selected.mode == 2 && selected.mask == 0 && selected.session == 701;
+              }),
+              "checkbox callback reaches the active consumer heartbeat without a second source update");
+        producer.lock();
+        producer.channel.data()->overlay_catalog.session = 702;
+        producer.channel.unlock();
+        obs_data_set_bool(stored, "overlay_slot_0", true);
+        check(!obs_property_modified(obs_properties_get(properties, "overlay_slot_0"), stored) &&
+                  std::string(obs_data_get_string(stored, "overlay_session")) == "701",
+              "old OBS checkbox refuses to select a layer from a restarted session");
+        check(std::string(obs_data_get_json(stored)).find("overlay_slot_") == std::string::npos,
+              "serialized source contains only overlay selection, not transient catalog checkbox state");
+        obs_data_release(stored);
+        check(obs_property_button_clicked(obs_properties_get(properties, "refresh_overlays"), source) &&
+                  std::string(obs_property_description(obs_properties_get(properties, "overlay_help")))
+                          .find("reselect") != std::string::npos &&
+                  refreshes.count == before_stream,
+              "explicit layer refresh updates session help without reentrant OBS property reload");
+        obs_property_button_clicked(obs_properties_get(properties, "overlays_none"), source);
+        obs_properties_destroy(properties);
         refreshes.disconnect();
         press(source, "steadyxr.preset_1");
         producer.publish(64, 128, 192);

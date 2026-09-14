@@ -212,8 +212,298 @@ template <class T> void offscreen_tests() {
                      "device replacement and fixed adapter passed\n";
     }
 }
+void overlay_tests() {
+    Renderer renderer;
+    require(renderer.attach_offscreen(), "overlay renderer initialize");
+    OutputReader producer(renderer.device());
+    Channel channel;
+    require(channel.open(true, L"Local\\HorizonLock-overlay-GPU-" + std::to_wstring(GetCurrentProcessId())),
+            "overlay channel");
+    Frame frame{};
+    frame.generation = frame.session = frame.sequence = frame.reference_epoch = 1;
+    frame.producer_pid = GetCurrentProcessId();
+    frame.display_time = 1000000000;
+    frame.view_count = frame.overlay_count = 1;
+    ComPtr<IDXGIDevice> dxgi;
+    ComPtr<IDXGIAdapter> adapter;
+    DXGI_ADAPTER_DESC adapter_desc{};
+    producer.device.As(&dxgi);
+    dxgi->GetAdapter(&adapter);
+    adapter->GetDesc(&adapter_desc);
+    frame.adapter = adapter_desc.AdapterLuid;
+    ComPtr<ID3D11Texture2D> images[3];
+    ComPtr<IDXGIKeyedMutex> keys[3];
+    for (unsigned i = 0; i < 3; ++i) {
+        D3D11_TEXTURE2D_DESC d{};
+        d.Width = d.Height = 64;
+        d.MipLevels = d.ArraySize = d.SampleDesc.Count = 1;
+        d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        d.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+        require(SUCCEEDED(producer.device->CreateTexture2D(&d, nullptr, &images[i])),
+                "overlay fixture image");
+        ComPtr<IDXGIResource> resource;
+        HANDLE handle{};
+        images[i].As(&resource);
+        images[i].As(&keys[i]);
+        resource->GetSharedHandle(&handle);
+        auto &v = i ? frame.overlays[i - 1].image : frame.views[0];
+        v.texture_handle = reinterpret_cast<std::uint64_t>(handle);
+        v.width = v.height = v.rect_width = v.rect_height = 64;
+        v.format = d.Format;
+    }
+    auto &overlay = frame.overlays[0];
+    overlay.type = 1;
+    overlay.flags = 3;
+    overlay.width = overlay.height = 1;
+    overlay.position[2] = -1;
+    auto publish = [&](std::uint32_t overlay_color = 0x800000ffu, std::uint32_t second_color = 0x8000ff00u,
+                       bool bordered = false) {
+        for (unsigned i = 0; i < 1 + frame.overlay_count; ++i) {
+            require(keys[i]->AcquireSync(0, 0) == S_OK, "overlay producer owns every image");
+            std::vector<std::uint32_t> pixels(64 * 64,
+                                              i ? (i == 1 ? overlay_color : second_color) : 0xffff0000u);
+            if (i && bordered)
+                for (unsigned y = 0; y < 64; ++y)
+                    for (unsigned x = 0; x < 64; ++x)
+                        if (x < 16 || x >= 48 || y < 16 || y >= 48)
+                            pixels[y * 64 + x] = 0xff0000ffu;
+            producer.context->UpdateSubresource(images[i].Get(), 0, nullptr, pixels.data(), 64 * 4, 0);
+        }
+        producer.context->Flush();
+        for (unsigned i = 0; i < 1 + frame.overlay_count; ++i)
+            require(SUCCEEDED(keys[i]->ReleaseSync(1)), "publish overlay reader key");
+        ++frame.sequence;
+        frame.display_time += 16666667;
+        require(channel.lock(), "overlay publication lock");
+        channel.data()->frame = frame;
+        channel.data()->ready = 1;
+        channel.unlock();
+    };
+    Options options;
+    options.output_width = 640;
+    options.output_height = 360;
+    options.crop = 0;
+    options.stabilize = options.mirror = false;
+    options.overlays.mode = 1;
+    std::vector<std::uint32_t> pixels;
+    unsigned w{}, h{};
+    auto draw = [&] {
+        require(renderer.draw(options) && renderer.readback(pixels, w, h), "overlay draw/readback");
+    };
+    publish();
+    require(renderer.consume(channel), "consume base and overlay atomically");
+    draw();
+    const auto center = pixels[180 * w + 320];
+    require(std::abs(int(center & 255) - 188) <= 2 && std::abs(int((center >> 16) & 255) - 187) <= 2,
+            "straight alpha quad blends red over blue in linear light");
+    require(pixels[180 * w + 50] == 0xffff0000u, "quad geometry clips outside physical size");
+    options.overlays.mode = 0;
+    draw();
+    require(pixels[180 * w + 320] == 0xffff0000u, "disabling overlays immediately hides retained image");
+    options.overlays.mode = 1;
+    draw();
+    require(pixels[180 * w + 320] == center, "retained overlay metadata and pixels redraw together");
+    options.overlays.mode = 2;
+    options.overlays.mask = 1;
+    options.overlays.producer_pid = frame.producer_pid;
+    options.overlays.session = frame.session + 1;
+    draw();
+    require(pixels[180 * w + 320] == 0xffff0000u, "selected overlay slots cannot cross producer sessions");
+    options.overlays.session = frame.session;
+    draw();
+    require(pixels[180 * w + 320] == center, "matching session selected slot draws");
+    options.overlays.mode = 1;
+    require(keys[1]->AcquireSync(0, 0) == S_OK, "overwrite released transport overlay");
+    std::vector<std::uint32_t> newer_pixels(64 * 64, 0xff00ff00u);
+    producer.context->UpdateSubresource(images[1].Get(), 0, nullptr, newer_pixels.data(), 64 * 4, 0);
+    producer.context->Flush();
+    keys[1]->ReleaseSync(0);
+    draw();
+    require(pixels[180 * w + 320] == center, "producer overwrite cannot mutate retained private overlay");
+    // A busy overlay must leave every retained image and its pose intact, and
+    // return any acquired base image to the pending reader key for retry.
+    overlay.position[0] = .7f;
+    publish(0xff00ff00u);
+    require(keys[1]->AcquireSync(1, 0) == S_OK, "hold overlay reader key");
+    const auto retained_sequence = renderer.sequence();
+    const auto busy_begin = std::chrono::steady_clock::now();
+    require(!renderer.consume(channel) && renderer.sequence() == retained_sequence,
+            "busy overlay never replaces retained base or metadata");
+    require(std::chrono::steady_clock::now() - busy_begin < std::chrono::milliseconds(100),
+            "overlay acquisition never blocks the game");
+    require(keys[0]->AcquireSync(1, 0) == S_OK, "partial acquisition restores base reader key");
+    keys[0]->ReleaseSync(1);
+    draw();
+    require(pixels[180 * w + 320] == center, "busy overlay preserves complete previous composition");
+    keys[1]->ReleaseSync(1);
+    require(renderer.consume(channel), "retry atomically consumes pending overlay");
+    draw();
+    require(pixels[180 * w + 320] == 0xffff0000u && pixels[180 * w + 544] == 0xff00ff00u,
+            "space-converted translation places overlay on the right");
+    overlay.position[0] = 0;
+    overlay.flags = 1;
+    publish(0x80000080u);
+    require(renderer.consume(channel), "consume premultiplied alpha fixture");
+    draw();
+    require(std::abs(int(pixels[180 * w + 320] & 255) - 188) <= 2 &&
+                std::abs(int((pixels[180 * w + 320] >> 16) & 255) - 187) <= 2,
+            "premultiplied source is not multiplied twice");
+    overlay.flags = 0;
+    publish(0x000000ffu);
+    require(renderer.consume(channel), "consume ignored-alpha fixture");
+    draw();
+    require(pixels[180 * w + 320] == 0xff0000ffu, "OpenXR no-alpha flag treats zero alpha as opaque");
+    overlay.flags = 3;
+    publish(0x000000ffu);
+    require(renderer.consume(channel), "consume transparent fixture");
+    draw();
+    require(pixels[180 * w + 320] == 0xffff0000u, "transparent straight-alpha pixels preserve the scene");
+    overlay.orientation[1] = 1;
+    overlay.orientation[3] = 0;
+    publish(0xff0000ffu);
+    require(renderer.consume(channel), "consume back-facing quad");
+    draw();
+    require(pixels[180 * w + 320] == 0xffff0000u, "back-facing quad is culled");
+    overlay.orientation[1] = 0;
+    overlay.orientation[3] = 1;
+    overlay.type = 2;
+    overlay.position[2] = 0;
+    overlay.radius = 1;
+    overlay.central_angle = 1;
+    overlay.aspect_ratio = 1;
+    publish(0xff00ff00u);
+    require(renderer.consume(channel), "consume finite cylinder");
+    draw();
+    require(pixels[180 * w + 320] == 0xff00ff00u && pixels[180 * w + 50] == 0xffff0000u,
+            "cylinder arc clips outside its angle");
+    overlay.position[0] = .5f;
+    publish(0xff00ff00u);
+    require(renderer.consume(channel), "consume translated finite cylinder");
+    draw();
+    require(pixels[180 * w + 320] == 0xffff0000u && pixels[180 * w + 480] == 0xff00ff00u,
+            "finite cylinder intersection accounts for the translated eye origin");
+    overlay.radius = 0;
+    overlay.position[0] = 100;
+    publish(0xff00ff00u);
+    require(renderer.consume(channel), "consume infinite cylinder");
+    draw();
+    require(pixels[180 * w + 320] == 0xff00ff00u,
+            "infinite cylinder ignores translation and retains direction");
+    overlay.type = 3;
+    overlay.position[0] = 0;
+    overlay.image.fov[0] = overlay.image.fov[3] = -.2f;
+    overlay.image.fov[1] = overlay.image.fov[2] = .2f;
+    publish(0xff0000ffu);
+    require(renderer.consume(channel), "consume projection overlay");
+    draw();
+    require(pixels[180 * w + 320] == 0xff0000ffu && pixels[180 * w + 450] == 0xffff0000u,
+            "projection overlay clips to its own FOV");
+    overlay.orientation[1] = std::sin(-.25f);
+    overlay.orientation[3] = std::cos(-.25f);
+    publish(0xff0000ffu);
+    require(renderer.consume(channel), "consume rotated projection overlay");
+    draw();
+    require(pixels[180 * w + 320] == 0xffff0000u && pixels[180 * w + 495] == 0xff0000ffu,
+            "projection orientation rotates coverage relative to the context eye");
+    overlay.type = 1;
+    overlay.position[0] = .35f;
+    overlay.position[2] = -1;
+    overlay.orientation[1] = 0;
+    overlay.orientation[3] = 1;
+    overlay.width = overlay.height = .45f;
+    frame.views[0].orientation[2] = std::sin(.3f);
+    frame.views[0].orientation[3] = std::cos(.3f);
+    options.stabilize = true;
+    options.horizon_lock = 100;
+    options.adaptive_horizon = false;
+    publish(0xff00ff00u);
+    require(renderer.consume(channel), "consume horizon correction overlay fixture");
+    draw();
+    const auto stabilized = pixels;
+    options.compare_original = true;
+    draw();
+    const auto original = pixels;
+    require(original != stabilized, "overlay follows game horizon correction");
+    auto green_center_y = [&](const std::vector<std::uint32_t> &image) {
+        double total = 0, count = 0;
+        for (unsigned y = 0; y < h; ++y)
+            for (unsigned x = 0; x < w; ++x)
+                if (image[y * w + x] == 0xff00ff00u) {
+                    total += y;
+                    ++count;
+                }
+        require(count > 100, "corrected overlay has visible geometry");
+        return total / count;
+    };
+    require(std::abs(green_center_y(original) - green_center_y(stabilized)) > 30,
+            "horizon correction moves the overlay itself with the game's rays");
+    options.compare_mode = 1;
+    draw();
+    for (unsigned y = 0; y < h; y += 7)
+        for (unsigned x = 0; x < w; x += 7)
+            require(pixels[y * w + x] == (x < w / 2 ? stabilized : original)[y * w + x],
+                    "A/B split applies matching stabilized and original overlay rays");
+    options.compare_mode = 2;
+    draw();
+    require(pixels[50 * w + 160] == 0xff000000u && pixels[50 * w + 480] == 0xff000000u,
+            "side-by-side overlays do not escape letterboxed panels");
+    // Sample interiors, away from resampling boundaries: both complete images
+    // are scaled to half size and centered vertically without changing geometry.
+    for (unsigned panel = 0; panel < 2; ++panel)
+        for (unsigned y = 100; y < 260; y += 11)
+            for (unsigned x = 10; x < 310; x += 11) {
+                const auto &reference = panel ? original : stabilized;
+                const unsigned rx = x * 2, ry = (y - 90) * 2;
+                const auto expected = reference[ry * w + rx];
+                if (reference[ry * w + rx + 1] == expected && reference[(ry + 1) * w + rx] == expected &&
+                    reference[(ry + 1) * w + rx + 1] == expected)
+                    require(pixels[y * w + panel * 320 + x] == expected,
+                            "side-by-side overlay remapping matches complete reference images");
+            }
+    options.compare_original = false;
+    options.compare_mode = 0;
+    options.stabilize = false;
+    overlay.position[0] = 0;
+    overlay.width = overlay.height = 1;
+    overlay.image.x = overlay.image.y = 16;
+    overlay.image.rect_width = overlay.image.rect_height = 32;
+    publish(0xff00ff00u, 0, true);
+    require(renderer.consume(channel), "consume overlay subrect resize on same handle");
+    draw();
+    require(pixels[180 * w + 320] == 0xff00ff00u && pixels[180 * w + 165] == 0xff00ff00u,
+            "private overlay subrect excludes contrasting outer texels including edge sampling");
+    const auto second_image = frame.overlays[1].image;
+    frame.overlays[1] = overlay;
+    frame.overlays[1].image = second_image;
+    frame.overlays[1].slot = 1;
+    frame.overlay_count = 2;
+    publish();
+    require(renderer.consume(channel), "consume multiple overlay layers");
+    draw();
+    auto color = pixels[180 * w + 320];
+    require(std::abs(int(color & 255) - 137) <= 2 && std::abs(int((color >> 8) & 255) - 188) <= 2 &&
+                std::abs(int((color >> 16) & 255) - 136) <= 2,
+            "submission order composites green over red over base blue");
+    std::swap(frame.overlays[0], frame.overlays[1]);
+    publish();
+    require(renderer.consume(channel), "consume reordered overlay resources");
+    draw();
+    color = pixels[180 * w + 320];
+    require(std::abs(int(color & 255) - 188) <= 2 && std::abs(int((color >> 8) & 255) - 137) <= 2,
+            "reordered overlay metadata opens matching resources and reverses composition order");
+    require(channel.lock(), "bad overlay metadata lock");
+    channel.data()->frame = frame;
+    channel.data()->frame.overlays[0].width = -1;
+    channel.data()->ready = 1;
+    channel.unlock();
+    require(!renderer.consume(channel) && !renderer.has_frame(),
+            "invalid overlay geometry rejects mixed frames");
+    std::cout << "Native GPU: overlay composition and selection passed\n";
+}
 int main(int argc, char **argv) {
     try {
+        overlay_tests();
         offscreen_tests<Renderer>();
         WNDCLASSW wc{};
         wc.lpfnWndProc = DefWindowProcW;

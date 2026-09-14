@@ -1,5 +1,6 @@
 #include "transport.hpp"
 #include <iostream>
+#include <limits>
 
 using namespace vrst::preview;
 int main() {
@@ -8,10 +9,72 @@ int main() {
         std::cout << (ok ? "PASS " : "FAIL ") << name << '\n';
         failures += !ok;
     };
+    Frame packet{};
+    packet.producer_pid = packet.session = packet.sequence = packet.generation = packet.view_count = 1;
+    auto &v = packet.views[0];
+    v.texture_handle = 1;
+    v.width = v.height = v.rect_width = v.rect_height = 64;
+    v.format = 28;
+    packet.overlay_count = 1;
+    auto &overlay = packet.overlays[0];
+    overlay.image = v;
+    overlay.image.texture_handle = 2;
+    overlay.type = 1;
+    overlay.width = overlay.height = 1;
+    check(valid_frame(packet), "valid quad metadata is accepted");
+    overlay.image.texture_handle = 1;
+    check(!valid_frame(packet), "an overlay cannot reuse a base keyed handle and deadlock acquisition");
+    overlay.image.texture_handle = 2;
+    packet.overlays[1] = overlay;
+    packet.overlays[1].slot = 1;
+    packet.overlay_count = 2;
+    check(!valid_frame(packet), "two overlay slots cannot acquire the same keyed handle twice");
+    packet.overlays[1].image.texture_handle = 3;
+    check(valid_frame(packet), "distinct overlay slots and textures are accepted");
+    packet.overlays[1].slot = 0;
+    check(!valid_frame(packet), "duplicate overlay slots are rejected");
+    packet.overlay_count = max_overlay_images + 1;
+    check(!valid_frame(packet), "oversized overlay payload is rejected before indexing");
+    packet.overlay_count = 1;
+    overlay.position[0] = std::numeric_limits<float>::quiet_NaN();
+    check(!valid_frame(packet), "nonfinite overlay geometry is rejected");
+    overlay.position[0] = 0;
+    overlay.type = 2;
+    overlay.central_angle = 1;
+    overlay.aspect_ratio = 2;
+    for (float radius : {0.f, 1.f, std::numeric_limits<float>::infinity()}) {
+        overlay.radius = radius;
+        check(valid_frame(packet), "finite and infinite OpenXR cylinders are accepted");
+    }
+    overlay.radius = -1;
+    check(!valid_frame(packet), "negative cylinder radius is rejected");
     const auto name = L"Local\\SteadyXR-consumer-test-" + std::to_wstring(GetCurrentProcessId());
     Channel first, second;
     check(first.open(true, name) && second.open(true, name), "isolated channel opens");
     check(first.heartbeat(1, 60) && first.owns_consumer(), "first consumer claims channel");
+    const OverlaySelection selected{2, 1u << 3, 42, 7};
+    check(overlay_selected(selected, 42, 7, 3) && !overlay_selected(selected, 42, 8, 3) &&
+              !overlay_selected(selected, 43, 7, 3) && !overlay_selected(selected, 42, 7, 4),
+          "overlay selection is scoped to the exact producer session and selected slot");
+    check(!overlay_selected({}, 42, 7, 3) && overlay_selected({1}, 42, 7, 3) &&
+              !overlay_selected({1}, 42, 7, max_overlay_layers),
+          "overlay selection defaults off and rejects out-of-range slots");
+    check(first.select_overlays(selected) && !second.select_overlays({1}),
+          "only owning consumer may set overlay capture selection");
+    if (first.lock()) {
+        check(first.data()->overlay_selection.mask == (1u << 3), "non-owner cannot overwrite overlay choice");
+        auto &catalog = first.data()->overlay_catalog;
+        catalog.producer_pid = 42;
+        catalog.session = 7;
+        catalog.updated_ms = GetTickCount64();
+        catalog.count = 1;
+        catalog.layers[0].slot = 3;
+        catalog.layers[0].type = 1;
+        catalog.layers[0].supported = 1;
+        first.unlock();
+    }
+    check(second.overlay_catalog().layers[0].slot == 3 && !second.owns_consumer(),
+          "catalog can be inspected without taking capture ownership");
     check(!second.heartbeat(0, 90) && !second.owns_consumer(), "second local consumer cannot steal capture");
     second.release_consumer();
     if (first.lock()) {
@@ -23,6 +86,10 @@ int main() {
         check(false, "inspect owner");
     first.release_consumer();
     check(!first.owns_consumer() && second.heartbeat(0, 90), "release permits source handoff");
+    if (second.lock()) {
+        check(second.data()->overlay_selection.mode == 0, "capture handoff clears the previous consumer's overlay choices");
+        second.unlock();
+    }
     second.close();
     check(first.heartbeat(1, 60), "closing owner releases channel");
     first.release_consumer();
