@@ -19,6 +19,7 @@ constexpr Number numbers[]{
     {"horizon_lock", "Horizon lock (%)", &Options::horizon_lock, 0, 100},
     {"mirror_limit", "Mirror reach (%)", &Options::mirror_limit, 0, 50},
     {"mirror_softness", "Mirror softness (%)", &Options::mirror_softness, 0, 100},
+    {"mirror_stretch", "Edge stretch (%)", &Options::mirror_stretch, 0, 100},
     {"crop_left", "Crop left (%)", &Options::crop_left, 0, 45},
     {"crop_right", "Crop right (%)", &Options::crop_right, 0, 45},
     {"crop_top", "Crop top (%)", &Options::crop_top, 0, 45},
@@ -144,6 +145,11 @@ void openxr_add_properties(obs_properties_t *p) {
     for (const auto &n : numbers)
         obs_properties_add_float_slider(p, n.key, n.label, n.low, n.high,
                                         n.member == &Options::aspect ? .001 : .1);
+    obs_properties_add_text(
+        p, "mirror_stretch_help",
+        "Edge stretch: 0% keeps mirroring; 100% strongly stretches pixels outside the captured image. "
+        "Mirror reach still caps the effect; enable Mirror exposed edges to use it.",
+        OBS_TEXT_INFO);
     obs_properties_add_int(p, "output_width", "Output width", 320, 7680, 1);
     obs_properties_add_int(p, "output_height", "Output height", 180, 4320, 1);
     for (unsigned eye_index = 0; eye_index < 2; ++eye_index) {
@@ -189,6 +195,7 @@ bool openxr_import(obs_data_t *s, const std::wstring &path, std::string &error) 
     o.adaptive_horizon = v(L"AdaptiveHorizon", 1, 0, 1) != 0;
     o.mirror_limit = v(L"MirrorLimitTenths", 100, 0, 500) / 10.;
     o.mirror_softness = v(L"MirrorSoftnessTenths", 600, 0, 1000) / 10.;
+    o.mirror_stretch = v(L"MirrorStretchTenths", 0, 0, 1000) / 10.;
     o.output_width = v(L"OutputWidth", 3840, 320, 7680);
     o.output_height = v(L"OutputHeight", 2160, 180, 4320);
     o.aspect = double(v(L"AspectNumerator", 16, 1, 10000)) / v(L"AspectDenominator", 9, 1, 10000);

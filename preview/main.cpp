@@ -653,6 +653,8 @@ struct App {
         options.mirror = tuning.mirror;
         options.mirror_limit = tuning.mirror_limit;
         options.mirror_softness = tuning.mirror_softness;
+        options.mirror_stretch = tuning.mirror_stretch;
+        advanced.refresh_live_controls();
         options.stabilize = tuning.stabilize;
         SendMessageW(smooth, TBM_SETPOS, TRUE, LPARAM(options.smoothing * 10 + .5));
         SendMessageW(crop, TBM_SETPOS, TRUE, LPARAM(options.crop * 10 + .5));
@@ -1781,6 +1783,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                    restored.aspect_numerator == 21 && restored.aspect_denominator == 9 &&
                    !restored.start_fullscreen && !restored.options.adaptive_horizon;
         }
+        state.options.mirror_stretch = 18.6;
         const auto before_preset = state.options;
         SendMessageW(state.controls, WM_COMMAND, comfort_id, 0);
         SendMessageW(state.controls, WM_COMMAND, comfort_id, 0); // Reapplying retains the original undo.
@@ -1789,17 +1792,36 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                SendMessageW(state.mirror_softness, TBM_GETPOS, 0, 0) == 700 &&
                state.options.output_width == before_preset.output_width &&
                state.options.crop_left == before_preset.crop_left;
+        state.options.mirror_stretch = 77.7;
         state.options.crop_left = 2; // A later framing adjustment is not undone by the tuning preset.
         SendMessageW(state.trims[0], TBM_SETPOS, TRUE, 20);
         SendMessageW(state.controls, WM_COMMAND, undo_comfort_id, 0);
         okay = okay && !state.can_undo_comfort && state.options.crop_left == 2 &&
                state.options.smoothing == before_preset.smoothing &&
                state.options.mirror_softness == before_preset.mirror_softness &&
+               state.options.mirror_stretch == before_preset.mirror_stretch &&
                state.options.horizon_lock == before_preset.horizon_lock &&
                state.options.adaptive_horizon == before_preset.adaptive_horizon;
-        state.advanced.open(1, false);
+        state.advanced.open(1, true);
         const auto panel = state.advanced.handle();
         bool advanced_ok = panel && IsWindow(panel);
+        const auto stretch_slider = GetDlgItem(panel, AdvancedSettings::stretch_id);
+        advanced_ok = advanced_ok && IsWindowVisible(stretch_slider);
+        RECT panel_bounds{};
+        GetClientRect(panel, &panel_bounds);
+        for (auto control = GetWindow(panel, GW_CHILD); control; control = GetWindow(control, GW_HWNDNEXT)) {
+            if (!(GetWindowLongPtrW(control, GWL_STYLE) & WS_VISIBLE))
+                continue;
+            RECT bounds{};
+            GetWindowRect(control, &bounds);
+            MapWindowPoints(nullptr, panel, reinterpret_cast<POINT *>(&bounds), 2);
+            advanced_ok = advanced_ok && bounds.left >= 0 && bounds.top >= 0 &&
+                          bounds.right <= panel_bounds.right && bounds.bottom <= panel_bounds.bottom;
+        }
+        SendMessageW(stretch_slider, TBM_SETPOS, TRUE, 642);
+        SendMessageW(panel, WM_HSCROLL, 0, reinterpret_cast<LPARAM>(stretch_slider));
+        advanced_ok = advanced_ok && state.options.mirror_stretch == 64.2;
+
         // Per-eye margins are live and persist independently from render requests.
         if (panel) {
             SendMessageW(GetDlgItem(panel, AdvancedSettings::separate_id), BM_SETCHECK, BST_CHECKED, 0);
@@ -1809,7 +1831,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             SendMessageW(GetDlgItem(panel, AdvancedSettings::vertical_id), TBM_SETPOS, TRUE, 675);
             SendMessageW(panel, WM_HSCROLL, 0,
                          reinterpret_cast<LPARAM>(GetDlgItem(panel, AdvancedSettings::left_id)));
-            advanced_ok = state.options.edge_reserve[1].enabled && state.options.edge_reserve[1].left == 2 &&
+            advanced_ok = advanced_ok && state.options.edge_reserve[1].enabled &&
+                          state.options.edge_reserve[1].left == 2 &&
                           state.options.edge_reserve[1].right == 20 &&
                           state.options.vertical_offset == 67.5 && !state.options.edge_reserve[0].enabled;
             SendMessageW(panel, WM_COMMAND, AdvancedSettings::inward_id, 0);
@@ -1823,7 +1846,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             reloaded.read();
             advanced_ok = advanced_ok && reloaded.options.edge_reserve[1].left == 2 &&
                           reloaded.options.edge_reserve[1].right == 20 &&
-                          reloaded.options.vertical_offset == 67.5;
+                          reloaded.options.vertical_offset == 67.5 && reloaded.options.mirror_stretch == 64.2;
             advanced_ok =
                 save_controls(panel, state.directory + L"\\preview-advanced-test.bmp") && advanced_ok;
         }
@@ -1877,6 +1900,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.options.edge_reserve[0] = {};
         state.options.edge_reserve[1] = {};
         state.options.vertical_offset = 99;
+        state.options.mirror_stretch = 0;
         state.selected_eye = state.options.eye = 0;
         state.window_mode = true;
         state.rate = 30;
@@ -1919,6 +1943,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             state.aspect_denominator == 9 && state.options.crop_left == 2 &&
             state.options.crop_right == 4.5 && state.options.crop_top == 6.7 &&
             state.options.crop_bottom == 8.9 && state.options.vertical_offset == -43.2 &&
+            state.options.mirror_stretch == 64.2 && SendMessageW(stretch_slider, TBM_GETPOS, 0, 0) == 642 &&
             state.options.edge_reserve[0].enabled && state.options.edge_reserve[0].left == 3.4 &&
             state.options.edge_reserve[0].right == 8.7 && state.options.edge_reserve[0].top == 5.6 &&
             state.options.edge_reserve[0].bottom == 12.3 && state.options.edge_reserve[1].enabled &&

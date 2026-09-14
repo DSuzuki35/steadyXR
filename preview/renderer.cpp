@@ -39,9 +39,15 @@ float3 contextSample(float2 uv) {
  return contextImage.Sample(linearClamp,clamp(rect0.xy+uv*rect0.zw,clamp0.xy,clamp0.zw)).rgb;
 }
 float3 mirrorColor(float2 uv,float2 originalUV) {
- float3 color=contextSample(uv);
  float2 over=max(max(-originalUV,originalUV-1),0);
  float distance=max(over.x,over.y);
+ // Transition only outside the original image. Reuse the existing sample taps,
+ // moving reflection toward its nearest real image edge within the same limit.
+ [branch] if(mirrorStyle.w>0 && distance>0) {
+   float stretch=mirrorStyle.w*smoothstep(0,max(.000001,imageMode.y),distance);
+   uv=lerp(uv,saturate(originalUV),stretch);
+ }
+ float3 color=contextSample(uv);
  // Original pixels stay exact. Extra taps are used only in reflected areas.
  [branch] if(mirrorStyle.x<=0 || distance<=0) return color;
  float seam=smoothstep(0,max(.0001,min(.03,imageMode.y*.5)),distance);
@@ -1047,6 +1053,8 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
                                                          : 0.);
         p.mirror_style[1] = 1.f / std::max(1, r.frame.views[0].rect_width);
         p.mirror_style[2] = 1.f / std::max(1, r.frame.views[0].rect_height);
+        p.mirror_style[3] = float(
+            std::isfinite(options.mirror_stretch) ? std::clamp(options.mirror_stretch, 0., 100.) / 100 : 0.);
         if (r.window_mode) {
             Settings settings;
             settings.stabilization_crop = options.crop;

@@ -136,6 +136,9 @@ Fine-tune any slider after applying a tuning preset. **Undo tuning** restores st
 
 **Mirror softness** ranges from 0–100% (default 60%). Zero restores the sharp legacy reflection. Higher values progressively soften and slightly darken the reflection outside the source image, with a smooth transition at the original image edge and a fade to black at the mirror limit. Original image pixels stay untouched. Both OpenXR and image capture use the effect. The extra four texture samples apply only to mirrored regions; live GPU cost depends on the visible border area.
 
+**Edge stretch** is under **Render / edges…** (and in the OBS source properties). It ranges from 0–100%, default 0 to preserve existing tuning. Toward the outer border, higher values blend mirrored scenery into stretched edge colors, reducing recognizable duplicate shapes. Start around 50% with Mirror softness enabled and compare. Actual image pixels stay unchanged and Mirror limit still controls the maximum extension; large missing areas can still look stretched. This reuses the existing texture samples and draw pass. Settings and presets store the value as MirrorStretchTenths.
+
+
 ## Presets
 
 Open **Presets…** in the main window. **Natural**, **Stream Comfort** and **Strong Leveling** change smoothing, horizon/adaptive curve, uniform crop reserve and mirror tuning. They retain the source, eye, FPS, edge profiles, framing trims, Y offset, render expansion, output resolution/aspect and monitor. Natural uses 25% smoothing / 25% horizon; Strong Leveling uses 70% / 85%.

@@ -21,6 +21,9 @@ int tenths(double value, double lo, double hi) {
 }
 } // namespace
 void read_edge_settings(const std::wstring &ini, Options &options) {
+    options.mirror_stretch =
+        std::clamp(int(GetPrivateProfileIntW(L"Preview", L"MirrorStretchTenths", 0, ini.c_str())), 0, 1000) /
+        10.;
     for (unsigned eye = 0; eye < 2; ++eye) {
         auto &reserve = options.edge_reserve[eye];
         reserve.enabled = GetPrivateProfileIntW(sections[eye], L"Enabled", 0, ini.c_str()) == 1;
@@ -37,7 +40,9 @@ void read_edge_settings(const std::wstring &ini, Options &options) {
         10.;
 }
 bool write_edge_settings(const std::wstring &ini, const Options &options) {
-    bool okay = true;
+    bool okay = WritePrivateProfileStringW(L"Preview", L"MirrorStretchTenths",
+                                           std::to_wstring(tenths(options.mirror_stretch, 0, 100)).c_str(),
+                                           ini.c_str()) != FALSE;
     for (unsigned eye = 0; eye < 2; ++eye) {
         const auto &reserve = options.edge_reserve[eye];
         okay = WritePrivateProfileStringW(sections[eye], L"Enabled", reserve.enabled ? L"1" : L"0",
@@ -58,7 +63,7 @@ bool write_edge_settings(const std::wstring &ini, const Options &options) {
 
 struct AdvancedSettings::Impl {
     HWND parent{}, window{}, profile{}, separate{}, edges[4]{}, labels[4]{}, vertical{}, vertical_label{},
-        render{}, expansions[2]{}, expansion_labels[2]{}, explanation{};
+        render{}, expansions[2]{}, expansion_labels[2]{}, explanation{}, stretch{}, stretch_label{};
     Theme *theme{};
     Options *options{};
     std::wstring ini;
@@ -86,6 +91,7 @@ struct AdvancedSettings::Impl {
         return h;
     }
     void refresh_labels() {
+        SetWindowTextW(stretch_label, (L"Edge stretch: " + decimal(options->mirror_stretch) + L" %").c_str());
         const auto &reserve = options->edge_reserve[editing];
         const double values[]{reserve.left, reserve.right, reserve.top, reserve.bottom};
         const wchar_t *names[]{L"Left reserve", L"Right reserve", L"Top reserve", L"Bottom reserve"};
@@ -102,6 +108,7 @@ struct AdvancedSettings::Impl {
         }
     }
     void load_controls() {
+        SendMessageW(stretch, TBM_SETPOS, TRUE, tenths(options->mirror_stretch, 0, 100));
         SendMessageW(profile, CB_SETCURSEL, editing, 0);
         const auto &reserve = options->edge_reserve[editing];
         SendMessageW(separate, BM_SETCHECK, reserve.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -115,6 +122,7 @@ struct AdvancedSettings::Impl {
         refresh_labels();
     }
     void scroll() {
+        options->mirror_stretch = SendMessageW(stretch, TBM_GETPOS, 0, 0) / 10.;
         auto &reserve = options->edge_reserve[editing];
         double *values[]{&reserve.left, &reserve.right, &reserve.top, &reserve.bottom};
         for (unsigned i = 0; i < 4; ++i)
@@ -152,33 +160,37 @@ struct AdvancedSettings::Impl {
         separate = child(L"BUTTON", L"Use separate stabilization reserves for this eye", BS_AUTOCHECKBOX, 24,
                          133, 690, 28, separate_id);
         for (unsigned i = 0; i < 4; ++i) {
-            const int y = 178 + int(i) * 36;
+            const int y = 170 + int(i) * 31;
             labels[i] = child(L"STATIC", L"", 0, 24, y, 205, 25);
             edges[i] = slider(left_id + int(i), y - 5, 0, 350);
         }
-        vertical_label = child(L"STATIC", L"", 0, 24, 338, 205, 25);
-        vertical = slider(vertical_id, 331, -1000, 1000, 387);
-        child(L"BUTTON", L"Center", BS_PUSHBUTTON, 636, 330, 78, 31, center_id);
+        vertical_label = child(L"STATIC", L"", 0, 24, 308, 205, 25);
+        vertical = slider(vertical_id, 301, -1000, 1000, 387);
+        child(L"BUTTON", L"Center", BS_PUSHBUTTON, 636, 300, 78, 31, center_id);
         child(L"STATIC",
               L"Y offset shifts the view within the full image: negative = up, positive = down.\r\n"
               L"Uses hidden crop pixels; shifting leaves less stabilization room on that edge.",
-              0, 24, 373, 690, 44);
-        child(L"STATIC", L"OPENXR RENDER EXTENSION", 0, 24, 439, 690, 26, 0, true);
-        render = child(L"BUTTON", L"Enable extra rendered area (next game launch)", BS_AUTOCHECKBOX, 24, 475,
+              0, 24, 343, 690, 44);
+        stretch_label = child(L"STATIC", L"", 0, 24, 403, 205, 25);
+        stretch = slider(stretch_id, 396, 0, 1000);
+        child(L"STATIC",
+              L"0% keeps mirroring; 100% strongly stretches pixels outside the captured image.\r\n"
+              L"Mirror limit still caps the effect. Enable mirroring in the main window.",
+              0, 24, 439, 690, 44);
+        child(L"STATIC", L"OPENXR RENDER EXTENSION", 0, 24, 508, 690, 26, 0, true);
+        render = child(L"BUTTON", L"Enable extra rendered area (next game launch)", BS_AUTOCHECKBOX, 24, 540,
                        690, 28, render_id);
         for (unsigned i = 0; i < 2; ++i) {
-            const int y = 522 + int(i) * 36;
+            const int y = 581 + int(i) * 31;
             expansion_labels[i] = child(L"STATIC", L"", 0, 24, y, 205, 25);
             expansions[i] = slider(render_left_id + int(i), y - 5, 0, 300);
         }
-        child(L"BUTTON", L"Both eyes inward: 10%", BS_PUSHBUTTON, 24, 602, 325, 36, inward_id);
-        child(L"BUTTON", L"Save for next game launch", BS_PUSHBUTTON, 365, 602, 349, 36, save_render_id);
-        explanation =
-            child(L"STATIC",
-                  L"Adds real render area and requests wider textures. GPU cost increases.\r\nRequires the "
-                  L"0.6 connection and an OpenXR game restart after saving.\r\nRender settings stay unsaved "
-                  L"until you click Save; edge and Y sliders are live.",
-                  0, 24, 658, 690, 76);
+        child(L"BUTTON", L"Both eyes inward: 10%", BS_PUSHBUTTON, 24, 653, 325, 36, inward_id);
+        child(L"BUTTON", L"Save for next game launch", BS_PUSHBUTTON, 365, 653, 349, 36, save_render_id);
+        explanation = child(L"STATIC",
+                            L"Extra render area increases GPU cost. Save, then restart your OpenXR game.\r\n"
+                            L"Render settings apply after Save; edge, stretch and Y controls are live.",
+                            0, 24, 702, 690, 44);
     }
     static LRESULT CALLBACK proc(HWND h, UINT message, WPARAM w, LPARAM l) {
         auto *self = reinterpret_cast<Impl *>(GetWindowLongPtrW(h, GWLP_USERDATA));
@@ -196,7 +208,7 @@ struct AdvancedSettings::Impl {
             SetDCBrushColor(dc, RGB(24, 31, 42));
             FillRect(dc, &r, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
             SetDCBrushColor(dc, RGB(53, 66, 82));
-            RECT line{24, 425, 714, 426};
+            RECT line{24, 493, 714, 494};
             FillRect(dc, &line, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
             if (message == WM_PAINT)
                 EndPaint(h, &ps);
@@ -297,6 +309,10 @@ bool AdvancedSettings::route(MSG &msg) {
 }
 RenderSettings AdvancedSettings::draft() const {
     return impl_->window ? impl_->pending : read_render_settings(impl_->ini);
+}
+void AdvancedSettings::refresh_live_controls() {
+    if (impl_->window)
+        impl_->load_controls();
 }
 void AdvancedSettings::reload(const std::wstring &ini) {
     impl_->ini = ini;

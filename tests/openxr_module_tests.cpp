@@ -343,6 +343,7 @@ int main(int argc, char **argv) {
         auto *properties = obs_source_properties(source);
         check(obs_properties_get(properties, "import") && obs_properties_get(properties, "comfort") &&
                   obs_properties_get(properties, "right_reserve_left") &&
+                  obs_properties_get(properties, "mirror_stretch") &&
                   obs_properties_get(properties, "reset_horizon") &&
                   obs_properties_get(properties, "compare") &&
                   obs_properties_get(properties, "preset_3_path") &&
@@ -373,9 +374,9 @@ int main(int argc, char **argv) {
               "Stream Comfort hotkey uses the same native source tuning as its button");
         obs_data_release(stored);
         const auto preset = std::filesystem::path(argv[4]) / "isolated-native-import.ini";
-        const std::string ini =
-            "[Preview]\nSmoothingTenths=427\nCropTenths=0\nStabilize=0\nOutputWidth=640\nOutputHeight=360\n["
-            "RightEyeReserve]\nEnabled=1\nRightTenths=200\n[Render]\nEnabled=1\n";
+        const std::string ini = "[Preview]\nSmoothingTenths=427\nCropTenths=0\nStabilize="
+                                "0\nMirrorStretchTenths=642\nOutputWidth=640\nOutputHeight=360\n["
+                                "RightEyeReserve]\nEnabled=1\nRightTenths=200\n[Render]\nEnabled=1\n";
         {
             std::ofstream file(preset, std::ios::binary);
             file << ini;
@@ -386,7 +387,8 @@ int main(int argc, char **argv) {
         obs_property_button_clicked(obs_properties_get(properties, "import"), source);
         stored = obs_source_get_settings(source);
         check(obs_data_get_double(stored, "smoothing") == 42.7 &&
-                  obs_data_get_double(stored, "right_reserve_right") == 20,
+                  obs_data_get_double(stored, "right_reserve_right") == 20 &&
+                  obs_data_get_double(stored, "mirror_stretch") == 64.2,
               "native Import button applies literal preset values");
         obs_data_release(stored);
         press(source, "steadyxr.strong");
@@ -394,6 +396,7 @@ int main(int argc, char **argv) {
         stored = obs_source_get_settings(source);
         check(obs_data_get_double(stored, "smoothing") == 42.7 &&
                   obs_data_get_double(stored, "right_reserve_right") == 20 &&
+                  obs_data_get_double(stored, "mirror_stretch") == 64.2 &&
                   std::string(obs_data_get_string(stored, "preset_1_path")) == preset.u8string(),
               "saved preset hotkey imports its configured INI and retains the slot path");
         obs_data_release(stored);
@@ -405,7 +408,8 @@ int main(int argc, char **argv) {
         auto *saved = obs_save_source(source);
         auto *saved_settings = obs_data_get_obj(saved, "settings");
         check(obs_data_get_double(saved_settings, "smoothing") == 42.7 &&
-                  obs_data_get_double(saved_settings, "right_reserve_right") == 20,
+                  obs_data_get_double(saved_settings, "right_reserve_right") == 20 &&
+                  obs_data_get_double(saved_settings, "mirror_stretch") == 64.2,
               "OBS scene serialization retains imported options without the preview app");
         obs_data_release(saved_settings);
         obs_data_release(saved);

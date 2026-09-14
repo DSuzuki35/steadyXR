@@ -23,6 +23,7 @@ int main() {
                   c.options.stabilize && c.options.smoothing == 40 && c.options.crop == 10 &&
                   c.options.mirror && c.options.eye == 0 && c.options.aspect == 16. / 9.,
               "native source defaults");
+        check(c.options.mirror_stretch == 0, "edge stretch defaults to existing mirror behavior");
         check(c.options.overlays.mode == 0, "overlay capture defaults to None");
         c.options.overlays = {2, 0x8005, 1234, 18446744073709551000ull};
         vrst_plugin::openxr_store(s, c);
@@ -55,6 +56,15 @@ int main() {
         check(!vrst::preview::overlay_scope_matches(restored_overlay, scope),
               "another producer cannot inherit individual selection");
         vrst_plugin::openxr_defaults(s);
+        for (auto invalid :
+             {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(), -5.}) {
+            obs_data_set_double(s, "mirror_stretch", invalid);
+            check(vrst_plugin::openxr_settings(s).options.mirror_stretch == 0,
+                  "invalid/negative edge stretch safely becomes zero");
+        }
+        obs_data_set_double(s, "mirror_stretch", 150);
+        check(vrst_plugin::openxr_settings(s).options.mirror_stretch == 100,
+              "edge stretch clamps at 100 percent");
         obs_data_set_double(s, "smoothing", std::numeric_limits<double>::quiet_NaN());
         obs_data_set_double(s, "crop", -23);
         obs_data_set_double(s, "mirror_limit", 999);
@@ -90,12 +100,13 @@ int main() {
         check(vrst_plugin::openxr_import(s, old.wstring(), error), "literal legacy INI imports");
         c = vrst_plugin::openxr_settings(s);
         check(c.options.smoothing == 63 && c.options.crop == 14 && c.options.eye == 1 && c.fps == 90 &&
-                  !c.options.mirror && c.options.edge_reserve[1].left == 7,
+                  !c.options.mirror && c.options.edge_reserve[1].left == 7 && c.options.mirror_stretch == 0,
               "legacy values and half-crop reserve fallback");
         const std::string modern =
             "[Preview]\nSmoothing=99\nSmoothingTenths=427\nCropTenths=123\nCropLeftTenths="
             "24\nCropRightTenths=35\nCropTopTenths=46\nCropBottomTenths=57\nHorizonTenths="
-            "611\nAdaptiveHorizon=0\nMirrorLimitTenths=141\nMirrorSoftnessTenths=753\nOutputWidth="
+            "611\nAdaptiveHorizon=0\nMirrorLimitTenths=141\nMirrorSoftnessTenths=753\nMirrorStretchTenths="
+            "642\nOutputWidth="
             "1280\nOutputHeight=720\nCompareMode=2\nAspectNumerator=4\nAspectDenominator="
             "3\nVerticalOffsetTenths=-675\nEye="
             "1\n[LeftEyeReserve]\nEnabled=1\nLeftTenths=34\nRightTenths=87\nTopTenths=56\nBottomTenths=123\n["
@@ -114,10 +125,10 @@ int main() {
                   c.options.crop_right == 3.5 && c.options.crop_top == 4.6 && c.options.crop_bottom == 5.7 &&
                   c.options.horizon_lock == 61.1 && !c.options.adaptive_horizon &&
                   c.options.mirror_limit == 14.1 && c.options.mirror_softness == 75.3 &&
-                  c.options.output_width == 1280 && c.options.output_height == 720 &&
-                  c.options.aspect == 4. / 3. && c.options.vertical_offset == -67.5 &&
-                  c.options.edge_reserve[0].left == 3.4 && c.options.edge_reserve[0].bottom == 12.3 &&
-                  c.options.edge_reserve[1].right == 20,
+                  c.options.mirror_stretch == 64.2 && c.options.output_width == 1280 &&
+                  c.options.output_height == 720 && c.options.aspect == 4. / 3. &&
+                  c.options.vertical_offset == -67.5 && c.options.edge_reserve[0].left == 3.4 &&
+                  c.options.edge_reserve[0].bottom == 12.3 && c.options.edge_reserve[1].right == 20,
               "all modern render options import with exact tenths");
         std::ifstream f(current, std::ios::binary);
         const std::string bytes((std::istreambuf_iterator<char>(f)), {});
@@ -136,7 +147,9 @@ int main() {
         vrst_plugin::openxr_add_properties(props);
         check(obs_properties_get(props, "right_reserve_left") && obs_properties_get(props, "output_width") &&
                   obs_properties_get(props, "vertical_offset") &&
-                  obs_properties_get(props, "mirror_softness"),
+                  obs_properties_get(props, "mirror_softness") &&
+                  obs_properties_get(props, "mirror_stretch") &&
+                  obs_properties_get(props, "mirror_stretch_help"),
               "native properties expose advanced rendering controls");
         auto *compare = obs_properties_get(props, "compare_mode");
         check(compare && obs_property_list_item_count(compare) == 3,
@@ -149,6 +162,20 @@ int main() {
         check(restored.options.compare_mode == 1 && !restored.options.compare_original &&
                   !obs_data_has_user_value(roundtrip, "compare_original"),
               "comparison layout persists while active comparison always remains transient");
+        check(restored.options.mirror_stretch == 64.2,
+              "edge stretch persists through native OBS settings serialization");
+        auto *json = obs_data_create_from_json(obs_data_get_json(roundtrip));
+        check(vrst_plugin::openxr_settings(json).options.mirror_stretch == 64.2,
+              "edge stretch survives a JSON scene roundtrip");
+        obs_data_release(json);
+        const auto stretch_bounds = dir / "stretch-bounds.ini";
+        for (const auto &value : {std::wstring(L"-15"), std::wstring(L"1500")}) {
+            WritePrivateProfileStringW(L"Preview", L"MirrorStretchTenths", value.c_str(),
+                                       stretch_bounds.c_str());
+            check(vrst_plugin::openxr_import(s, stretch_bounds.wstring(), error) &&
+                      vrst_plugin::openxr_settings(s).options.mirror_stretch == (value == L"-15" ? 0 : 100),
+                  "imported edge stretch stays within the supported range");
+        }
         obs_data_set_int(roundtrip, "compare_mode", 99);
         check(vrst_plugin::openxr_settings(roundtrip).options.compare_mode == 2,
               "unknown comparison mode is bounded before rendering");

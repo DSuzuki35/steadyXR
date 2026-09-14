@@ -41,3 +41,7 @@ This build expires 30 days after its UTC build timestamp, shared with the releas
 The **OpenXR overlay layers** group lists layers detected from the game. Use **Refresh layers** after toggling third-party overlays. Select None (default), All supported, or individual checkboxes. Individual choices are scoped to that game session and need to be selected again after restart; All/None and selection preferences save with the source and imported INI presets. Unsupported entries state why they cannot be captured. List refresh is explicit, so an FPS update cannot interrupt slider entry.
 
 The game must call the overlay injector before SteadyXR in the OpenXR call chain, so SteadyXR receives its added layers and swapchain lifecycle calls. The installed registry list alone does not prove the order of an already-running game. See [overlay setup and limits](openxr-overlays.md). These are composition layers, not selectable API-layer plugins: one overlay program may submit several images.
+
+## Edge extension
+
+**Edge stretch** blends reflection into stretched edge colors toward the outer border. It uses the same renderer as the standalone app, keeps the real image unchanged, and respects Mirror limit. Default 0 preserves existing settings; try 50 with Mirror softness enabled. Import/export and presets include this setting.

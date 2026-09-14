@@ -23,7 +23,8 @@ class AdvancedSettings {
         render_right_id,
         inward_id,
         save_render_id,
-        center_id
+        center_id,
+        stretch_id
     };
     AdvancedSettings();
     ~AdvancedSettings();
@@ -34,6 +35,7 @@ class AdvancedSettings {
     bool route(MSG &);
     RenderSettings draft() const;
     void reload(const std::wstring &ini);
+    void refresh_live_controls();
 
   private:
     struct Impl;

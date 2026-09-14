@@ -7,6 +7,7 @@
 #include <dxgi.h>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
@@ -782,6 +783,107 @@ int main(int argc, char **argv) {
         const double soft_variance = soft_square / mirror_count - std::pow(soft_sum / mirror_count, 2);
         require(soft_variance < sharp_variance * .65,
                 "soft mirror must reduce texture contrast beyond darkening alone");
+        // A green image border around a red interior exposes whether an extra
+        // region reflects the interior or extends the boundary's real pixels.
+        require(keyed->AcquireSync(0, 0) == S_OK, "stretch fixture producer key");
+        std::fill(input.begin(), input.end(), 0xff0000ffu);
+        for (unsigned y = 128; y < 384; ++y)
+            for (unsigned x = 128; x < 384; ++x)
+                if (x < 140 || x >= 372 || y < 140 || y >= 372)
+                    input[y * 512 + x] = 0xff00ff00u;
+        context->UpdateSubresource(texture.Get(), 0, nullptr, input.data(), 512 * 4, 0);
+        context->Flush();
+        keyed->ReleaseSync(1);
+        require(channel.lock(), "stretch fixture publication");
+        channel.data()->frame.sequence++;
+        channel.data()->frame.display_time += 16666667;
+        channel.data()->ready = 1;
+        channel.unlock();
+        require(renderer.consume(channel), "consume edge stretch fixture");
+        options.mirror_softness = 0;
+        auto stretch_draw = [&] {
+            require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "edge stretch draw");
+        };
+        stretch_draw();
+        const auto legacy_mirror = pixels;
+        options.mirror_stretch = 100;
+        stretch_draw();
+        const auto stretched = pixels;
+        unsigned extended = 0, preserved = 0;
+        for (unsigned y = 0; y < h; ++y)
+            for (unsigned x = 0; x < w; ++x) {
+                auto ray = vrst::rotate(
+                    projection.correction,
+                    {projection.output.left +
+                         (projection.output.right - projection.output.left) * (x + .5) / w,
+                     projection.output.up + (projection.output.down - projection.output.up) * (y + .5) / h,
+                     -1});
+                const double u = (ray.x / -ray.z - projection.input.left) /
+                                 (projection.input.right - projection.input.left);
+                const double v =
+                    (projection.input.up - ray.y / -ray.z) / (projection.input.up - projection.input.down);
+                const auto index = std::size_t(y) * w + x;
+                if (u > .01 && u < .99 && v > .01 && v < .99) {
+                    require(stretched[index] == legacy_mirror[index],
+                            "stretch preserves original pixels exactly");
+                    ++preserved;
+                }
+                if (legacy_mirror[index] == 0xff0000ffu && std::max({-u, u - 1, -v, v - 1}) > .05) {
+                    require(stretched[index] == 0xff00ff00u,
+                            "full stretch extends the green edge instead of reflecting red interior");
+                    ++extended;
+                }
+            }
+        require(extended > 100 && preserved > 1000, "stretch fixture exercises edge extension and interior");
+        for (double strength :
+             {0., -100., std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+            options.mirror_stretch = strength;
+            stretch_draw();
+            require(pixels == legacy_mirror, "zero or invalid stretch preserves the legacy mirror exactly");
+        }
+        options.mirror_stretch = 150;
+        stretch_draw();
+        require(pixels == stretched, "stretch above 100 clamps to full strength");
+        options.mirror_stretch = 100;
+        options.compare_original = true;
+        options.compare_mode = 0;
+        stretch_draw();
+        const auto stretch_original = pixels;
+        options.mirror_stretch = 0;
+        stretch_draw();
+        require(pixels == stretch_original, "original bypass preserves in-bounds pixels with stretch");
+        options.mirror_stretch = 100;
+        options.compare_mode = 1;
+        stretch_draw();
+        for (unsigned y = 0; y < h; y += 7)
+            for (unsigned x = 0; x < w; x += 7)
+                require(pixels[y * w + x] == (x < w / 2 ? stretched : stretch_original)[y * w + x],
+                        "stretch split matches stabilized and original reference images");
+        options.compare_mode = 2;
+        stretch_draw();
+        require(pixels[w / 4] == 0xff000000u && pixels[3 * w / 4] == 0xff000000u,
+                "stretch stays inside fitted side-by-side panels");
+        for (unsigned panel_index = 0; panel_index < 2; ++panel_index)
+            for (unsigned y = h / 4 + 1; y < 3 * h / 4 - 1; y += 19)
+                for (unsigned x = 1; x < w / 2 - 1; x += 23) {
+                    const auto &reference = panel_index ? stretch_original : stretched;
+                    const unsigned rx = x * 2, ry = (y - h / 4) * 2;
+                    const auto expected = reference[ry * w + rx];
+                    if (reference[ry * w + rx + 1] == expected && reference[(ry + 1) * w + rx] == expected &&
+                        reference[(ry + 1) * w + rx + 1] == expected)
+                        require(pixels[y * w + panel_index * w / 2 + x] == expected,
+                                "stretch side-by-side panels preserve full reference framing");
+                }
+        options.compare_original = false;
+        options.compare_mode = 0;
+        options.mirror_limit = 1;
+        stretch_draw();
+        const auto limited_stretch = pixels;
+        options.mirror_stretch = 0;
+        stretch_draw();
+        for (std::size_t i = 0; i < pixels.size(); ++i)
+            require((pixels[i] == 0xff000000u) == (limited_stretch[i] == 0xff000000u),
+                    "edge stretch cannot extend the permitted mirror limit");
         options.mirror_softness = 0;
         options.mirror_limit = 1;
         require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "small mirror draw");
@@ -942,6 +1044,52 @@ int main(int argc, char **argv) {
         options.compare_original = false;
         require(renderer.draw(options, false) && renderer.readback(pixels, w, h) && pixels == framed_window,
                 "stored comparison layout must not affect normal window capture");
+        renderer.source_changed();
+        options = Options{};
+        options.output_width = 1280;
+        options.output_height = 720;
+        options.crop = 0;
+        options.smoothing = 100;
+        options.mirror_limit = 2;
+        options.mirror_softness = 0;
+        // Track a real translated window image so its image-warp branch exposes
+        // extra pixels. The same mirror transition must work without pose input.
+        for (unsigned frame_index = 0; frame_index < 2; ++frame_index) {
+            for (unsigned y = 0; y < 288; ++y)
+                for (unsigned x = 0; x < 512; ++x) {
+                    const double px = double(x) - frame_index * 8, py = y;
+                    const auto gray = std::uint32_t(
+                        255 *
+                        (.5 + .13 * std::sin(.19 * px + .03 * py) + .12 * std::cos(.23 * py - .01 * px) +
+                         .11 * std::sin(.13 * px + .21 * py) + .10 * std::cos(.29 * px - .17 * py)));
+                    window_pixels[y * 512 + x] = 0xff000000u | gray | (gray << 8) | (gray << 16);
+                }
+            capture_context->UpdateSubresource(window_image.Get(), 0, nullptr, window_pixels.data(), 512 * 4,
+                                               0);
+            processed = renderer.consume_window(window_image.Get(), 5000000000ULL + frame_index * 16666667ULL,
+                                                options);
+            for (int i = 0; i < 200 && !processed; ++i) {
+                Sleep(1);
+                processed = renderer.consume_window(nullptr, 0, options);
+            }
+            require(processed, "translated window analysis completes");
+        }
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h),
+                "window reflection reference");
+        const auto window_reflection = pixels;
+        options.mirror_stretch = 100;
+        require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "window edge extension");
+        unsigned window_extended = 0;
+        for (unsigned y = 0; y < h; ++y)
+            for (unsigned x = 0; x < w; ++x) {
+                const auto index = y * w + x;
+                if (x > w / 4 && x < 3 * w / 4 && y > h / 4 && y < 3 * h / 4)
+                    require(pixels[index] == window_reflection[index],
+                            "window stretch preserves image interior");
+                if (pixels[index] != window_reflection[index])
+                    ++window_extended;
+            }
+        require(window_extended > 100, "window image-warp path applies edge stretch to tracked overrun");
         renderer.source_changed();
         require(!renderer.has_frame(), "window source change must discard pending history");
         std::cout << "Native GPU: window analysis/color, quad composition, resize, subrect bounds, keyed "

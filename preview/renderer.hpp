@@ -19,6 +19,7 @@ struct Options {
     double horizon_lock{}, mirror_limit{10};
     bool adaptive_horizon{true};
     double mirror_softness{60};
+    double mirror_stretch{0}; // Mirror-to-edge extension, percent; zero preserves reflection.
     EdgeReserve edge_reserve[2]{};
     unsigned eye{};           // Window capture profile; OpenXR uses the eye stored with its frame.
     double vertical_offset{}; // -100 highest, +100 lowest position within aspect-fit slack.
