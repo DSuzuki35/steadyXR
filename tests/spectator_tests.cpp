@@ -95,6 +95,16 @@ int main(int argc, char **argv) {
             Run r; r.i.base_target_orientation = {.1, .2, .3, .9};
             const auto q = r.c.update(r.i, r.s);
             check(q.x == .1 && q.y == .2 && q.z == .3 && q.w == .9, "disabled path changed baseline components");
+            for (int invalid = 0; invalid < 3; ++invalid) for (bool bypass : {false, true}) {
+                auto input = r.i;
+                if (invalid == 0) input.session = 0;
+                if (invalid == 1) input.time_ns = 0;
+                if (invalid == 2) input.source_orientation = {0, 0, 0, 0};
+                r.s.bypass = bypass; r.s.gaze_enabled = r.s.natural_enabled = bypass;
+                const auto unchanged = r.c.update(input, r.s);
+                check(unchanged.x == .1 && unchanged.y == .2 && unchanged.z == .3 && unchanged.w == .9,
+                      "invalid metadata changed bypass components");
+            }
         }},
         {"sustained fixation biases framing within angular travel", [] {
             Run r; r.s.gaze_enabled = true; r.s.gaze_strength = 100;

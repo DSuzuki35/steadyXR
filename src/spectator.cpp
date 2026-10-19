@@ -102,7 +102,7 @@ Quat SpectatorController::update(const SpectatorInput &i, const SpectatorSetting
     if (!valid(i.source_orientation) || !valid(i.base_target_orientation) || !i.time_ns || !i.session) {
         fixation_ = false;
         status_.gaze_state = s.gaze_enabled ? GazeState::untracked : GazeState::disabled;
-        return base;
+        return s.bypass || (!s.gaze_enabled && !s.natural_enabled) ? i.base_target_orientation : base;
     }
     const bool reference_changed = initialized_ && (i.session != session_ || i.reference_epoch != epoch_);
     if (reference_changed) {
