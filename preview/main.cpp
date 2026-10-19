@@ -8,6 +8,9 @@
 #include "render_settings.hpp"
 #include "renderer.hpp"
 #include "settings_path.hpp"
+#include "spectator_controls.hpp"
+#include "spectator_settings.hpp"
+#include "visual_settings_io.hpp"
 #include "theme.hpp"
 #include "window_capture.hpp"
 #include <algorithm>
@@ -31,12 +34,12 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127,
               mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130, advanced_id = 131,
               presets_id = 132, layers_id = 133, compare_id = 134, next_preset_id = 135, hotkeys_id = 136,
-              compact_status_id = 137, overlays_id = 138;
+              compact_status_id = 137, overlays_id = 138, spectator_id = 139, learn_chat_id = 140;
 constexpr int hotkeys_default_id = 2100, hotkeys_alternate_id = 2101, hotkeys_off_id = 2102;
 constexpr int comparison_original_id = 2110, comparison_split_id = 2111, comparison_side_by_side_id = 2112;
 constexpr UINT_PTR save_timer = 4101, comparison_timer = 4102;
-constexpr int hotkey_actions[]{reset_id, pause_id, next_preset_id, compare_id};
-constexpr wchar_t hotkey_letters[]{L'R', L'P', L'N', L'B'};
+constexpr int hotkey_actions[]{reset_id, pause_id, next_preset_id, compare_id, learn_chat_id};
+constexpr wchar_t hotkey_letters[]{L'R', L'P', L'N', L'B', L'C'};
 std::wstring executable_path(DWORD pid) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     wchar_t path[32768]{};
@@ -74,6 +77,7 @@ struct App {
     AdvancedSettings advanced;
     PresetsDialog presets;
     OverlayPanel overlays;
+    SpectatorControls spectator_controls;
     HANDLE layer_editor_process{};
     Channel channel;
     Renderer renderer;
@@ -99,7 +103,7 @@ struct App {
     std::filesystem::path presets_directory;
     std::wstring preset_cursor, hotkey_error;
     unsigned hotkey_profile{1}; // 0 off, 1 Ctrl+Alt, 2 Ctrl+Alt+Shift.
-    bool hotkey_registered[4]{};
+    bool hotkey_registered[5]{};
     std::uint64_t compare_until{};
     std::uint64_t start_ms{}, last_received_ms{}, last_sequence{}, fps_frames{}, fps_start{};
     double measured_fps{};
@@ -109,7 +113,7 @@ struct App {
             CloseHandle(layer_editor_process);
     }
     void unregister_hotkeys() {
-        for (unsigned i = 0; i < 4; ++i) {
+        for (unsigned i = 0; i < std::size(hotkey_actions); ++i) {
             if (hotkey_registered[i])
                 UnregisterHotKey(controls, hotkey_actions[i]);
             hotkey_registered[i] = false;
@@ -121,7 +125,7 @@ struct App {
         if (!hotkey_profile || diagnostic)
             return;
         const UINT modifiers = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT | (hotkey_profile == 2 ? MOD_SHIFT : 0);
-        for (unsigned i = 0; i < 4; ++i) {
+        for (unsigned i = 0; i < std::size(hotkey_actions); ++i) {
             hotkey_registered[i] =
                 RegisterHotKey(controls, hotkey_actions[i], modifiers, hotkey_letters[i]) != FALSE;
             if (!hotkey_registered[i]) {
@@ -138,7 +142,7 @@ struct App {
         if (!hotkey_profile)
             return L"Global hotkeys are off. F11: fullscreen.";
         return std::wstring(hotkey_profile == 2 ? L"Ctrl+Alt+Shift: " : L"Ctrl+Alt: ") +
-               L"R reset | P pause | N next preset | B compare";
+               L"R reset | P pause | N next preset | B compare | C learn chat";
     }
     void configure_hotkeys(unsigned profile) {
         hotkey_profile = profile;
@@ -151,15 +155,15 @@ struct App {
         if (!menu)
             return;
         AppendMenuW(menu, MF_STRING | (hotkey_profile == 1 ? MF_CHECKED : 0), hotkeys_default_id,
-                    L"Ctrl+Alt + R / P / N / B");
+                    L"Ctrl+Alt + R / P / N / B / C (learn chat)");
         AppendMenuW(menu, MF_STRING | (hotkey_profile == 2 ? MF_CHECKED : 0), hotkeys_alternate_id,
-                    L"Ctrl+Alt+Shift + R / P / N / B (alternate)");
+                    L"Ctrl+Alt+Shift + R / P / N / B / C (alternate)");
         AppendMenuW(menu, MF_STRING | (!hotkey_profile ? MF_CHECKED : 0), hotkeys_off_id,
                     L"Off — disable global hotkeys");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        const wchar_t *comparison_labels[]{L"A/B: Original (20s)",
-                                           L"A/B: 50/50 split — left stabilized, right original",
-                                           L"A/B: Side by side — left stabilized, right original"};
+        const wchar_t *comparison_labels[]{options.compare_effects ? L"A/B: Visual effects bypass (20s)" : L"A/B: Original (20s)",
+                                           options.compare_effects ? L"A/B: 50/50 split - effects / bypass" : L"A/B: 50/50 split — left stabilized, right original",
+                                           options.compare_effects ? L"A/B: Side by side - effects / bypass" : L"A/B: Side by side — left stabilized, right original"};
         for (unsigned i = 0; i < 3; ++i)
             AppendMenuW(menu, MF_STRING | (options.compare_mode == i ? MF_CHECKED : 0),
                         comparison_original_id + i, comparison_labels[i]);
@@ -214,6 +218,16 @@ struct App {
             window_mode && !demo
                 ? L"Horizon reset is ready for OpenXR pose capture. Hold the headset approximately upright."
                 : L"Horizon reset. Hold the headset approximately upright when resetting.";
+        update_status();
+    }
+    void learn_chat() {
+        if (window_mode || demo || !active() || options.spectator.bypass) {
+            setup_message = L"Chat learning needs an active OpenXR preview and spectator bypass off.";
+        } else {
+            renderer.learn_chat();
+            heartbeat();
+            setup_message = L"Look at chat and hold your gaze steady during the countdown and learning.";
+        }
         update_status();
     }
     void next_preset() {
@@ -346,6 +360,8 @@ struct App {
         if (controls)
             KillTimer(controls, save_timer);
         bool saved = write_edge_settings(ini, options);
+        saved = write_spectator_settings(ini, options.spectator) && saved;
+        saved = write_visual_settings(ini, options.visual) && saved;
         saved = write_overlay_settings(ini, options.overlays) && saved;
         auto write = [&](const wchar_t *key, int value) {
             saved =
@@ -376,6 +392,7 @@ struct App {
         write(L"AutoFullscreen", start_fullscreen);
         write(L"HotkeyProfile", hotkey_profile);
         write(L"CompareMode", options.compare_mode);
+        write(L"CompareEffects", options.compare_effects);
         if (output) {
             MONITORINFOEXW info{};
             info.cbSize = sizeof(info);
@@ -400,6 +417,8 @@ struct App {
         return saved;
     }
     void read() {
+        options.spectator = read_spectator_settings(ini);
+        options.visual = read_visual_settings(ini);
         options.overlays = read_overlay_settings(ini);
         auto value = [&](const wchar_t *key, int initial, int lo, int hi) {
             return std::clamp(int(GetPrivateProfileIntW(L"Preview", key, initial, ini.c_str())), lo, hi);
@@ -429,6 +448,7 @@ struct App {
         start_fullscreen = value(L"AutoFullscreen", 1, 0, 1) != 0;
         hotkey_profile = value(L"HotkeyProfile", 1, 0, 2);
         options.compare_mode = value(L"CompareMode", 0, 0, 2);
+        options.compare_effects = value(L"CompareEffects", 0, 0, 1) != 0;
         wchar_t saved_monitor[64]{};
         GetPrivateProfileStringW(L"Preview", L"Monitor", L"", saved_monitor, 64, ini.c_str());
         monitor_name = saved_monitor;
@@ -524,8 +544,11 @@ struct App {
         const bool previous_conflict = capture_conflict;
         if (active() && !window_mode && !demo) {
             const bool claimed = channel.heartbeat(selected_eye, rate);
-            if (claimed)
+            if (claimed) {
                 channel.select_overlays(options.overlays);
+                channel.request_gaze(!options.spectator.bypass &&
+                                     (options.spectator.gaze_enabled || renderer.calibration_active()));
+            }
             capture_conflict = !claimed && !channel.owns_consumer();
         } else {
             channel.release_consumer();
@@ -713,6 +736,7 @@ struct App {
         KillTimer(controls, save_timer);
         WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());
         read();
+        spectator_controls.refresh();
         if (IsWindow(overlays.window))
             overlays.refresh();
         register_hotkeys();
@@ -819,7 +843,8 @@ struct App {
                                     : !IsWindowVisible(output) || IsIconic(output) ? L"hidden"
                                     : !renderer.has_frame() || stale               ? L"waiting"
                                                                                    : L"connected";
-        const wchar_t *comparison_name = options.compare_mode == 1   ? L"50/50 comparison"
+        const wchar_t *comparison_name = options.compare_effects ? L"Effects A/B"
+                                         : options.compare_mode == 1   ? L"50/50 comparison"
                                          : options.compare_mode == 2 ? L"Side-by-side comparison"
                                                                      : L"Original";
         const auto view = comparison_active ? std::wstring(comparison_name) + L" (" +
@@ -830,7 +855,8 @@ struct App {
         const auto summary =
             std::to_wstring(fps_value) + L" FPS | " + feed + L" " + connection + L" | " + view;
         SetWindowTextW(compact_status, summary.c_str());
-        const wchar_t *comparison_button = options.compare_mode == 1   ? L"Compare 50/50 (20s)"
+        const wchar_t *comparison_button = options.compare_effects ? L"Compare effects (20s)"
+                                           : options.compare_mode == 1   ? L"Compare 50/50 (20s)"
                                            : options.compare_mode == 2 ? L"Compare side by side (20s)"
                                                                        : L"Compare original (20s)";
         SetWindowTextW(comparison, comparison_active ? L"End A/B comparison" : comparison_button);
@@ -1077,6 +1103,12 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         return 0;
     case WM_COMMAND:
         switch (LOWORD(w)) {
+        case spectator_id:
+            app->spectator_controls.open();
+            return 0;
+        case learn_chat_id:
+            app->learn_chat();
+            return 0;
         case compare_id:
             app->toggle_comparison();
             return 0;
@@ -1297,7 +1329,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.controls =
         CreateWindowExW(0, L"HorizonLockControls", control_title.c_str(),
                         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, 100, 100,
-                        1050, 855, nullptr, nullptr, instance, nullptr);
+                        1050, 900, nullptr, nullptr, instance, nullptr);
     state.output = CreateWindowExW(0, L"HorizonLockOutput", L"SteadyXR – Clean Preview", WS_OVERLAPPEDWINDOW,
                                    800, 120, 976, 579, nullptr, nullptr, instance, nullptr);
     state.theme.titlebar(state.controls);
@@ -1424,6 +1456,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                                   655, 675, 350, 28, auto_fullscreen_id);
     SendMessageW(state.auto_fullscreen, BM_SETCHECK, state.start_fullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
     child(state.controls, L"BUTTON", L"Overlay layers…", BS_PUSHBUTTON, 496, 668, 120, 34, overlays_id);
+    child(state.controls, L"BUTTON", L"Spectator camera / effects…", BS_PUSHBUTTON, 655, 713, 350, 32, spectator_id);
+    state.spectator_controls.initialize(state.controls, state.theme, state.options, state.renderer,
+        [&] { state.queue_save(); state.dirty = true; state.heartbeat(); state.update_status(); },
+        [&] { state.learn_chat(); });
     state.advanced.initialize(
         state.controls, state.theme, state.options, state.render_ini,
         [&] {
@@ -1510,7 +1546,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             MSG msg{};
             while (!state.quit && GetTickCount64() < until) {
                 while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                    if (!state.overlays.route(msg) && !state.presets.route(msg) &&
+                    if (!state.spectator_controls.route(msg) && !state.overlays.route(msg) && !state.presets.route(msg) &&
                         !state.advanced.route(msg) && !IsDialogMessageW(state.controls, &msg)) {
                         TranslateMessage(&msg);
                         DispatchMessageW(&msg);
@@ -1544,6 +1580,76 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         bool interactions_ok = !state.paused && IsWindow(state.comparison) &&
                                IsWindow(GetDlgItem(state.controls, next_preset_id)) &&
                                IsWindow(GetDlgItem(state.controls, hotkeys_id));
+        const bool spectator_entry_ok = IsWindow(GetDlgItem(state.controls, spectator_id));
+        trace << "spectator-controls-entry=" << spectator_entry_ok << '\n';
+        interactions_ok = interactions_ok && spectator_entry_ok;
+        const auto before_spectator_test = state.options;
+        state.spectator_controls.open(false);
+        const auto spectator_panel = state.spectator_controls.handle();
+        bool spectator_ok = IsWindow(spectator_panel) && !IsWindowVisible(spectator_panel) &&
+            !state.options.spectator.gaze_enabled && !state.options.spectator.chat_enabled &&
+            !state.options.spectator.natural_enabled && !state.options.visual.active() &&
+            std::size(hotkey_actions) == 5 && hotkey_letters[4] == L'C';
+        ShowWindow(spectator_panel, SW_SHOWNOACTIVATE);
+        RedrawWindow(spectator_panel, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        spectator_ok = save_controls(spectator_panel, state.directory + L"\\preview-spectator-test.bmp") && spectator_ok;
+        SendDlgItemMessageW(spectator_panel, SpectatorControls::page_id, CB_SETCURSEL, 1, 0);
+        SendMessageW(spectator_panel, WM_COMMAND, MAKEWPARAM(SpectatorControls::page_id, CBN_SELCHANGE), 0);
+        RedrawWindow(spectator_panel, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        spectator_ok = save_controls(spectator_panel, state.directory + L"\\preview-visual-test.bmp") && spectator_ok;
+        ShowWindow(spectator_panel, SW_HIDE);
+        SendDlgItemMessageW(spectator_panel, SpectatorControls::page_id, CB_SETCURSEL, 0, 0);
+        SendMessageW(spectator_panel, WM_COMMAND, MAKEWPARAM(SpectatorControls::page_id, CBN_SELCHANGE), 0);
+        SetDlgItemTextW(spectator_panel, SpectatorControls::camera_number_id, L"999");
+        SendMessageW(spectator_panel, WM_COMMAND, MAKEWPARAM(SpectatorControls::camera_number_id, EN_KILLFOCUS), 0);
+        spectator_ok = spectator_ok && state.options.spectator.gaze_strength == 100;
+        SendMessageW(spectator_panel, WM_COMMAND, SpectatorControls::cinematic_id, 0);
+        spectator_ok = spectator_ok && state.options.spectator.natural_enabled &&
+            state.options.spectator.natural_settling_ms == 300 && !state.options.visual.active();
+        SendMessageW(spectator_panel, WM_COMMAND, SpectatorControls::natural_id, 0);
+        spectator_ok = spectator_ok && state.options.spectator.natural_settling_ms == 180;
+        SendMessageW(spectator_panel, WM_COMMAND, SpectatorControls::filmic_id, 0);
+        spectator_ok = spectator_ok && state.options.visual.color && state.options.visual.bloom;
+        CheckDlgButton(spectator_panel, SpectatorControls::compare_scope_id, BST_CHECKED);
+        SendMessageW(spectator_panel, WM_COMMAND, SpectatorControls::compare_scope_id, 0);
+        wchar_t effects_comparison_label[64]{};
+        GetWindowTextW(state.comparison, effects_comparison_label, 64);
+        spectator_ok = spectator_ok && std::wstring(effects_comparison_label).find(L"effects") != std::wstring::npos;
+        spectator_ok = state.save() && spectator_ok;
+        App spectator_restored;
+        spectator_restored.ini = state.ini;
+        spectator_restored.read();
+        spectator_ok = spectator_ok && spectator_restored.options.spectator.natural_enabled &&
+            spectator_restored.options.visual.color && spectator_restored.options.visual.bloom &&
+            spectator_restored.options.compare_effects;
+        // Explicit calibration requests gaze even with framing off, then bypass and pause release it.
+        const bool old_window_mode = state.window_mode, old_demo = state.demo;
+        state.window_mode = state.demo = false;
+        state.options.spectator = {};
+        ShowWindow(state.output, SW_SHOWNOACTIVATE);
+        SendMessageW(state.controls, WM_HOTKEY, learn_chat_id, 0);
+        spectator_ok = spectator_ok && state.renderer.calibration_active();
+        if (state.channel.lock()) {
+            spectator_ok = spectator_ok && state.channel.data()->gaze_requested == 1;
+            state.channel.unlock();
+        } else spectator_ok = false;
+        state.options.spectator.bypass = true;
+        state.heartbeat();
+        if (state.channel.lock()) {
+            spectator_ok = spectator_ok && state.channel.data()->gaze_requested == 0;
+            state.channel.unlock();
+        } else spectator_ok = false;
+        SendMessageW(spectator_panel, WM_COMMAND, SpectatorControls::cancel_id, 0);
+        spectator_ok = spectator_ok && !state.renderer.calibration_active();
+        SendMessageW(spectator_panel, WM_COMMAND, SpectatorControls::clear_id, 0);
+        SendMessageW(spectator_panel, WM_COMMAND, SpectatorControls::neutral_id, 0);
+        spectator_ok = spectator_ok && !state.options.visual.active();
+        ShowWindow(state.output, SW_HIDE);
+        state.window_mode = old_window_mode; state.demo = old_demo;
+        state.options = before_spectator_test;
+        state.spectator_controls.refresh(); state.heartbeat(); state.save();
+        trace << "spectator-controls-settings-learning=" << spectator_ok << '\n';
+        interactions_ok = interactions_ok && spectator_ok;
         RECT overlay_button_rect{}, controls_rect{};
         GetWindowRect(GetDlgItem(state.controls, overlays_id), &overlay_button_rect);
         MapWindowPoints(nullptr, state.controls, reinterpret_cast<POINT *>(&overlay_button_rect), 2);
@@ -1551,6 +1657,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         interactions_ok = interactions_ok && overlay_button_rect.left >= 0 && overlay_button_rect.top >= 0 &&
                           overlay_button_rect.right <= controls_rect.right &&
                           overlay_button_rect.bottom <= controls_rect.bottom;
+        RECT spectator_button_rect{};
+        GetWindowRect(GetDlgItem(state.controls, spectator_id), &spectator_button_rect);
+        MapWindowPoints(nullptr, state.controls, reinterpret_cast<POINT *>(&spectator_button_rect), 2);
+        interactions_ok = interactions_ok && spectator_button_rect.left >= 0 && spectator_button_rect.top >= 0 &&
+            spectator_button_rect.right <= controls_rect.right && spectator_button_rect.bottom <= controls_rect.bottom;
         if (state.channel.lock()) {
             auto &catalog = state.channel.data()->overlay_catalog;
             catalog = {};
@@ -1871,6 +1982,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.rate = 90;
         state.options.stabilize = false;
         state.options.compare_mode = 2;
+        state.options.compare_effects = true;
+        state.options.spectator.gaze_enabled = state.options.spectator.chat_enabled = true;
+        state.options.spectator.natural_enabled = true;
+        state.options.spectator.chat_width_degrees = 27.5;
+        state.options.visual.exposure = state.options.visual.adaptation = true;
+        state.options.visual.bloom = state.options.visual.color = true;
+        state.options.visual.exposure_ev = -.75f;
+        state.options.visual.metering_region = {.1f, .2f, .8f, .9f};
         state.options.overlays = {2, 0x8021, 4242, 18446744073709551000ull};
         state.options.vertical_offset = -43.2;
         state.options.edge_reserve[0] = {true, 3.4, 8.7, 5.6, 12.3};
@@ -1895,6 +2014,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         bool preset_ok = stored_snapshot.has_value() && read_render_settings(state.ini).eyes[1].left == 10;
         state.builtin(BuiltinPreset::natural);
         state.options.compare_mode = 0;
+        state.options.compare_effects = false;
+        state.options.spectator = {};
+        state.options.visual = {};
         state.options.overlays = {};
         state.options.crop_left = 42;
         state.options.edge_reserve[0] = {};
@@ -1954,6 +2076,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             SendMessageW(state.eye, CB_GETCURSEL, 0, 0) == 1 &&
             SendMessageW(state.bypass, BM_GETCHECK, 0, 0) == BST_CHECKED &&
             SendMessageW(GetDlgItem(panel, AdvancedSettings::vertical_id), TBM_GETPOS, 0, 0) == -432;
+        wchar_t restored_chat_width[32]{};
+        GetDlgItemTextW(spectator_panel, SpectatorControls::camera_number_id + 6, restored_chat_width, 32);
+        preset_ok = preset_ok && state.options.compare_effects &&
+            state.options.spectator.gaze_enabled && state.options.spectator.chat_enabled &&
+            state.options.spectator.natural_enabled && state.options.spectator.chat_width_degrees == 27.5 &&
+            state.options.visual.exposure && state.options.visual.adaptation &&
+            state.options.visual.bloom && state.options.visual.color && state.options.visual.exposure_ev == -.75f &&
+            state.options.visual.metering_region.bottom == .9f && std::wstring(restored_chat_width) == L"27.5" &&
+            IsDlgButtonChecked(spectator_panel, SpectatorControls::visual_bool_id + 1) == BST_CHECKED &&
+            !state.renderer.spectator_status().zone_valid;
         preset_ok = preset_ok &&
                     SendDlgItemMessageW(preset_overlay_panel, 100, BM_GETCHECK, 0, 0) == BST_CHECKED &&
                     SendDlgItemMessageW(preset_overlay_panel, 101, BM_GETCHECK, 0, 0) == BST_UNCHECKED &&
@@ -2098,7 +2230,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 state.quit = true;
                 break;
             }
-            if (!state.overlays.route(msg) && !state.presets.route(msg) && !state.advanced.route(msg) &&
+            if (!state.spectator_controls.route(msg) && !state.overlays.route(msg) && !state.presets.route(msg) && !state.advanced.route(msg) &&
                 !IsDialogMessageW(state.controls, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
