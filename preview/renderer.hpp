@@ -43,17 +43,28 @@ class FrameStabilizer {
     Composition update(const Frame &, const Options &);
     void reset();
     void reset_horizon(); // Re-select upright hemisphere without clearing smoothing history.
-    void learn_chat() { spectator_.begin_chat_calibration(0); }
-    void cancel_chat() { spectator_.cancel_chat_calibration(); }
-    void clear_chat() { spectator_.clear_chat_zone(); }
-    SpectatorStatus spectator_status() const { return spectator_.status(); }
-    bool calibration_active() const { return spectator_.calibration_active(); }
+    void learn_chat() {
+        spectator_.begin_chat_calibration(0);
+    }
+    void cancel_chat() {
+        spectator_.cancel_chat_calibration();
+    }
+    void clear_chat() {
+        spectator_.clear_chat_zone();
+    }
+    SpectatorStatus spectator_status() const {
+        return spectator_.status();
+    }
+    bool calibration_active() const {
+        return spectator_.calibration_active();
+    }
 
   private:
     PoseHistory history_;
     Frame previous_{};
     double horizon_up_sign_{};
     SpectatorController spectator_;
+    bool spectator_active_{};
 };
 
 class Renderer {

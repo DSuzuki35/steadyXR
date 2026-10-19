@@ -33,37 +33,103 @@ int main() {
     try {
         {
             FrameStabilizer camera;
-            Options gaze; gaze.smoothing=0; gaze.crop=35; gaze.mirror=false;
-            gaze.stabilize=false; gaze.spectator.gaze_enabled=true; gaze.spectator.gaze_strength=100;
-            auto input=frame(1);
-            for(unsigned i=1;i<=180;++i) {
-                input=frame(i);
-                input.gaze.flags=GazeValid|GazeTracked|GazeTimeKnown;
-                input.gaze.sample_time_ns=input.display_time; input.gaze.reference_epoch=input.reference_epoch;
-                input.gaze.direction=rotate(axis_angle({0,1,0},.3),{0,0,-1});
-                camera.update(input,gaze);
+            Options gaze;
+            gaze.smoothing = 0;
+            gaze.crop = 35;
+            gaze.mirror = false;
+            gaze.stabilize = false;
+            gaze.spectator.gaze_enabled = true;
+            gaze.spectator.gaze_strength = 100;
+            auto input = frame(1);
+            for (unsigned i = 1; i <= 180; ++i) {
+                input = frame(i);
+                input.gaze.flags = GazeValid | GazeTracked | GazeTimeKnown;
+                input.gaze.sample_time_ns = input.display_time;
+                input.gaze.reference_epoch = input.reference_epoch;
+                input.gaze.direction = rotate(axis_angle({0, 1, 0}, .3), {0, 0, -1});
+                camera.update(input, gaze);
             }
-            auto enhanced=camera.update(input,gaze);
-            check(angle_between(enhanced.warp.correction,{})>.05,"gaze works independently of existing stabilization");
-            gaze.compare_original=true;
-            check(angle_between(camera.update(input,gaze).warp.correction,{})<1e-6,"camera A/B uses original geometry");
-            gaze.compare_effects=true;
-            check(angle_between(camera.update(input,gaze).warp.correction,enhanced.warp.correction)<1e-6,
+            auto enhanced = camera.update(input, gaze);
+            check(angle_between(enhanced.warp.correction, {}) > .05,
+                  "gaze works independently of existing stabilization");
+            gaze.compare_original = true;
+            check(angle_between(camera.update(input, gaze).warp.correction, {}) < 1e-6,
+                  "camera A/B uses original geometry");
+            gaze.compare_effects = true;
+            check(angle_between(camera.update(input, gaze).warp.correction, enhanced.warp.correction) < 1e-6,
                   "effects A/B preserves enhanced camera geometry without advancing frame");
-            gaze.compare_original=false; gaze.compare_effects=false; gaze.crop=0;
-            check(angle_between(camera.update(input,gaze).warp.correction,{})<1e-6,"gaze respects horizontal crop limit");
+            gaze.compare_original = false;
+            gaze.compare_effects = false;
+            gaze.crop = 0;
+            check(angle_between(camera.update(input, gaze).warp.correction, {}) < 1e-6,
+                  "gaze respects horizontal crop limit");
+            gaze.mirror = true;
+            gaze.mirror_limit = 0;
+            check(angle_between(camera.update(input, gaze).warp.correction, {}) < 1e-6,
+                  "new camera honors zero mirror allowance even with mirror enabled");
+            gaze.mirror_limit = 2;
+            const auto bounded = camera.update(input, gaze).warp;
+            for (double x : {0., 1.})
+                for (double y : {0., 1.}) {
+                    const auto uv = map_uv(bounded, x, y);
+                    check(uv[0] >= -.020001 && uv[0] <= 1.020001 && uv[1] >= -.020001 && uv[1] <= 1.020001,
+                          "gaze stays inside finite mirror allowance");
+                }
         }
         {
-            FrameStabilizer camera; Options options; camera.learn_chat();
-            for(unsigned i=1;i<=270;++i) {
-                auto input=frame(i); input.gaze.flags=GazeValid|GazeTracked|GazeTimeKnown;
-                input.gaze.sample_time_ns=input.display_time; input.gaze.reference_epoch=input.reference_epoch;
-                camera.update(input,options);
+            FrameStabilizer camera;
+            Options o;
+            o.smoothing = 0;
+            o.crop = 20;
+            o.aspect = 1;
+            o.mirror = false;
+            o.horizon_lock = 100;
+            o.adaptive_horizon = false;
+            o.spectator.gaze_enabled = true;
+            o.spectator.gaze_strength = 100;
+            o.spectator.gaze_horizontal_degrees = 20;
+            Composition result;
+            for (unsigned n = 1; n <= 180; ++n) {
+                auto f = frame(n);
+                const auto roll = axis_angle({0, 0, 1}, .08);
+                for (auto &v : f.views) {
+                    v.orientation[0] = float(roll.x);
+                    v.orientation[1] = float(roll.y);
+                    v.orientation[2] = float(roll.z);
+                    v.orientation[3] = float(roll.w);
+                }
+                f.gaze.flags = GazeValid | GazeTracked | GazeTimeKnown;
+                f.gaze.sample_time_ns = f.display_time;
+                f.gaze.reference_epoch = f.reference_epoch;
+                f.gaze.reference_from_eye = roll;
+                f.gaze.direction = rotate(axis_angle({0, 1, 0}, .6), {0, 0, -1});
+                result = camera.update(f, o);
             }
-            check(camera.spectator_status().zone_valid,"explicit calibration with framing disabled survives first frame");
-            auto reset=frame(271); reset.reference_epoch=2;
-            camera.update(reset,options);
-            check(!camera.spectator_status().zone_valid,"reference reset clears learned zone even while disabled");
+            const auto target = multiply(axis_angle({0, 0, 1}, .08), result.warp.correction);
+            check(std::abs(rotate(target, {1, 0, 0}).y) < 1e-3,
+                  "crop exhaustion preserves head leveling within 0.06 degrees while reducing gaze");
+        }
+        {
+            FrameStabilizer camera;
+            Options options;
+            camera.learn_chat();
+            for (unsigned i = 1; i <= 270; ++i) {
+                auto input = frame(i);
+                input.gaze.flags = GazeValid | GazeTracked | GazeTimeKnown;
+                input.gaze.sample_time_ns = input.display_time;
+                input.gaze.reference_epoch = input.reference_epoch;
+                camera.update(input, options);
+            }
+            check(camera.spectator_status().zone_valid,
+                  "explicit calibration with framing disabled survives first frame");
+            check(!camera.spectator_status().in_chat_zone &&
+                      camera.spectator_status().gaze_state == GazeState::disabled,
+                  "chat coverage becomes unavailable when eye acquisition is not requested");
+            auto reset = frame(271);
+            reset.reference_epoch = 2;
+            camera.update(reset, options);
+            check(!camera.spectator_status().zone_valid,
+                  "reference reset clears learned zone even while disabled");
         }
         {
             Options edges;

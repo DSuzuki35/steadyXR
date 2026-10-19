@@ -6,7 +6,7 @@ namespace vrst {
 enum GazeFlags : std::uint32_t { GazeValid = 1, GazeTracked = 2, GazeTimeKnown = 4 };
 struct GazeSample {
     Quat reference_from_eye{};
-    Vec3 direction{0, 0, -1}; // Unit ray in the runtime's stable reference frame.
+    Vec3 direction{0, 0, -1};      // Unit ray in the runtime's stable reference frame.
     std::int64_t sample_time_ns{}; // Same clock as SpectatorInput::time_ns when known.
     std::uint64_t reference_epoch{};
     std::uint32_t flags{};
@@ -43,13 +43,19 @@ struct SpectatorStatus {
 class SpectatorController {
   public:
     Quat update(const SpectatorInput &, const SpectatorSettings &);
+    Quat head_target() const {
+        return head_target_;
+    }
+    void suspend(); // Stop transient framing/diagnostics, retain learned reference anchor.
     // Arms against the next acquired frame's clock, independent of UI clock.
     // now_ns is the caller's request timestamp; it is never compared with XR time.
     void begin_chat_calibration(std::uint64_t now_ns);
     void cancel_chat_calibration();
     void clear_chat_zone();
     void reset();
-    SpectatorStatus status() const { return status_; }
+    SpectatorStatus status() const {
+        return status_;
+    }
     bool calibration_active() const {
         return status_.calibration_phase == ChatCalibrationPhase::countdown ||
                status_.calibration_phase == ChatCalibrationPhase::acquiring;
@@ -60,7 +66,7 @@ class SpectatorController {
     bool initialized_{}, calibration_armed_{}, fixation_{}, have_sample_{}, natural_active_{};
     std::uint64_t session_{}, epoch_{}, time_{}, sequence_{}, calibration_start_{}, fixation_start_{};
     std::int64_t sample_time_{};
-    Quat output_{}, previous_source_{}, natural_target_{};
+    Quat output_{}, previous_source_{}, natural_target_{}, head_target_{};
     Vec3 velocity_{}, speed_{}, natural_step_velocity_{}, fixation_direction_{}, zone_direction_{};
     std::array<Vec3, 3> calibration_sums_{};
     std::array<std::uint32_t, 3> calibration_counts_{};

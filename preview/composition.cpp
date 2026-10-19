@@ -9,6 +9,39 @@ Quat orientation(const View &v) {
 Projection projection(const View &v) {
     return {v.fov[0], v.fov[1], v.fov[2], v.fov[3]};
 }
+Quat bounded_camera(const Warp &warp, Quat head, Quat desired, double allowance) {
+    auto fits = [&](Quat q) {
+        auto at = warp;
+        at.correction = q;
+        for (double x : {0., 1.})
+            for (double y : {0., 1.}) {
+                const auto ray = rotate(q, {warp.output.left + x * (warp.output.right - warp.output.left),
+                                            warp.output.up + y * (warp.output.down - warp.output.up), -1});
+                const auto uv = map_uv(at, x, y);
+                if (ray.z >= -.05 || uv[0] < -allowance || uv[0] > 1 + allowance || uv[1] < -allowance ||
+                    uv[1] > 1 + allowance)
+                    return false;
+            }
+        return true;
+    };
+    auto limit = [&](Quat start, Quat end) {
+        if (fits(end))
+            return end;
+        double lo = 0, hi = 1;
+        for (unsigned n = 0; n < 24; ++n) {
+            const double mid = (lo + hi) * .5;
+            if (fits(slerp(start, end, mid)))
+                lo = mid;
+            else
+                hi = mid;
+        }
+        return slerp(start, end, lo);
+    };
+    // Head following gets the available correction budget first; gaze uses only
+    // what remains. The shader's finite mirror allowance is part of that budget.
+    const auto safe_head = limit({}, head);
+    return limit(safe_head, desired);
+}
 } // namespace
 void apply_stream_comfort(Options &options) {
     options.smoothing = 60;
@@ -75,8 +108,12 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
         frame.producer_pid != previous_.producer_pid || frame.sequence < previous_.sequence ||
         frame.display_time < previous_.display_time || frame.eye != previous_.eye) {
         // A learning request can be armed before the first captured frame.
-        if (previous_.session) reset();
-        else { history_.clear(); horizon_up_sign_=0; }
+        if (previous_.session)
+            reset();
+        else {
+            history_.clear();
+            horizon_up_sign_ = 0;
+        }
     }
     history_.set_smoothing(options.smoothing);
     if (frame.sequence != previous_.sequence || history_.size() == 0) {
@@ -102,25 +139,40 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     settings.edge_reserve = options.edge_reserve[frame.eye];
     const bool compare_camera = options.compare_original && !options.compare_effects;
     const bool stabilize = options.stabilize && !compare_camera;
-    const bool camera_enabled = !options.spectator.bypass &&
+    const bool camera_enabled =
+        !options.spectator.bypass &&
         (options.spectator.gaze_enabled || (options.spectator.natural_enabled && options.stabilize));
     Quat correction = stabilize ? pose.correction : Quat{};
+    Quat head_correction = correction;
     if (camera_enabled || spectator_.calibration_active()) {
         SpectatorInput input;
-        input.source_orientation=orientation(frame.views[0]);
-        input.base_target_orientation=multiply(input.source_orientation,options.stabilize ? pose.correction : Quat{});
-        input.gaze=frame.gaze; input.time_ns=static_cast<std::uint64_t>(frame.display_time);
-        input.session=frame.session; input.sequence=frame.sequence; input.reference_epoch=frame.reference_epoch;
-        auto tuning=options.spectator;
-        tuning.natural_enabled=tuning.natural_enabled && options.stabilize;
-        const auto target=spectator_.update(input,tuning);
-        if (camera_enabled) correction=compare_camera ? Quat{} : normalized(multiply(conjugate(input.source_orientation),target));
+        input.source_orientation = orientation(frame.views[0]);
+        input.base_target_orientation =
+            multiply(input.source_orientation, options.stabilize ? pose.correction : Quat{});
+        input.gaze = frame.gaze;
+        input.time_ns = static_cast<std::uint64_t>(frame.display_time);
+        input.session = frame.session;
+        input.sequence = frame.sequence;
+        input.reference_epoch = frame.reference_epoch;
+        auto tuning = options.spectator;
+        tuning.natural_enabled = tuning.natural_enabled && options.stabilize;
+        const auto target = spectator_.update(input, tuning);
+        spectator_active_ = true;
+        head_correction =
+            compare_camera
+                ? Quat{}
+                : normalized(multiply(conjugate(input.source_orientation), spectator_.head_target()));
+        if (camera_enabled)
+            correction =
+                compare_camera ? Quat{} : normalized(multiply(conjugate(input.source_orientation), target));
+    } else if (spectator_active_) {
+        spectator_.suspend();
+        spectator_active_ = false;
     }
     const bool final_framing = camera_enabled || settings.edge_reserve.enabled ||
                                (std::isfinite(options.vertical_offset) && options.vertical_offset != 0);
-    result.warp =
-        make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
-                  !final_framing ? correction : Quat{}, projection(frame.views[0]));
+    result.warp = make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
+                            !final_framing ? correction : Quat{}, projection(frame.views[0]));
     if (final_framing)
         result.warp.correction = correction;
     auto effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
@@ -134,25 +186,31 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
         if (std::abs(source_up_y) > .25)
             horizon_up_sign_ = source_up_y > 0 ? 1 : -1;
     }
-    if (horizon_up_sign_ != 0 && stabilize && std::isfinite(options.horizon_lock) &&
-        options.horizon_lock > 0) {
-        const auto right = rotate(effective_target, {1, 0, 0}), up = rotate(effective_target, {0, 1, 0});
-        const double fade = std::clamp((std::hypot(up.y, right.y) - .05) / .20, 0., 1.);
-        const double tilt = std::atan2(horizon_up_sign_ * right.y, horizon_up_sign_ * up.y);
-        const double remaining = 1 - std::clamp(options.horizon_lock, 0., 100.) / 100;
-        double response = remaining;
-        if (options.adaptive_horizon) {
-            // Suppress small tilts strongly, then continuously approach the
-            // familiar linear response on larger movements. The rational blend
-            // has no threshold or dead zone; sign and slider endpoints survive.
-            constexpr double knee = 15 * pi / 180;
-            const double blend = tilt * tilt / (tilt * tilt + knee * knee);
-            const double gentle = remaining * remaining * remaining;
-            response *= gentle + (1 - gentle) * blend;
+    const bool level_on =
+        horizon_up_sign_ != 0 && stabilize && std::isfinite(options.horizon_lock) && options.horizon_lock > 0;
+    auto level = [&](Quat target) {
+        if (level_on) {
+            const auto right = rotate(target, {1, 0, 0}), up = rotate(target, {0, 1, 0});
+            const double fade = std::clamp((std::hypot(up.y, right.y) - .05) / .20, 0., 1.);
+            const double tilt = std::atan2(horizon_up_sign_ * right.y, horizon_up_sign_ * up.y);
+            const double remaining = 1 - std::clamp(options.horizon_lock, 0., 100.) / 100;
+            double response = remaining;
+            if (options.adaptive_horizon) {
+                // Suppress small tilts strongly, then continuously approach the
+                // familiar linear response on larger movements. The rational blend
+                // has no threshold or dead zone; sign and slider endpoints survive.
+                constexpr double knee = 15 * pi / 180;
+                const double blend = tilt * tilt / (tilt * tilt + knee * knee);
+                const double gentle = remaining * remaining * remaining;
+                response *= gentle + (1 - gentle) * blend;
+            }
+            const double roll = tilt * (1 - response) * fade;
+            target = normalized(multiply(axis_angle(rotate(target, {0, 0, -1}), roll), target));
         }
-        const double roll = tilt * (1 - response) * fade;
-        effective_target =
-            normalized(multiply(axis_angle(rotate(effective_target, {0, 0, -1}), roll), effective_target));
+        return target;
+    };
+    if (level_on) {
+        effective_target = level(effective_target);
         result.warp.correction =
             normalized(multiply(conjugate(orientation(frame.views[0])), effective_target));
     }
@@ -164,7 +222,16 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     if (final_framing) {
         // Reserve, extra framing and horizon leveling all describe the final
         // output rays. Limit those rays, not an earlier, wider intermediate.
-        limit_warp_correction(result.warp, result.warp.correction, settings.mirror_edges);
+        if (camera_enabled) {
+            const auto head = level(multiply(orientation(frame.views[0]), head_correction));
+            head_correction = normalized(multiply(conjugate(orientation(frame.views[0])), head));
+            const double allowance = options.mirror && std::isfinite(options.mirror_limit)
+                                         ? std::clamp(options.mirror_limit, 0., 50.) / 100
+                                         : 0;
+            result.warp.correction =
+                bounded_camera(result.warp, head_correction, result.warp.correction, allowance);
+        } else
+            limit_warp_correction(result.warp, result.warp.correction, settings.mirror_edges);
         effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
     }
     result.focus_correction =
@@ -177,6 +244,7 @@ void FrameStabilizer::reset() {
     previous_ = {};
     horizon_up_sign_ = 0;
     spectator_.reset();
+    spectator_active_ = false;
 }
 void FrameStabilizer::reset_horizon() {
     horizon_up_sign_ = 0;

@@ -500,6 +500,27 @@ void overlay_tests() {
     color = pixels[180 * w + 320];
     require(std::abs(int(color & 255) - 188) <= 2 && std::abs(int((color >> 8) & 255) - 137) <= 2,
             "reordered overlay metadata opens matching resources and reverses composition order");
+    // Effects comparison scales the complete canvas, including pillarboxing.
+    options.aspect = 4. / 3.;
+    options.visual.exposure = true;
+    options.visual.exposure_ev = 0;
+    options.compare_effects = true;
+    options.compare_original = false;
+    draw();
+    const auto pillarbox = pixels;
+    options.compare_original = true;
+    options.compare_mode = 2;
+    draw();
+    for (unsigned panel = 0; panel < 2; ++panel)
+        for (unsigned y = 100; y < 260; y += 13)
+            for (unsigned x = 8; x < 312; x += 13) {
+                const unsigned rx = x * 2, ry = (y - 90) * 2;
+                const auto expected = pillarbox[ry * w + rx];
+                if (pillarbox[ry * w + rx + 1] == expected && pillarbox[(ry + 1) * w + rx] == expected &&
+                    pillarbox[(ry + 1) * w + rx + 1] == expected)
+                    require(pixels[y * w + panel * 320 + x] == expected,
+                            "effects side-by-side aligns overlays with pillarboxed game canvas");
+            }
     require(channel.lock(), "bad overlay metadata lock");
     channel.data()->frame = frame;
     channel.data()->frame.overlays[0].width = -1;
@@ -541,12 +562,13 @@ void visual_host_tests() {
     options.compare_mode = 1;
     draw();
     require(pixels[180 * w + 200] == enhanced[180 * w + 200] &&
-                pixels[180 * w + 440] == original[180 * w + 440], "effects split uses same framing");
+                pixels[180 * w + 440] == original[180 * w + 440],
+            "effects split uses same framing");
     options.compare_mode = 2;
     draw();
-    require(pixels[10 * w + 160] == 0xff000000u &&
-                pixels[180 * w + 160] == enhanced[180 * w + 320] &&
-                pixels[180 * w + 480] == original[180 * w + 320], "effects fitted side-by-side");
+    require(pixels[10 * w + 160] == 0xff000000u && pixels[180 * w + 160] == enhanced[180 * w + 320] &&
+                pixels[180 * w + 480] == original[180 * w + 320],
+            "effects fitted side-by-side");
     options.compare_original = false;
     options.visual.exposure_ev = 0;
     draw();
@@ -561,7 +583,8 @@ void visual_host_tests() {
     options.spectator.bypass = false;
     options.visual = {};
     require(draw() == original, "switching every effect off restores original pixels");
-    require(renderer.visual_diagnostics().resource_bytes == 0 && renderer.visual_diagnostics().dispatches == 0,
+    require(renderer.visual_diagnostics().resource_bytes == 0 &&
+                renderer.visual_diagnostics().dispatches == 0,
             "all-off frees effects resources and stops GPU work");
     std::cout << "Native GPU: preview exposure, transfer, A/B and bypass passed\n";
 }
