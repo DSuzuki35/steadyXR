@@ -124,12 +124,15 @@ void render(void *data, gs_effect_t *) {
     auto *parent = obs_filter_get_parent(f.source);
     const auto width = target ? obs_source_get_base_width(target) : 0;
     const auto height = target ? obs_source_get_base_height(target) : 0;
-    const gs_color_space spaces[]{GS_CS_SRGB, GS_CS_SRGB_16F};
+    // Include native HDR spaces when probing: libobs async sources negotiate
+    // the last preferred space if their native space is absent. An SDR-only
+    // list would request conversion and conceal the HDR input from our bypass.
+    const gs_color_space spaces[]{GS_CS_SRGB, GS_CS_SRGB_16F, GS_CS_709_EXTENDED, GS_CS_709_SCRGB};
     if (!target || !parent || !width || !height) {
         skip("Waiting for source");
         return;
     }
-    const auto space = obs_source_get_color_space(target, 2, spaces);
+    const auto space = obs_source_get_color_space(target, std::size(spaces), spaces);
     if (space != GS_CS_SRGB && space != GS_CS_SRGB_16F) {
         skip("Unsupported HDR/color space: SDR effects bypassed");
         return;

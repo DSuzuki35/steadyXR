@@ -169,7 +169,7 @@ struct PropertyRefreshProbe {
 };
 struct VisualFixture {
     std::atomic<unsigned> width{320}, height{180};
-    std::atomic<bool> hdr{false};
+    std::atomic<gs_color_space> color_space{GS_CS_SRGB};
     std::atomic<unsigned> renders{0};
 };
 VisualFixture visual_fixture;
@@ -183,8 +183,17 @@ void register_visual_fixture() {
     info.destroy = [](void *) {};
     info.get_width = [](void *v) { return static_cast<VisualFixture *>(v)->width.load(); };
     info.get_height = [](void *v) { return static_cast<VisualFixture *>(v)->height.load(); };
-    info.video_get_color_space = [](void *v, size_t, const gs_color_space *) {
-        return static_cast<VisualFixture *>(v)->hdr ? GS_CS_709_EXTENDED : GS_CS_SRGB;
+    info.video_get_color_space = [](void *v, size_t count, const gs_color_space *preferred_spaces) {
+        const auto native = static_cast<VisualFixture *>(v)->color_space.load();
+        // Mirror libobs obs_source_get_color_space's OBS_SOURCE_ASYNC branch:
+        // return native if requested, otherwise the final preferred space.
+        auto selected = native;
+        for (size_t i = 0; i < count; ++i) {
+            selected = preferred_spaces[i];
+            if (selected == native)
+                break;
+        }
+        return selected;
     };
     info.video_render = [](void *v, gs_effect_t *) {
         auto &f = *static_cast<VisualFixture *>(v);
@@ -252,20 +261,27 @@ void visual_filter_tests() {
     const auto large = frame(input);
     check(large.good && large.width == 3840 && large.height == 2160 && large.alpha == neutral.alpha,
           "native effects resize to 4K without changing alpha");
-    visual_fixture.hdr = true;
-    const auto before_hdr = visual_fixture.renders.load();
-    frame(input);
-    properties = obs_source_properties(filter);
-    const std::string hdr_status = obs_property_description(obs_properties_get(properties, "visual_status"));
-    check(visual_fixture.renders == before_hdr + 1 &&
-              hdr_status.find("Unsupported HDR") != std::string::npos &&
-              hdr_status.find("0 bytes") != std::string::npos,
-          "HDR input passes through once with clear fallback and no effects resources");
-    const gs_color_space requested_space[]{GS_CS_SRGB};
-    check(obs_source_get_color_space(filter, 1, requested_space) == GS_CS_709_EXTENDED,
-          "effects filter preserves upstream HDR color-space negotiation during fallback");
-    obs_properties_destroy(properties);
-    visual_fixture.hdr = false;
+    for (const auto native : {GS_CS_709_EXTENDED, GS_CS_709_SCRGB}) {
+        visual_fixture.color_space = native;
+        const gs_color_space sdr_preferences[]{GS_CS_SRGB, GS_CS_SRGB_16F};
+        check(obs_source_get_color_space(input, 2, sdr_preferences) == GS_CS_SRGB_16F,
+              "HDR fixture follows libobs async preference fallback when native HDR is absent");
+        const auto before_hdr = visual_fixture.renders.load();
+        frame(input);
+        properties = obs_source_properties(filter);
+        const std::string hdr_status =
+            obs_property_description(obs_properties_get(properties, "visual_status"));
+        check(visual_fixture.renders == before_hdr + 1 &&
+                  hdr_status.find("Unsupported HDR") != std::string::npos &&
+                  hdr_status.find("0 bytes") != std::string::npos,
+              "preference-respecting native HDR input passes through once without effects resources");
+        const gs_color_space requested_spaces[]{GS_CS_SRGB, GS_CS_SRGB_16F, GS_CS_709_EXTENDED,
+                                                GS_CS_709_SCRGB};
+        check(obs_source_get_color_space(filter, 4, requested_spaces) == native,
+              "effects filter preserves native HDR color-space negotiation during fallback");
+        obs_properties_destroy(properties);
+    }
+    visual_fixture.color_space = GS_CS_SRGB;
     obs_data_set_bool(settings, "VisualExposure", false);
     obs_source_update(filter, settings);
     check(eventually([&] {
