@@ -75,6 +75,9 @@ int main() {
     }
     check(second.overlay_catalog().layers[0].slot == 3 && !second.owns_consumer(),
           "catalog can be inspected without taking capture ownership");
+    check(first.request_gaze(true), "owner requests gaze");
+    check(!second.request_gaze(false), "non-owner cannot disable gaze");
+    if (first.lock()) { check(first.data()->gaze_requested == 1, "gaze request retained"); first.unlock(); }
     check(!second.heartbeat(0, 90) && !second.owns_consumer(), "second local consumer cannot steal capture");
     second.release_consumer();
     if (first.lock()) {
@@ -88,6 +91,7 @@ int main() {
     check(!first.owns_consumer() && second.heartbeat(0, 90), "release permits source handoff");
     if (second.lock()) {
         check(second.data()->overlay_selection.mode == 0, "capture handoff clears the previous consumer's overlay choices");
+        check(second.data()->gaze_requested == 0, "handoff clears previous gaze request");
         second.unlock();
     }
     second.close();
@@ -134,5 +138,9 @@ int main() {
         check(second.data()->eye == 1 && second.data()->fps == 240, "capture request is clamped");
         second.unlock();
     }
+    if (first.lock()) { first.data()->version = 3; first.unlock(); }
+    Channel incompatible;
+    check(!incompatible.open(true, name), "v4 consumer rejects an incompatible v3 mapping");
+    if (first.lock()) { first.data()->version = ipc_version; first.unlock(); }
     return failures ? 1 : 0;
 }

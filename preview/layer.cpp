@@ -6,6 +6,7 @@
 #include "render_settings.hpp"
 #include "settings_path.hpp"
 #include "transport.hpp"
+#include "gaze_capture.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -75,6 +76,7 @@ struct Instance {
     PFN_xrGetInstanceProcAddr gipa{};
     wchar_t application[128]{};
     RenderSettings render{}; // Immutable for the lifetime of this instance.
+    GazeRuntime gaze;
 #define PROC(n) PFN_xr##n n{};
     PROC(DestroyInstance)
     PROC(CreateSession)
@@ -101,11 +103,13 @@ struct Output {
 struct Session {
     Instance *instance{};
     XrSession handle{};
+    GazeCapture gaze;
     std::uint64_t cookie{}, epoch{1}, generation{}, sequence{};
     RateLimiter limiter;
     XrSpace space{};
     XrTime pending_change{};
     bool pending_reference{}, connected{};
+    bool gaze_requested{}; // Refreshed by the existing capture eligibility check.
     std::uint32_t consumer{};
     Com<ID3D11Device> device;
     Com<ID3D11DeviceContext> context;
@@ -207,6 +211,7 @@ void invalidate(Session &s) {
 }
 // Called only while the shared header mutex is held; never waits for a viewer.
 bool eligible(Session &s, Shared &shared, std::uint64_t now) {
+    s.gaze_requested = false;
     if (owner && owner != &s)
         return false;
     if (shared.producer_pid && shared.producer_pid != GetCurrentProcessId() &&
@@ -229,6 +234,7 @@ bool eligible(Session &s, Shared &shared, std::uint64_t now) {
         invalidate(s);
     }
     const bool active = viewer_active(shared, now);
+    s.gaze_requested = active && shared.gaze_requested != 0;
     if (!active) {
         if (s.connected) {
             shared.ready = 0;
@@ -753,6 +759,11 @@ void publish(Session &s, const XrFrameEndInfo &end) {
         outputs[i]->copied_slice = slices[i];
     }
     frame.generation = s.generation;
+    // Only query gaze for a successfully captured frame. Disabled capture has
+    // no gaze runtime calls; synchronization belongs to the game's input cycle.
+    frame.gaze = s.gaze.sample(shared.gaze_requested != 0, end.displayTime, projection->space,
+                               projection->views[eye].pose.orientation, s.epoch);
+    shared.gaze_capability = static_cast<std::uint32_t>(s.gaze.capability);
     frame.sequence = ++s.sequence;
     frame.published_ms = GetTickCount64();
     shared.frame = frame;
@@ -847,6 +858,9 @@ XrResult XRAPI_CALL layer_destroy_instance(XrInstance handle) {
     auto it = instances.find(handle);
     if (it == instances.end())
         return XR_ERROR_HANDLE_INVALID;
+    for (auto &entry : sessions)
+        if (entry.second->instance == it->second.get()) entry.second->gaze.release();
+    it->second->gaze.release();
     const auto result = it->second->DestroyInstance(handle);
     if (XR_SUCCEEDED(result)) {
         for (auto si = sessions.begin(); si != sessions.end();) {
@@ -878,6 +892,7 @@ XrResult XRAPI_CALL layer_create_session(XrInstance handle, const XrSessionCreat
             s->handle = *out;
             s->cookie = next_cookie++;
             s->generation = ++next_generation;
+            s->gaze.initialize(it->second->gaze, *out, info ? info->systemId : XR_NULL_SYSTEM_ID);
             for (auto *next = info ? static_cast<const XrBaseInStructure *>(info->next) : nullptr; next;
                  next = next->next)
                 if (next->type == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
@@ -911,6 +926,7 @@ XrResult XRAPI_CALL layer_destroy_session(XrSession handle) {
     auto it = sessions.find(handle);
     if (it == sessions.end())
         return XR_ERROR_HANDLE_INVALID;
+    it->second->gaze.release();
     auto result = it->second->instance->DestroySession(handle);
     if (XR_SUCCEEDED(result)) {
         release_owner(*it->second);
@@ -1082,13 +1098,30 @@ XrResult XRAPI_CALL layer_poll(XrInstance handle, XrEventDataBuffer *event) {
     }
     return result;
 }
+XrResult XRAPI_CALL layer_attach_actions(XrSession handle, const XrSessionActionSetsAttachInfo *info) {
+    STATE_LOCK;
+    auto it=sessions.find(handle);
+    return it==sessions.end() ? XR_ERROR_HANDLE_INVALID : it->second->gaze.attach(info);
+}
+XrResult XRAPI_CALL layer_sync_actions(XrSession handle, const XrActionsSyncInfo *info) {
+    STATE_LOCK;
+    auto it=sessions.find(handle);
+    if (it==sessions.end()) return XR_ERROR_HANDLE_INVALID;
+    return it->second->gaze.sync(info,it->second->gaze_requested);
+}
+XrResult XRAPI_CALL layer_suggest_bindings(XrInstance handle, const XrInteractionProfileSuggestedBinding *info) {
+    STATE_LOCK;
+    auto it=instances.find(handle);
+    return it==instances.end() ? XR_ERROR_HANDLE_INVALID : it->second->gaze.suggest(info);
+}
 XrResult XRAPI_CALL layer_gipa(XrInstance handle, const char *name, PFN_xrVoidFunction *out) {
     if (!name || !out)
         return XR_ERROR_VALIDATION_FAILURE;
     STATE_LOCK;
     // Never advertise optional extension functions that the next runtime does not expose.
     if (!std::strcmp(name, "xrLocateViews") || !std::strcmp(name, "xrEnumerateViewConfigurationViews") ||
-        !std::strcmp(name, "xrGetVisibilityMaskKHR")) {
+        !std::strcmp(name, "xrGetVisibilityMaskKHR") || !std::strcmp(name,"xrAttachSessionActionSets") ||
+        !std::strcmp(name,"xrSyncActions") || !std::strcmp(name,"xrSuggestInteractionProfileBindings")) {
         auto it = instances.find(handle);
         auto next = it == instances.end() ? global_next : it->second->gipa;
         *out = nullptr;
@@ -1098,6 +1131,12 @@ XrResult XRAPI_CALL layer_gipa(XrInstance handle, const char *name, PFN_xrVoidFu
                 *out = reinterpret_cast<PFN_xrVoidFunction>(layer_locate_views);
             else if (!std::strcmp(name, "xrEnumerateViewConfigurationViews"))
                 *out = reinterpret_cast<PFN_xrVoidFunction>(layer_view_sizes);
+            else if (!std::strcmp(name,"xrAttachSessionActionSets"))
+                *out = reinterpret_cast<PFN_xrVoidFunction>(layer_attach_actions);
+            else if (!std::strcmp(name,"xrSyncActions"))
+                *out = reinterpret_cast<PFN_xrVoidFunction>(layer_sync_actions);
+            else if (!std::strcmp(name,"xrSuggestInteractionProfileBindings"))
+                *out = reinterpret_cast<PFN_xrVoidFunction>(layer_suggest_bindings);
             else
                 *out = reinterpret_cast<PFN_xrVoidFunction>(layer_visibility_mask);
         }
@@ -1136,7 +1175,25 @@ XrResult XRAPI_CALL layer_create_instance(const XrInstanceCreateInfo *info, cons
     auto *next = layer->nextInfo;
     XrApiLayerCreateInfo forwarded = *layer;
     forwarded.nextInfo = next->next;
-    const auto result = next->nextCreateApiLayerInstance(info, &forwarded, out);
+    bool gaze_enabled=false, added=false;
+    XrInstanceCreateInfo requested=*info;
+    std::vector<const char*> extensions;
+    try {
+        for (uint32_t i=0; info->enabledExtensionNames && i<info->enabledExtensionCount; ++i)
+            if (!std::strcmp(info->enabledExtensionNames[i],XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME)) gaze_enabled=true;
+        if (!gaze_enabled && !build_expired() && gaze_extension_available(next->nextGetInstanceProcAddr)) {
+            if (info->enabledExtensionCount && info->enabledExtensionNames)
+                extensions.assign(info->enabledExtensionNames,info->enabledExtensionNames+info->enabledExtensionCount);
+            extensions.push_back(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);
+            requested.enabledExtensionCount=uint32_t(extensions.size()); requested.enabledExtensionNames=extensions.data();
+            gaze_enabled=added=true;
+        }
+    } catch (...) { requested=*info; gaze_enabled=added=false; }
+    auto result = next->nextCreateApiLayerInstance(added ? &requested : info, &forwarded, out);
+    if (XR_FAILED(result) && added) {
+        gaze_enabled=false;
+        result=next->nextCreateApiLayerInstance(info,&forwarded,out);
+    }
     if (XR_FAILED(result))
         return result;
     STATE_LOCK;
@@ -1144,6 +1201,7 @@ XrResult XRAPI_CALL layer_create_instance(const XrInstanceCreateInfo *info, cons
         auto instance = std::make_unique<Instance>();
         instance->handle = *out;
         instance->gipa = next->nextGetInstanceProcAddr;
+        instance->gaze.initialize(*out,instance->gipa,gaze_enabled && !build_expired());
         std::wstring settings_path;
         const DWORD length = GetEnvironmentVariableW(L"HORIZONLOCK_PREVIEW_SETTINGS", nullptr, 0);
         if (length && length <= 32768) {

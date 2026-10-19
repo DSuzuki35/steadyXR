@@ -51,6 +51,25 @@ bool check_runtime_progress{};
 PFN_xrGetInstanceProcAddr layer_lookup{};
 int release_calls{}, end_calls{};
 int locate_space_calls{};
+bool gaze_extension{}, reject_gaze_extension{};
+bool saw_gaze_extension{};
+const XrSessionActionSetsAttachInfo *attach_arg{};
+const XrActionsSyncInfo *sync_arg{};
+const XrInteractionProfileSuggestedBinding *suggest_arg{};
+XrResult XRAPI_CALL fake_extensions(const char*, uint32_t capacity, uint32_t *count, XrExtensionProperties *out) {
+    *count=gaze_extension?1:0;
+    if(capacity && gaze_extension) std::strcpy(out[0].extensionName,XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);
+    return XR_SUCCESS;
+}
+XrResult XRAPI_CALL fake_attach(XrSession,const XrSessionActionSetsAttachInfo *info) {
+    CHECK(info==attach_arg); return XR_ERROR_ACTIONSETS_ALREADY_ATTACHED;
+}
+XrResult XRAPI_CALL fake_sync(XrSession,const XrActionsSyncInfo *info) {
+    CHECK(info==sync_arg); return XR_SESSION_NOT_FOCUSED;
+}
+XrResult XRAPI_CALL fake_suggest(XrInstance,const XrInteractionProfileSuggestedBinding *info) {
+    CHECK(info==suggest_arg); return XR_ERROR_PATH_UNSUPPORTED;
+}
 bool valid_space = true;
 XrResult XRAPI_CALL fake_locate_space(XrSpace space, XrSpace base, XrTime time, XrSpaceLocation *out) {
     CHECK(space == reinterpret_cast<XrSpace>(91) && base == XR_NULL_HANDLE && time == 123456);
@@ -166,9 +185,13 @@ void paint(float r, float g, float b) {
         v->Release();
     }
 }
-XrResult XRAPI_CALL fake_create(const XrInstanceCreateInfo *, const XrApiLayerCreateInfo *chain,
+XrResult XRAPI_CALL fake_create(const XrInstanceCreateInfo *info, const XrApiLayerCreateInfo *chain,
                                 XrInstance *out) {
     CHECK(chain->nextInfo == nullptr);
+    saw_gaze_extension=false;
+    for(unsigned i=0;i<info->enabledExtensionCount;++i)
+        saw_gaze_extension |= !std::strcmp(info->enabledExtensionNames[i],XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);
+    if(saw_gaze_extension && reject_gaze_extension) return XR_ERROR_EXTENSION_NOT_PRESENT;
     *out = instance;
     return XR_SUCCESS;
 }
@@ -263,6 +286,10 @@ XrResult XRAPI_CALL fake_gipa(XrInstance, const char *name, PFN_xrVoidFunction *
         return XR_SUCCESS;                                                                                   \
     }
     ENTRY("xrDestroyInstance", fake_destroy_instance)
+    ENTRY("xrEnumerateInstanceExtensionProperties", fake_extensions)
+    ENTRY("xrAttachSessionActionSets", fake_attach)
+    ENTRY("xrSyncActions", fake_sync)
+    ENTRY("xrSuggestInteractionProfileBindings", fake_suggest)
     ENTRY("xrLocateViews", fake_locate)
     ENTRY("xrLocateSpace", fake_locate_space)
     ENTRY("xrEnumerateViewConfigurationViews", fake_view_sizes)
@@ -284,6 +311,27 @@ template <class T> T fn(PFN_xrGetInstanceProcAddr g, const char *name) {
     CHECK(g(instance, name, &f) == XR_SUCCESS);
     CHECK(f);
     return reinterpret_cast<T>(f);
+}
+void check_gaze_hooks(const XrNegotiateApiLayerRequest &request, const XrInstanceCreateInfo &ci,
+                      const XrApiLayerCreateInfo &chain) {
+    for(bool reject : {false,true}) {
+        gaze_extension=true; reject_gaze_extension=reject;
+        XrInstance actual{};
+        CHECK(request.createApiLayerInstance(&ci,&chain,&actual)==XR_SUCCESS);
+        CHECK(saw_gaze_extension==!reject);
+        const auto g=request.getInstanceProcAddr;
+        XrSessionCreateInfo info{XR_TYPE_SESSION_CREATE_INFO};
+        CHECK(fn<PFN_xrCreateSession>(g,"xrCreateSession")(actual,&info,&session)==XR_SUCCESS);
+        XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO}; attach_arg=&attach;
+        CHECK(fn<PFN_xrAttachSessionActionSets>(g,"xrAttachSessionActionSets")(session,&attach)==XR_ERROR_ACTIONSETS_ALREADY_ATTACHED);
+        XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO}; sync_arg=&sync;
+        CHECK(fn<PFN_xrSyncActions>(g,"xrSyncActions")(session,&sync)==XR_SESSION_NOT_FOCUSED);
+        XrInteractionProfileSuggestedBinding suggest{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING}; suggest_arg=&suggest;
+        CHECK(fn<PFN_xrSuggestInteractionProfileBindings>(g,"xrSuggestInteractionProfileBindings")(actual,&suggest)==XR_ERROR_PATH_UNSUPPORTED);
+        CHECK(fn<PFN_xrDestroySession>(g,"xrDestroySession")(session)==XR_SUCCESS);
+        CHECK(fn<PFN_xrDestroyInstance>(g,"xrDestroyInstance")(actual)==XR_SUCCESS);
+    }
+    gaze_extension=reject_gaze_extension=false;
 }
 void check_render_hooks(const XrNegotiateApiLayerRequest &request, const XrInstanceCreateInfo &ci,
                         const XrApiLayerCreateInfo &chain, const std::wstring &ini) {
@@ -761,6 +809,7 @@ int main(int argc, char **) {
     check_render_settings(temp_file);
     check_render_hooks(request, ci, chain, temp_file);
     check_expired_render(request, ci, chain, temp_file);
+    check_gaze_hooks(request, ci, chain);
     XrInstance actual{};
     CHECK(request.createApiLayerInstance(&ci, &chain, &actual) == XR_SUCCESS);
     CHECK(actual == instance);

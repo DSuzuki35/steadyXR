@@ -2,11 +2,12 @@
 #include <cstdint>
 #include <string>
 #include <windows.h>
+#include <vrst/spectator.hpp>
 
 namespace vrst::preview {
 constexpr std::uint32_t ipc_magic = 0x50564c48;
-constexpr std::uint32_t ipc_version = 3;
-constexpr const wchar_t *default_channel = L"Local\\SteadyXRPreview-v3";
+constexpr std::uint32_t ipc_version = 4;
+constexpr const wchar_t *default_channel = L"Local\\SteadyXRPreview-v4";
 constexpr unsigned max_overlay_layers = 16;
 constexpr unsigned max_overlay_images = 8;
 // Disabled by default. Selected slots are scoped to one producer PID/session.
@@ -48,6 +49,7 @@ struct Frame {
     std::uint32_t producer_pid{}, view_count{}, eye{};
     LUID adapter{};
     View views[2]{};
+    vrst::GazeSample gaze{};
     std::uint32_t overlay_count{};
     OverlayImage overlays[max_overlay_images]{};
 };
@@ -55,6 +57,7 @@ struct Frame {
 struct Shared {
     std::uint32_t magic{}, version{}, size{}, ready{};
     std::uint32_t consumer_pid{}, paused{1}, eye{}, fps{60};
+    std::uint32_t gaze_requested{}, gaze_capability{};
     std::uint64_t heartbeat_ms{};
     std::uint32_t producer_pid{}, status_code{};
     std::uint32_t render_enabled{};
@@ -93,6 +96,7 @@ class Channel {
     void close();
     // One active renderer per channel; separate OBS sources cannot steal frames.
     bool heartbeat(unsigned eye, unsigned fps);
+    bool request_gaze(bool); // Only the current owning consumer can request runtime work.
     bool select_overlays(const OverlaySelection &); // Only the active owning consumer can write.
     OverlayCatalog overlay_catalog(); // Read-only snapshot; empty if unavailable/busy.
     void release_consumer();
