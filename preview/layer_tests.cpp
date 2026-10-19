@@ -557,7 +557,9 @@ void check_expired_render(const XrNegotiateApiLayerRequest &request, const XrIns
         CHECK(count == (canted ? 4u : 2u));
         for (uint32_t i = 0; i < count; ++i) {
             const auto expected = runtime_view(i);
-            CHECK(!std::memcmp(&views[i], &expected, sizeof(expected)));
+            CHECK(views[i].type == expected.type && views[i].next == expected.next);
+            CHECK(!std::memcmp(&views[i].pose, &expected.pose, sizeof(expected.pose)));
+            CHECK(!std::memcmp(&views[i].fov, &expected.fov, sizeof(expected.fov)));
         }
         view_result = XR_ERROR_RUNTIME_FAILURE;
         CHECK(locate(session, &info, &state, 4, &count, views) == XR_ERROR_RUNTIME_FAILURE);

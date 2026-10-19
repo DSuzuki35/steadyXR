@@ -41,7 +41,7 @@ Recording recording(
     unsigned video_rate = 60, const std::function<double(double)> &render_time = [](double t) { return t; }) {
     Recording out;
     constexpr std::uint64_t epoch = 5000000000ULL;
-    const auto timestamp = [](double seconds) {
+    const auto timestamp = [epoch](double seconds) {
         return epoch + static_cast<std::uint64_t>(std::llround(seconds * 1e9));
     };
     for (unsigned i = 0; i <= duration * pose_rate; ++i) {

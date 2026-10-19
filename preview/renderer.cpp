@@ -258,7 +258,7 @@ struct Renderer::Impl {
     ImageResult image_result{};
     bool window_mode{};
     struct Pending {
-        ComPtr<ID3D11Texture2D> full, small, staging;
+        ComPtr<ID3D11Texture2D> full, analysis_texture, staging;
         ComPtr<ID3D11ShaderResourceView> view;
         ComPtr<ID3D11RenderTargetView> target;
         unsigned width{}, height{}, analysis_width{}, analysis_height{};
@@ -692,8 +692,8 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
     const double scale = std::min({1., 480. / input.Width, 270. / input.Height});
     const unsigned aw = std::max(1u, unsigned(input.Width * scale)),
                    ah = std::max(1u, unsigned(input.Height * scale));
-    if (!p->small || p->analysis_width != aw || p->analysis_height != ah) {
-        p->small.Reset();
+    if (!p->analysis_texture || p->analysis_width != aw || p->analysis_height != ah) {
+        p->analysis_texture.Reset();
         p->staging.Reset();
         p->target.Reset();
         D3D11_TEXTURE2D_DESC d{};
@@ -703,8 +703,8 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
         d.SampleDesc.Count = 1;
         d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         d.BindFlags = D3D11_BIND_RENDER_TARGET;
-        HRESULT hr = r.device->CreateTexture2D(&d, nullptr, &p->small);
-        if (FAILED(hr) || FAILED(hr = r.device->CreateRenderTargetView(p->small.Get(), nullptr, &p->target)))
+        HRESULT hr = r.device->CreateTexture2D(&d, nullptr, &p->analysis_texture);
+        if (FAILED(hr) || FAILED(hr = r.device->CreateRenderTargetView(p->analysis_texture.Get(), nullptr, &p->target)))
             return r.fail(L"Analysis image", hr);
         d.Usage = D3D11_USAGE_STAGING;
         d.BindFlags = 0;
@@ -736,7 +736,7 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
     ID3D11ShaderResourceView *empty{};
     r.context->PSSetShaderResources(0, 1, &empty);
     r.context->OMSetRenderTargets(0, nullptr, nullptr);
-    r.context->CopyResource(p->staging.Get(), p->small.Get());
+    r.context->CopyResource(p->staging.Get(), p->analysis_texture.Get());
     r.context->Flush();
     r.last_window_time = time_ns;
     r.pending.push_back(std::move(p));
