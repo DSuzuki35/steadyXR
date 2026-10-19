@@ -167,6 +167,148 @@ struct PropertyRefreshProbe {
         obs_properties_destroy(p);
     }
 };
+struct VisualFixture {
+    std::atomic<unsigned> width{320}, height{180};
+    std::atomic<bool> hdr{false};
+    std::atomic<unsigned> renders{0};
+};
+VisualFixture visual_fixture;
+void register_visual_fixture() {
+    obs_source_info info{};
+    info.id = "steadyxr-test-visual-input";
+    info.type = OBS_SOURCE_TYPE_INPUT;
+    info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_SRGB;
+    info.get_name = [](void *) { return "Isolated visual input"; };
+    info.create = [](obs_data_t *, obs_source_t *) -> void * { return &visual_fixture; };
+    info.destroy = [](void *) {};
+    info.get_width = [](void *v) { return static_cast<VisualFixture *>(v)->width.load(); };
+    info.get_height = [](void *v) { return static_cast<VisualFixture *>(v)->height.load(); };
+    info.video_get_color_space = [](void *v, size_t, const gs_color_space *) {
+        return static_cast<VisualFixture *>(v)->hdr ? GS_CS_709_EXTENDED : GS_CS_SRGB;
+    };
+    info.video_render = [](void *v, gs_effect_t *) {
+        auto &f = *static_cast<VisualFixture *>(v);
+        ++f.renders;
+        const auto previous_srgb = gs_framebuffer_srgb_enabled();
+        gs_enable_framebuffer_srgb(true);
+        gs_blend_state_push();
+        gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+        vec4 color{.125f, .0625f, .03125f, .5f};
+        auto *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+        gs_effect_set_vec4(gs_effect_get_param_by_name(solid, "color"), &color);
+        while (gs_effect_loop(solid, "Solid"))
+            gs_draw_sprite(nullptr, 0, f.width, f.height);
+        gs_blend_state_pop();
+        gs_enable_framebuffer_srgb(previous_srgb);
+    };
+    obs_register_source(&info);
+}
+void visual_filter_tests() {
+    const auto *display_name = obs_source_get_display_name("steadyxr_visual_effects");
+    check(display_name && std::string(display_name) == "SteadyXR Visual Effects",
+          "standalone optional effects filter is registered under its exact display name");
+    register_visual_fixture();
+    auto *input = obs_source_create_private("steadyxr-test-visual-input", "Visual test", nullptr);
+    auto *settings = obs_data_create();
+    auto *filter = obs_source_create_private("steadyxr_visual_effects", "Visual effects test", settings);
+    check(input && filter, "native effects filter and isolated source create");
+    obs_source_filter_add(input, filter);
+    const auto before = visual_fixture.renders.load();
+    const auto off = frame(input);
+    check(off.good && visual_fixture.renders == before + 1 && off.width == 320 && off.height == 180,
+          "disabled filter renders its source once and retains dimensions");
+    auto *properties = obs_source_properties(filter);
+    const auto off_status =
+        std::string(obs_property_description(obs_properties_get(properties, "visual_status")));
+    check(off_status.find("0 allocations") != std::string::npos &&
+              off_status.find("0 dispatches") != std::string::npos,
+          "disabled filter owns no GPU effects allocations and dispatches no passes");
+    obs_properties_destroy(properties);
+    obs_data_set_bool(settings, "VisualExposure", true);
+    obs_data_set_double(settings, "VisualExposureEv", 1);
+    obs_source_update(filter, settings);
+    const auto on = until(input, [&](const auto &c) { return c.red > off.red; });
+    properties = obs_source_properties(filter);
+    std::printf("Visual state: %s; source renders %u\n",
+                obs_property_description(obs_properties_get(properties, "visual_status")),
+                visual_fixture.renders.load());
+    obs_properties_destroy(properties);
+    std::printf("Visual off/on rgba: %u %u %u %u / %u %u %u %u\n", off.red, off.green, off.blue, off.alpha,
+                on.red, on.green, on.blue, on.alpha);
+    check(on.good && on.red > off.red && std::abs(int(on.alpha) - int(off.alpha)) <= 1,
+          "native exposure changes RGB while preserving premultiplied alpha");
+    obs_data_set_double(settings, "VisualExposureEv", 0);
+    obs_source_update(filter, settings);
+    const auto neutral =
+        until(input, [&](const auto &c) { return std::abs(int(c.red) - int(off.red)) <= 2; });
+    std::printf("Visual neutral rgba: %u %u %u %u\n", neutral.red, neutral.green, neutral.blue,
+                neutral.alpha);
+    check(std::abs(int(neutral.red) - int(off.red)) <= 2 &&
+              std::abs(int(neutral.green) - int(off.green)) <= 2 &&
+              std::abs(int(neutral.alpha) - int(off.alpha)) <= 1,
+          "neutral effects preserve SDR transfer and alpha through libobs");
+    visual_fixture.width = 3840;
+    visual_fixture.height = 2160;
+    const auto large = frame(input);
+    check(large.good && large.width == 3840 && large.height == 2160 && large.alpha == neutral.alpha,
+          "native effects resize to 4K without changing alpha");
+    visual_fixture.hdr = true;
+    const auto before_hdr = visual_fixture.renders.load();
+    frame(input);
+    properties = obs_source_properties(filter);
+    const std::string hdr_status = obs_property_description(obs_properties_get(properties, "visual_status"));
+    check(visual_fixture.renders == before_hdr + 1 &&
+              hdr_status.find("Unsupported HDR") != std::string::npos &&
+              hdr_status.find("0 bytes") != std::string::npos,
+          "HDR input passes through once with clear fallback and no effects resources");
+    const gs_color_space requested_space[]{GS_CS_SRGB};
+    check(obs_source_get_color_space(filter, 1, requested_space) == GS_CS_709_EXTENDED,
+          "effects filter preserves upstream HDR color-space negotiation during fallback");
+    obs_properties_destroy(properties);
+    visual_fixture.hdr = false;
+    obs_data_set_bool(settings, "VisualExposure", false);
+    obs_source_update(filter, settings);
+    check(eventually([&] {
+              frame(input);
+              auto *p = obs_source_properties(filter);
+              const std::string value = obs_property_description(obs_properties_get(p, "visual_status"));
+              obs_properties_destroy(p);
+              return value.find("Effects off") != std::string::npos;
+          }),
+          "native all-off update reaches filter render thread");
+    properties = obs_source_properties(filter);
+    check(std::string(obs_property_description(obs_properties_get(properties, "visual_status")))
+                  .find("0 bytes") != std::string::npos,
+          "turning all effects off releases optional GPU resources");
+    obs_properties_destroy(properties);
+    const auto preset = std::filesystem::temp_directory_path() /
+                        ("steadyxr-visual-filter-" + std::to_string(GetCurrentProcessId()) + ".ini");
+    {
+        std::ofstream file(preset);
+        file << "[Preview]\nVisualExposure=1\nVisualExposureEv=-1.25\nVisualBloom=1\nVisualBloomStrength=0."
+                "37\nVisualMeteringLeft=0.15\n";
+    }
+    obs_data_set_string(settings, "visual_preset_path", preset.u8string().c_str());
+    obs_source_update(filter, settings);
+    properties = obs_source_properties(filter);
+    check(obs_property_button_clicked(obs_properties_get(properties, "visual_import"), filter),
+          "native visual filter imports a shared INI preset");
+    obs_properties_destroy(properties);
+    auto *saved = obs_save_source(filter);
+    auto *stored = obs_data_get_obj(saved, "settings");
+    check(obs_data_get_bool(stored, "VisualExposure") &&
+              obs_data_get_double(stored, "VisualExposureEv") == -1.25 &&
+              obs_data_get_bool(stored, "VisualBloom") &&
+              std::abs(obs_data_get_double(stored, "VisualBloomStrength") - .37) < 1e-6 &&
+              std::abs(obs_data_get_double(stored, "VisualMeteringLeft") - .15) < 1e-6,
+          "native visual filter serializes imported toggles, tuning and metering region in OBS scenes");
+    obs_data_release(stored);
+    obs_data_release(saved);
+    obs_source_filter_remove(input, filter);
+    obs_source_release(filter);
+    obs_source_release(input);
+    obs_data_release(settings);
+}
 struct Producer {
     Channel channel;
     ComPtr<ID3D11Device> device;
@@ -323,6 +465,7 @@ int main(int argc, char **argv) {
         obs_module_t *module{};
         check(obs_open_module(&module, argv[1], argv[2]) == MODULE_SUCCESS && obs_init_module(module),
               "native plugin loads under real libobs");
+        visual_filter_tests();
         check((obs_get_source_output_flags("steadyxr_openxr_source") & OBS_SOURCE_VIDEO) != 0,
               "native OpenXR input registration is present");
         settings = obs_data_create();
@@ -335,7 +478,8 @@ int main(int argc, char **argv) {
         for (const auto *name :
              {"steadyxr.reset", "steadyxr.reset_horizon", "steadyxr.pause", "steadyxr.compare",
               "steadyxr.natural", "steadyxr.comfort", "steadyxr.strong", "steadyxr.preset_1",
-              "steadyxr.preset_2", "steadyxr.preset_3"})
+              "steadyxr.preset_2", "steadyxr.preset_3", "steadyxr.learn_chat", "steadyxr.cancel_chat",
+              "steadyxr.clear_chat"})
             check(hotkey(source, name) != OBS_INVALID_HOTKEY_ID,
                   "native source registers each assignable SteadyXR hotkey");
         obs_source_inc_showing(source);
@@ -426,6 +570,35 @@ int main(int argc, char **argv) {
         std::printf("First color: %u %u %u %u\n", first.red, first.green, first.blue, first.alpha);
         check(color(first, 64, 128, 192), "shared GPU frames preserve RGB and sRGB encoding through libobs");
         check(frame(source).checksum == first.checksum, "repeat render preserves the private output texture");
+        check(!producer.channel.gaze_requested(), "legacy source requests no runtime gaze work");
+        auto *camera_settings = obs_source_get_settings(source);
+        obs_data_set_bool(camera_settings, "SpectatorGazeEnabled", true);
+        obs_source_update(source, camera_settings);
+        check(eventually([&] { return producer.channel.gaze_requested(); }),
+              "visible owner requests gaze only when optional gaze framing is enabled");
+        obs_data_set_bool(camera_settings, "SpectatorBypass", true);
+        obs_source_update(source, camera_settings);
+        check(eventually([&] { return !producer.channel.gaze_requested(); }),
+              "master spectator bypass immediately revokes runtime gaze work");
+        obs_data_set_bool(camera_settings, "SpectatorGazeEnabled", false);
+        obs_data_set_bool(camera_settings, "SpectatorBypass", false);
+        obs_source_update(source, camera_settings);
+        obs_data_release(camera_settings);
+        press(source, "steadyxr.learn_chat");
+        check(eventually([&] { return producer.channel.gaze_requested(); }),
+              "queued learning hotkey requests gaze while gaze framing is disabled");
+        auto *camera_properties = obs_source_properties(source);
+        check(obs_properties_get(camera_properties, "learn_chat") &&
+                  obs_properties_get(camera_properties, "cancel_chat") &&
+                  obs_properties_get(camera_properties, "clear_chat") &&
+                  obs_properties_get(camera_properties, "spectator_status"),
+              "native spectator properties expose learning commands and capability/countdown snapshot");
+        obs_property_button_clicked(obs_properties_get(camera_properties, "cancel_chat"), source);
+        obs_properties_destroy(camera_properties);
+        check(eventually([&] { return !producer.channel.gaze_requested(); }),
+              "queued cancel button releases runtime gaze work without enabled framing");
+        press(source, "steadyxr.clear_chat");
+        check(!producer.channel.gaze_requested(), "clearing a learned zone never enables gaze polling");
         check(status(source).find("Connected") != std::string::npos,
               "properties report an established OpenXR frame connection");
         // Opening/closing fresh properties on the real update signal catches
@@ -622,6 +795,8 @@ int main(int argc, char **argv) {
         press(source, "steadyxr.pause");
         check(waiting(until(source, waiting)) && !producer.active(),
               "pause hotkey shows status and releases the consumer");
+        check(!producer.channel.gaze_requested(),
+              "pausing capture releases optional runtime gaze permission");
         check(status(source).find("Paused") != std::string::npos,
               "properties distinguish pause from a disconnected capture");
         press(source, "steadyxr.preset_1");

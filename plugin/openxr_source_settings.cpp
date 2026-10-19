@@ -1,5 +1,6 @@
 #include "openxr_source_settings.hpp"
 #include "../preview/overlay_settings.hpp"
+#include "../preview/visual_settings_io.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -48,9 +49,84 @@ bool flag(obs_data_t *s, const char *key, bool fallback) {
     return obs_data_has_user_value(s, key) || obs_data_has_default_value(s, key) ? obs_data_get_bool(s, key)
                                                                                  : fallback;
 }
+std::string utf8(const wchar_t *text) {
+    const auto length = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+    std::string value(length, '\0');
+    if (length)
+        WideCharToMultiByte(CP_UTF8, 0, text, -1, value.data(), length, nullptr, nullptr);
+    if (!value.empty())
+        value.pop_back();
+    return value;
+}
 } // namespace
+using namespace vrst::preview;
+void visual_defaults(obs_data_t *s) {
+    const VisualSettings v;
+    for (const auto &f : visual_bool_fields)
+        obs_data_set_default_bool(s, utf8(f.key).c_str(), v.*f.member);
+    for (const auto &f : visual_number_fields)
+        obs_data_set_default_double(s, utf8(f.key).c_str(), v.*f.member);
+    for (const auto &f : visual_region_fields)
+        obs_data_set_default_double(s, utf8(f.key).c_str(), v.metering_region.*f.member);
+    obs_data_set_default_int(s, "VisualInputTransfer", 0);
+    obs_data_set_default_bool(s, "VisualPremultipliedAlpha", false);
+}
+VisualSettings visual_settings(obs_data_t *s) {
+    VisualSettings v;
+    for (const auto &f : visual_bool_fields)
+        v.*f.member = flag(s, utf8(f.key).c_str(), false);
+    for (const auto &f : visual_number_fields)
+        v.*f.member = float(number(s, utf8(f.key).c_str(), v.*f.member, f.minimum, f.maximum));
+    for (const auto &f : visual_region_fields)
+        v.metering_region.*f.member =
+            float(number(s, utf8(f.key).c_str(), v.metering_region.*f.member, 0, 1));
+    v.input_transfer = VisualTransfer(int(number(s, "VisualInputTransfer", 0, 0, 2)));
+    v.premultiplied_alpha = flag(s, "VisualPremultipliedAlpha", false);
+    return v.bounded();
+}
+void visual_store(obs_data_t *s, const VisualSettings &settings) {
+    const auto v = settings.bounded();
+    for (const auto &f : visual_bool_fields)
+        obs_data_set_bool(s, utf8(f.key).c_str(), v.*f.member);
+    for (const auto &f : visual_number_fields)
+        obs_data_set_double(s, utf8(f.key).c_str(), v.*f.member);
+    for (const auto &f : visual_region_fields)
+        obs_data_set_double(s, utf8(f.key).c_str(), v.metering_region.*f.member);
+    obs_data_set_int(s, "VisualInputTransfer", int(v.input_transfer));
+    obs_data_set_bool(s, "VisualPremultipliedAlpha", v.premultiplied_alpha);
+}
+void visual_add_properties(obs_properties_t *p) {
+    auto *group = obs_properties_create();
+    for (const auto &f : visual_bool_fields)
+        obs_properties_add_bool(group, utf8(f.key).c_str(), utf8(f.label).c_str());
+    for (const auto &f : visual_number_fields)
+        obs_properties_add_float(group, utf8(f.key).c_str(), utf8(f.label).c_str(), f.minimum, f.maximum,
+                                 .01);
+    for (const auto &f : visual_region_fields)
+        obs_properties_add_float(group, utf8(f.key).c_str(), utf8(f.label).c_str(), 0, 1, .01);
+    auto *transfer = obs_properties_add_list(group, "VisualInputTransfer",
+                                             "Preset input transfer (host determines live input)",
+                                             OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+    obs_property_list_add_int(transfer, "sRGB", 0);
+    obs_property_list_add_int(transfer, "Linear SDR", 1);
+    obs_property_list_add_int(transfer, "Unsupported / bypass", 2);
+    obs_properties_add_bool(group, "VisualPremultipliedAlpha",
+                            "Preset premultiplied alpha (host determines live input)");
+    obs_properties_add_text(
+        group, "visual_help",
+        "Apply effects in one location: preview/direct capture OR this stream-PC filter. All effects are "
+        "optional. HDR/unsupported color spaces pass through with a status message.",
+        OBS_TEXT_INFO);
+    obs_properties_add_group(p, "visual_effects", "Optional visual effects", OBS_GROUP_NORMAL, group);
+}
 void openxr_defaults(obs_data_t *s) {
     const Options o;
+    visual_defaults(s);
+    for (const auto &f : spectator_bool_fields)
+        obs_data_set_default_bool(s, utf8(f.key).c_str(), o.spectator.*f.member);
+    for (const auto &f : spectator_number_fields)
+        obs_data_set_default_double(s, utf8(f.key).c_str(), o.spectator.*f.member);
+    obs_data_set_default_bool(s, "compare_effects", false);
     for (const auto &n : numbers)
         obs_data_set_default_double(s, n.key, o.*n.member);
     for (const auto &f : flags)
@@ -73,6 +149,14 @@ void openxr_defaults(obs_data_t *s) {
 }
 OpenXRSettings openxr_settings(obs_data_t *s) {
     OpenXRSettings c;
+    c.options.visual = visual_settings(s);
+    for (const auto &f : spectator_bool_fields)
+        c.options.spectator.*f.member = flag(s, utf8(f.key).c_str(), false);
+    for (const auto &f : spectator_number_fields)
+        c.options.spectator.*f.member =
+            number(s, utf8(f.key).c_str(), c.options.spectator.*f.member, f.minimum, f.maximum);
+    c.options.spectator = vrst::sanitize_spectator_settings(c.options.spectator);
+    c.options.compare_effects = flag(s, "compare_effects", false);
     for (const auto &n : numbers)
         c.options.*n.member = number(s, n.key, c.options.*n.member, n.low, n.high);
     for (const auto &f : flags)
@@ -104,6 +188,13 @@ OpenXRSettings openxr_settings(obs_data_t *s) {
     return c;
 }
 void openxr_store(obs_data_t *s, const OpenXRSettings &c) {
+    visual_store(s, c.options.visual);
+    const auto camera = vrst::sanitize_spectator_settings(c.options.spectator);
+    for (const auto &f : spectator_bool_fields)
+        obs_data_set_bool(s, utf8(f.key).c_str(), camera.*f.member);
+    for (const auto &f : spectator_number_fields)
+        obs_data_set_double(s, utf8(f.key).c_str(), camera.*f.member);
+    obs_data_set_bool(s, "compare_effects", c.options.compare_effects);
     for (const auto &n : numbers)
         obs_data_set_double(s, n.key, c.options.*n.member);
     for (const auto &f : flags)
@@ -127,6 +218,15 @@ void openxr_store(obs_data_t *s, const OpenXRSettings &c) {
     }
 }
 void openxr_add_properties(obs_properties_t *p) {
+    auto *camera = obs_properties_create();
+    for (const auto &f : spectator_bool_fields)
+        obs_properties_add_bool(camera, utf8(f.key).c_str(), utf8(f.label).c_str());
+    for (const auto &f : spectator_number_fields)
+        obs_properties_add_float(camera, utf8(f.key).c_str(), utf8(f.label).c_str(), f.minimum, f.maximum,
+                                 .1);
+    obs_properties_add_group(p, "spectator_camera", "Optional spectator camera", OBS_GROUP_NORMAL, camera);
+    visual_add_properties(p);
+    obs_properties_add_bool(p, "compare_effects", "A/B compares visual effects only (same camera geometry)");
     auto *eye = obs_properties_add_list(p, "eye", "Captured eye", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
     obs_property_list_add_int(eye, "Left eye", 0);
     obs_property_list_add_int(eye, "Right eye", 1);
@@ -184,6 +284,9 @@ bool openxr_import(obs_data_t *s, const std::wstring &path, std::string &error) 
     };
     OpenXRSettings c;
     auto &o = c.options;
+    o.spectator = read_spectator_settings(path);
+    o.visual = read_visual_settings(path);
+    o.compare_effects = v(L"CompareEffects", 0, 0, 1) != 0;
     o.overlays = vrst::preview::read_overlay_settings(path);
     o.smoothing = v(L"SmoothingTenths", v(L"Smoothing", 40, 0, 100) * 10, 0, 1000) / 10.;
     o.crop = v(L"CropTenths", v(L"Crop", 10, 0, 35) * 10, 0, 350) / 10.;

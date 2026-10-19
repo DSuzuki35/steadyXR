@@ -19,6 +19,9 @@ enum class Action {
     reset_horizon,
     pause,
     compare,
+    learn_chat,
+    cancel_chat,
+    clear_chat,
     natural,
     comfort,
     strong,
@@ -30,16 +33,20 @@ struct ActionInfo {
     const char *name, *label;
     Action action;
 };
-constexpr ActionInfo actions[]{{"reset", "Reset stabilization", Action::reset},
-                               {"reset_horizon", "Reset horizon", Action::reset_horizon},
-                               {"pause", "Pause / resume capture", Action::pause},
-                               {"compare", "Compare A/B (20 seconds)", Action::compare},
-                               {"natural", "Natural", Action::natural},
-                               {"comfort", "Stream Comfort", Action::comfort},
-                               {"strong", "Strong leveling", Action::strong},
-                               {"preset_1", "Load saved preset 1", Action::preset_1},
-                               {"preset_2", "Load saved preset 2", Action::preset_2},
-                               {"preset_3", "Load saved preset 3", Action::preset_3}};
+constexpr ActionInfo actions[]{
+    {"reset", "Reset stabilization", Action::reset},
+    {"reset_horizon", "Reset horizon", Action::reset_horizon},
+    {"pause", "Pause / resume capture", Action::pause},
+    {"compare", "Compare A/B (20 seconds)", Action::compare},
+    {"learn_chat", "Learn chat zone (look at chat and hold steady)", Action::learn_chat},
+    {"cancel_chat", "Cancel chat learning", Action::cancel_chat},
+    {"clear_chat", "Clear learned chat zone", Action::clear_chat},
+    {"natural", "Natural", Action::natural},
+    {"comfort", "Stream Comfort", Action::comfort},
+    {"strong", "Strong leveling", Action::strong},
+    {"preset_1", "Load saved preset 1", Action::preset_1},
+    {"preset_2", "Load saved preset 2", Action::preset_2},
+    {"preset_3", "Load saved preset 3", Action::preset_3}};
 struct Source {
     obs_source_t *source{};
     std::mutex settings_mutex;
@@ -47,10 +54,13 @@ struct Source {
     std::uint64_t revision{1};
     std::atomic<bool> reset_requested{false};
     std::atomic<bool> horizon_reset_requested{false};
+    enum class ChatCommand { none, learn, cancel, clear };
+    std::atomic<ChatCommand> chat_command{ChatCommand::none};
     std::atomic<std::uint64_t> compare_until{0};
     std::array<obs_hotkey_id, std::size(actions)> hotkeys{};
     std::mutex status_mutex;
     std::string capture_status{"Inactive | 0.0 FPS / 60 requested"};
+    std::string spectator_status{"Gaze disabled"};
     std::string action_status{"Choose an INI preset to import into this source."};
     std::atomic<std::uint64_t> dimensions{(std::uint64_t(3840) << 32) | 2160};
     // Graphics resources and capture state belong to the OBS graphics thread.
@@ -92,9 +102,42 @@ struct Source {
         char rate[96]{};
         std::snprintf(rate, sizeof(rate), " | %.1f FPS / %u requested", captured_fps, requested_fps);
         std::string text = connection + rate;
+        std::string camera = "Gaze disabled / no OpenXR eye data";
+        if (renderer) {
+            const char *capabilities[]{"Gaze disabled / no OpenXR eye data",
+                                       "Eye tracking unsupported by runtime",
+                                       "Waiting for game action set attachment",
+                                       "Eye tracking inactive",
+                                       "Eye tracking available",
+                                       "Eye tracking has unknown sample time"};
+            const auto status = renderer->spectator_status();
+            camera = capabilities[std::min(renderer->gaze_capability(), 5u)];
+            const char *states[]{"disabled", "untracked", "stale", "fixating", "valid", "excluded"};
+            camera += std::string(" | Gaze: ") + states[std::min(unsigned(status.gaze_state), 5u)];
+            if (status.calibration_phase == vrst::ChatCalibrationPhase::countdown) {
+                char countdown[96]{};
+                std::snprintf(countdown, sizeof(countdown), " | Look at chat; learning starts in %.1f s",
+                              status.countdown_seconds);
+                camera += countdown;
+            } else if (status.calibration_phase == vrst::ChatCalibrationPhase::acquiring)
+                camera += " | Learning: " + std::to_string(int(status.calibration_progress * 100)) + "% (" +
+                          std::to_string(status.calibration_samples) + " samples)";
+            else if (status.calibration_phase == vrst::ChatCalibrationPhase::failed)
+                camera += status.calibration_failure == vrst::ChatCalibrationFailure::unstable
+                              ? " | Learning failed: gaze moved"
+                          : status.calibration_failure == vrst::ChatCalibrationFailure::reference_changed
+                              ? " | Learning reset: tracking reference changed"
+                              : " | Learning failed: insufficient valid eye samples";
+            else
+                camera +=
+                    status.zone_valid ? " | Chat zone learned for this session" : " | No learned chat zone";
+            if (status.gaze_state == vrst::GazeState::excluded)
+                camera += " | Chat gaze excluded; head following continues";
+        }
         {
             std::lock_guard<std::mutex> lock(status_mutex);
             capture_status = std::move(text);
+            spectator_status = std::move(camera);
         }
         // The properties text is an explicit snapshot. Periodic OBS property
         // reloads recreate every widget and interrupt sliders/numeric editing.
@@ -317,6 +360,25 @@ void tick(void *data, float) {
         s.renderer->reset_horizon();
         dirty = true;
     }
+    switch (s.chat_command.exchange(Source::ChatCommand::none)) {
+    case Source::ChatCommand::learn:
+        s.renderer->learn_chat();
+        dirty = true;
+        break;
+    case Source::ChatCommand::cancel:
+        s.renderer->cancel_chat();
+        dirty = true;
+        break;
+    case Source::ChatCommand::clear:
+        s.renderer->clear_chat();
+        dirty = true;
+        break;
+    default:
+        break;
+    }
+    if (owned)
+        s.channel.request_gaze(!c.options.spectator.bypass &&
+                               (c.options.spectator.gaze_enabled || s.renderer->calibration_active()));
     s.active = owned;
     s.eye = c.options.eye;
     s.applied_revision = revision;
@@ -453,6 +515,18 @@ bool import_path(Source &s, const char *key, bool refresh_properties) {
     return imported;
 }
 void perform(Source &s, Action action, bool refresh_properties) {
+    if (action == Action::learn_chat || action == Action::cancel_chat || action == Action::clear_chat) {
+        s.chat_command.store(action == Action::learn_chat    ? Source::ChatCommand::learn
+                             : action == Action::cancel_chat ? Source::ChatCommand::cancel
+                                                             : Source::ChatCommand::clear);
+        s.feedback(
+            action == Action::learn_chat
+                ? "Chat learning requested. Look at chat and hold steady; Refresh status for countdown."
+            : action == Action::cancel_chat ? "Chat learning cancellation requested."
+                                            : "Chat zone clear requested.",
+            refresh_properties);
+        return;
+    }
     if (action == Action::reset) {
         s.reset_requested.store(true);
         s.feedback("Stabilization reset requested.", refresh_properties);
@@ -514,11 +588,13 @@ void hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *, bool pressed) {
 }
 void refresh_status(obs_properties_t *properties, Source *s) {
     std::string capture_status = "Inactive | 0.0 FPS / 60 requested", action_status;
+    std::string spectator_status = "Gaze disabled";
     if (s) {
         {
             std::lock_guard<std::mutex> lock(s->status_mutex);
             capture_status = s->capture_status;
             action_status = s->action_status;
+            spectator_status = s->spectator_status;
         }
         const auto now = GetTickCount64(), deadline = s->compare_until.load();
         if (deadline > now)
@@ -528,6 +604,8 @@ void refresh_status(obs_properties_t *properties, Source *s) {
     capture_status = "Status snapshot: " + capture_status;
     obs_property_set_description(obs_properties_get(properties, "capture_status"), capture_status.c_str());
     obs_property_set_description(obs_properties_get(properties, "import_status"), action_status.c_str());
+    obs_property_set_description(obs_properties_get(properties, "spectator_status"),
+                                 spectator_status.c_str());
 }
 bool refresh_status_button(obs_properties_t *properties, obs_property_t *, void *data) {
     refresh_status(properties, static_cast<Source *>(data));
@@ -621,7 +699,7 @@ bool overlay_modified(void *data, obs_properties_t *properties, obs_property_t *
         obs_properties_get(properties, "overlay_help"),
         "Selected layers in this game session. OpenXR only; keep the source active and Refresh layers. "
         "Layer order: game > overlay injector > SteadyXR > runtime. "
-        "Update the connection and restart the game for 0.9.0 (IPC 3).");
+        "Update the connection and restart the game for 0.10.0 (IPC 4).");
     return true;
 }
 void overlay_properties(obs_properties_t *, Source *);
@@ -659,7 +737,7 @@ void overlay_properties(obs_properties_t *p, Source *s) {
     const bool live = overlay_catalog_live(catalog), scope = overlay_scope_matches(selected, catalog);
     std::string help =
         "OpenXR only. Activate this source and Refresh layers. Layer order: game > overlay injector > "
-        "SteadyXR > runtime. Update the connection and restart the game for 0.9.0 (IPC 3). ";
+        "SteadyXR > runtime. Update the connection and restart the game for 0.10.0 (IPC 4). ";
     if (selected.mode == 2 && !scope)
         help += "Saved selection belongs to another game session; reselect layers. ";
     if (!live || !catalog.count)
@@ -707,6 +785,7 @@ obs_properties_t *properties(void *data) {
                             "game. One active capture per channel.",
                             OBS_TEXT_INFO);
     obs_properties_add_text(p, "capture_status", "Status snapshot", OBS_TEXT_INFO);
+    obs_properties_add_text(p, "spectator_status", "Gaze disabled", OBS_TEXT_INFO);
     obs_properties_add_button2(p, "refresh_status", "Refresh status", refresh_status_button, data);
     obs_properties_add_text(
         p, "hotkey_help",
@@ -720,7 +799,7 @@ obs_properties_t *properties(void *data) {
     if (count > 0)
         WideCharToMultiByte(CP_UTF8, 0, deadline, -1, expiry.data(), count, nullptr, nullptr);
     expiry.pop_back();
-    const auto expiry_label = std::string("SteadyXR 0.9.0 build expires: ") + expiry;
+    const auto expiry_label = std::string("SteadyXR 0.10.0 build expires: ") + expiry;
     obs_properties_add_text(p, "build_expiry", expiry_label.c_str(), OBS_TEXT_INFO);
     vrst_plugin::openxr_add_properties(p);
     overlay_properties(p, static_cast<Source *>(data));
@@ -733,7 +812,8 @@ obs_properties_t *properties(void *data) {
         const auto label = "Saved preset " + std::to_string(slot) + " (INI)";
         obs_properties_add_path(slots, (key + "_path").c_str(), label.c_str(), OBS_PATH_FILE,
                                 "INI settings (*.ini)", nullptr);
-        obs_properties_add_button2(slots, key.c_str(), actions[6 + slot].label, action_button, data);
+        obs_properties_add_button2(slots, key.c_str(), ("Load saved preset " + std::to_string(slot)).c_str(),
+                                   action_button, data);
     }
     obs_properties_add_group(p, "saved_presets", "Saved preset hotkey slots", OBS_GROUP_NORMAL, slots);
     obs_properties_add_path(p, "import_path", "SteadyXR settings or preset", OBS_PATH_FILE,

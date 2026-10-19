@@ -3,6 +3,10 @@
 #include <obs-module.h>
 
 namespace vrst_plugin {
+void visual_defaults(obs_data_t *);
+vrst::preview::VisualSettings visual_settings(obs_data_t *);
+void visual_store(obs_data_t *, const vrst::preview::VisualSettings &);
+void visual_add_properties(obs_properties_t *);
 struct OpenXRSettings {
     vrst::preview::Options options;
     unsigned fps{60};
