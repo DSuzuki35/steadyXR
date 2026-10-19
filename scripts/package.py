@@ -13,7 +13,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
 p.add_argument('--openxr', type=Path, help='Include the standalone preview and its pinned OpenXR source headers')
-p.add_argument('--version', default='0.9.0')
+p.add_argument('--version', default='0.10.0')
 p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
 stage = root / 'dist' / f'SteadyXR-{a.version}-Windows-x64'
@@ -50,12 +50,14 @@ for item in (root / 'plugin/data').rglob('*'):
 for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd', 'Uninstall-OBS.cmd', 'Start-Tracking.cmd', 'Start-Delay-Check.cmd', 'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1', 'docs/obs-openxr-source.md', 'docs/openxr-overlays.md']:
     copy(root / name, name)
 copy(a.openvr / 'LICENSE', 'licenses/OpenVR-LICENSE.txt')
+copy(root / 'docs/spectator-features.md', 'docs/spectator-features.md')
 if a.openxr:
     for name in ['SteadyXR.exe', 'SteadyXR-OpenXR.dll']:
         copy(output(Path('preview') / name), Path('preview') / name)
     copy(a.build / 'preview/XR_APILAYER_STEADYXR_preview.json', 'preview/XR_APILAYER_STEADYXR_preview.json')
     copy(a.build / 'preview/steadyxr-build.json', 'preview/SteadyXR-build.json')
     copy(root / 'preview/README.md', 'preview/README.md')
+    copy(root / 'docs/spectator-features.md', 'preview/Spectator-Guide.md')
     for name in ['SteadyXR.ico', 'SteadyXR.png']:
         copy(root / 'preview/assets' / name, Path('preview') / name)
     copy(root / 'Start-Preview.cmd', 'Start-Preview.cmd')
@@ -150,6 +152,7 @@ if a.delivery_dir:
     shutil.copy2(root / 'docs/local-delivery-de.txt', delivery / 'LIESMICH.txt')
     shutil.copy2(root / 'docs/obs-openxr-source.md', delivery / 'OBS-OpenXR-Guide.md')
     shutil.copy2(root / 'docs/openxr-overlays.md', delivery / 'openxr-overlays.md')
+    shutil.copy2(root / 'docs/spectator-features.md', delivery / 'Spectator-Guide.md')
     print(f'Ready-to-use files: {delivery}')
 print(archive)
 print(f'{archive.stat().st_size:,} bytes; {len(checks)} files; ZIP integrity passed')

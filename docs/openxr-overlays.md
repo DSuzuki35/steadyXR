@@ -2,8 +2,8 @@
 
 ## Install and test with Racelab
 
-1. Close the previous SteadyXR app and start Gaming-PC/Start-Preview.cmd from the 0.9 package.
-2. Use Upgrade connection (or Install connection) to activate the new capture DLL. Restart iRacing in OpenXR mode. 0.9's overlay-capable capture format cannot use an older DLL.
+1. Close the previous SteadyXR app and start Gaming-PC/Start-Preview.cmd from the 0.10 package.
+2. Use Upgrade connection (or Install connection) to activate the new capture DLL. Restart iRacing in OpenXR mode. 0.10's capture format cannot use an older DLL.
 3. Enable the desired Racelab VR overlays in its OpenXR mode. The actual runtime call order needs to be game → overlay injector → SteadyXR → runtime. SteadyXR must see the extra layers and the injector's swapchain calls. Use the existing OpenXR layer editor to adjust registrations if needed, then restart the game; delivery itself changes no registrations. There is no universal up/down instruction for every loader configuration.
 4. For the standalone app open Overlay layers… . For OBS, close the standalone output, install the new obs-plugins/data folders with OBS closed, then open the SteadyXR OpenXR Capture source's OpenXR overlay layers group.
 5. Refresh the list. Start with one supported Quad layer. Check the preview, then select additional layers as needed. One overlay program can submit several layers. Labels report type, dimensions and slot; OpenXR does not provide a reliable vendor name per composition layer.

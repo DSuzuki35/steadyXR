@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <d3d11.h>
+#include <d3dcompiler.h>
 #include <dxgi.h>
 #include <functional>
 #include <iostream>
@@ -316,16 +317,18 @@ int main() {
                 "disabled bloom frees resources and skips passes");
     });
     test("surface view failure returns input and recovers on retry", [&] {
-        for (int stage : {1,2}) {
+        for (int stage : {1, 2}) {
             VisualEffects e;
-            auto t=g.texture(16,16,{.2f,.3f,.4f,1});
-            auto s=neutral_linear();
+            auto t = g.texture(16, 16, {.2f, .3f, .4f, 1});
+            auto s = neutral_linear();
             vrst::preview::fail_next_surface_view(stage);
-            require(e.process(g.device.Get(),g.context.Get(),t.Get(),s,1,0)==t.Get(),"failure returns original");
-            require(e.diagnostics().outcome==VisualOutcome::resource_failure && !e.diagnostics().frame_dispatches,
+            require(e.process(g.device.Get(), g.context.Get(), t.Get(), s, 1, 0) == t.Get(),
+                    "failure returns original");
+            require(e.diagnostics().outcome == VisualOutcome::resource_failure &&
+                        !e.diagnostics().frame_dispatches,
                     "failed surface never dispatched");
-            const auto p=g.run(e,t.Get(),s,2,.016);
-            check_near(p[0],.2f,.001f,"retry creates complete writable output");
+            const auto p = g.run(e, t.Get(), s, 2, .016);
+            check_near(p[0], .2f, .001f, "retry creates complete writable output");
         }
     });
     test("caller compute bindings and graphics state preserved", [&] {
@@ -339,12 +342,47 @@ int main() {
         g.device->CreateBuffer(&bd, nullptr, &cb);
         auto raw = cb.Get();
         g.context->CSSetConstantBuffers(0, 1, &raw);
+        constexpr char source[] = "[numthreads(1,1,1)] void main(uint3 id:SV_DispatchThreadID) {}";
+        ComPtr<ID3DBlob> blob;
+        require(SUCCEEDED(D3DCompile(source, sizeof(source), nullptr, nullptr, nullptr, "main", "cs_5_0", 0,
+                                     0, &blob, nullptr)),
+                "caller CS compile");
+        ComPtr<ID3D11ComputeShader> shader;
+        require(SUCCEEDED(g.device->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(),
+                                                        nullptr, &shader)),
+                "caller CS");
+        g.context->CSSetShader(shader.Get(), nullptr, 0);
+        ComPtr<ID3D11ShaderResourceView> srv;
+        require(SUCCEEDED(g.device->CreateShaderResourceView(t.Get(), nullptr, &srv)), "caller SRV");
+        ID3D11ShaderResourceView *resources[]{srv.Get(), srv.Get(), srv.Get()};
+        g.context->CSSetShaderResources(0, 3, resources);
+        D3D11_TEXTURE2D_DESC ud{};
+        t->GetDesc(&ud);
+        ud.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+        ComPtr<ID3D11Texture2D> writable;
+        ComPtr<ID3D11UnorderedAccessView> uav;
+        require(SUCCEEDED(g.device->CreateTexture2D(&ud, nullptr, &writable)) &&
+                    SUCCEEDED(g.device->CreateUnorderedAccessView(writable.Get(), nullptr, &uav)),
+                "caller UAV");
+        auto raw_uav = uav.Get();
+        g.context->CSSetUnorderedAccessViews(0, 1, &raw_uav, nullptr);
         D3D11_VIEWPORT vp{3, 4, 11, 12, 0, 1};
         g.context->RSSetViewports(1, &vp);
         g.run(e, t.Get(), neutral_linear());
         ComPtr<ID3D11Buffer> restored;
         g.context->CSGetConstantBuffers(0, 1, &restored);
         require(restored.Get() == raw, "compute constant buffer restored");
+        ComPtr<ID3D11ComputeShader> actual_shader;
+        g.context->CSGetShader(&actual_shader, nullptr, nullptr);
+        require(actual_shader.Get() == shader.Get(), "caller compute shader restored");
+        ComPtr<ID3D11UnorderedAccessView> actual_uav;
+        g.context->CSGetUnorderedAccessViews(0, 1, &actual_uav);
+        require(actual_uav.Get() == uav.Get(), "caller compute UAV restored");
+        for (unsigned slot = 0; slot < 3; ++slot) {
+            ComPtr<ID3D11ShaderResourceView> actual_srv;
+            g.context->CSGetShaderResources(slot, 1, &actual_srv);
+            require(actual_srv.Get() == srv.Get(), "all touched compute SRVs restored");
+        }
         UINT n = 1;
         D3D11_VIEWPORT actual{};
         g.context->RSGetViewports(&n, &actual);

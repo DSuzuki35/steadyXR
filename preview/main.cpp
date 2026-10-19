@@ -1,4 +1,4 @@
-﻿#define UNICODE
+#define UNICODE
 #define _UNICODE
 #include "advanced.hpp"
 #include "build_expiry.hpp"
@@ -1325,7 +1325,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    const auto control_title = std::wstring(L"SteadyXR – Preview 0.9.0 | Expires ") + build_expiry_text();
+    const auto control_title = std::wstring(L"SteadyXR – Preview 0.10.0 | Expires ") + build_expiry_text();
     state.controls =
         CreateWindowExW(0, L"HorizonLockControls", control_title.c_str(),
                         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, 100, 100,

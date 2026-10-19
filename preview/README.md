@@ -1,4 +1,10 @@
-# SteadyXR Preview 0.9.0
+# SteadyXR Preview 0.10.0
+
+Open **Spectator camera / effects…** for gaze framing, chat exclusion, natural head movement and local exposure/bloom/color. All new features start **off**. The master bypass preserves tuning. Camera and Visual pages have independent switches and explicit opt-in presets.
+
+Enable gaze framing and chat exclusion, then press **Learn chat position** or **Ctrl+Alt+C** and look at chat: three seconds of countdown, then one second of stable samples. Adjust angular width/height. Head following continues while gaze toward chat is excluded. Relearn after recentering, changing eye/source/session, moving chat or loading a preset. Unsupported/stale gaze falls back to head stabilization. Actual Dream Air runtime compatibility still needs live validation.
+
+Image effects run before separately captured overlays. **Compare image effects** uses the twenty-second A/B with identical framing. For minimum gaming-PC load, leave local image effects off and apply **SteadyXR Visual Effects** once to the capture-card source on the stream PC. The included **Spectator-Guide.md** explains the controls, SDR limits and measured costs. Install/upgrade the new connection and restart the OpenXR game for IPC 4.
 
 Version **0.8.0** adds **Reset horizon**, global hotkeys, a temporary **20-second A/B comparison**, and compact capture/FPS feedback in the controls. The OBS drop-in folders now sit directly beside the standalone app in the delivered version folder. Existing settings and presets remain supported.
 
@@ -12,13 +18,13 @@ When no new frame arrives for two seconds, the output becomes a plain black scre
 
 Standalone gaming-PC preview with OpenXR pose stabilization or existing-window capture. Preview stabilization affects only the stream output. Optional render extension asks the game to render a wider eye projection; the runtime receives that actual projection for correct headset composition. No OBS or video encoder is required on the gaming PC.
 
-## Upgrade to 0.9.0
+## Upgrade to 0.10.0
 
-Close the previous app and start **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in **Gaming-PC/SteadyXR-0.9.0** and inherits your previous SteadyXR.ini unchanged when its own INI is missing.
+Close the previous app and start **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in **Gaming-PC/SteadyXR-0.10.0** and inherits your previous SteadyXR.ini unchanged when its own INI is missing.
 
-**The OpenXR connection must be upgraded for 0.9.0.** Its overlay-capable capture format is incompatible with older capture DLLs. Use **Upgrade connection** (or **Install connection**) in the new app, then restart the OpenXR game. Delivery itself never changes registrations or restarts anything. Existing-window capture needs neither connection setup nor a game restart. Keep older directories until their layer is unregistered.
+**The OpenXR connection must be upgraded for 0.10.0.** Its overlay-capable capture format is incompatible with older capture DLLs. Use **Upgrade connection** (or **Install connection**) in the new app, then restart the OpenXR game. Delivery itself never changes registrations or restarts anything. Existing-window capture needs neither connection setup nor a game restart. Keep older directories until their layer is unregistered.
 
-For OBS, close OBS and copy **obs-plugins** and **data** from Gaming-PC/SteadyXR-0.9.0 directly into **C:\Program Files\obs-studio**. The same folders remain under Stream-PC and beside the app under preview in the ZIP. OBS uses the upgraded OpenXR layer without a running standalone app. Keep one active consumer: close/hide the standalone output while using OBS.
+For OBS, close OBS and copy **obs-plugins** and **data** from Gaming-PC/SteadyXR-0.10.0 directly into **C:\Program Files\obs-studio**. The same folders remain under Stream-PC and beside the app under preview in the ZIP. OBS uses the upgraded OpenXR layer without a running standalone app. Keep one active consumer: close/hide the standalone output while using OBS.
 
 ## Additional OpenXR overlays
 

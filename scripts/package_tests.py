@@ -30,6 +30,7 @@ class PackageTests(unittest.TestCase):
             'Start-Delay-Check.cmd', 'Start-Preview.cmd', 'Start-Layer-Editor.cmd',
             'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1',
             'docs/obs-openxr-source.md', 'docs/openxr-overlays.md', 'docs/local-delivery-de.txt',
+            'docs/spectator-features.md',
             'preview/README.md', 'preview/assets/SteadyXR.ico',
             'preview/assets/SteadyXR.png', 'preview/layers/LayerEditor.ps1',
             'preview/layers/RegistryStore.cs', 'preview/main.cpp',

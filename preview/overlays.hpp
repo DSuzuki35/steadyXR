@@ -22,7 +22,7 @@ class OverlayPanel {
         const bool live = overlay_catalog_live(shown);
         const bool scope = overlay_scope_matches(*selection, shown);
         std::wstring help = L"OpenXR capture only. Keep the source active, then Refresh.\nUpdate the OpenXR "
-                            L"connection and restart the game for 0.9.0 (IPC 3).\nLayer order: game > "
+                            L"connection and restart the game for 0.10.0 (IPC 4).\nLayer order: game > "
                             L"overlay injector > SteadyXR > runtime.";
         if (selection->mode == 2 && !scope)
             help += L"\nSaved selection belongs to another game session. Reselect layers.";

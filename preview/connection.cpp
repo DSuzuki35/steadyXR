@@ -152,7 +152,7 @@ std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &d
     const auto dll = registered_dll(*entry);
     if (same_file_contents(std::filesystem::path(directory) / capture_dll, dll))
         return capture_settings_path(registered_directory.wstring());
-    // IPC v3 requires an explicit upgrade from every older capture DLL.
+    // IPC v4 requires an explicit upgrade from every older capture DLL.
     return std::nullopt;
 }
 LONG set_layer_connection(const std::wstring &directory, bool enable, const LayerRegistryRoots &roots) {

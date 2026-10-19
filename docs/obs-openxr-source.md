@@ -1,23 +1,27 @@
-# SteadyXR 0.9.0 OpenXR Capture for OBS
+# SteadyXR 0.10.0 OpenXR Capture for OBS
 
 The direct source provides the stabilized OpenXR image in OBS on the same PC as the game. The standalone app can stay closed. The original VR Stabilizer filter remains available for a capture-card source on a separate PC.
 
 ## Install
 
-1. Close OBS. Open `Gaming-PC\SteadyXR-0.9.0` and copy **obs-plugins** and **data** directly into `C:\Program Files\obs-studio` on the gaming PC. These folders sit beside SteadyXR.exe, its layer and INI; no extra nesting is needed. The identical folders remain available under `Stream-PC`. In the complete ZIP they are beside the app under `preview`, as well as under `obs-install`. If you installed the previous module with `Install-OBS.cmd`, use that installer again instead so only one module copy is installed.
+1. Close OBS. Open `Gaming-PC\SteadyXR-0.10.0` and copy **obs-plugins** and **data** directly into `C:\Program Files\obs-studio` on the gaming PC. These folders sit beside SteadyXR.exe, its layer and INI; no extra nesting is needed. The identical folders remain available under `Stream-PC`. In the complete ZIP they are beside the app under `preview`, as well as under `obs-install`. If you installed the previous module with `Install-OBS.cmd`, use that installer again instead so only one module copy is installed.
 2. Start OBS and add **Sources → + → SteadyXR OpenXR Capture**.
 3. Close the standalone SteadyXR/Horizon Lock preview. The source uses the same OpenXR connection and works without the app running. Reuse this source in other scenes using **Add Existing**.
-4. Use 0.9.0's **Upgrade connection** (or **Install connection**) and restart the OpenXR/D3D11 game. The new overlay capture format requires the 0.9.0 layer; an older layer cannot provide this source's frames. Close the standalone output again after setup.
+4. Use 0.10.0's **Upgrade connection** (or **Install connection**) and restart the OpenXR/D3D11 game. The new overlay capture format requires the 0.10.0 layer; an older layer cannot provide this source's frames. Close the standalone output again after setup.
 
 OBS and the game must run on the same graphics adapter. Stereo and context/foveal quad views use the existing capture path, including the OpenXR path used with the Pimax SteamVR driver. This is a video source; capture game audio separately in OBS as usual.
 
 ## Bring over your settings
 
-In the source properties select your `Gaming-PC\SteadyXR-0.9.0\SteadyXR.ini` (or the INI beside the preview you last used), then click **Import settings**. The ready-to-use 0.9.0 folder receives the previous viewer's INI unchanged if it has no settings yet. A complete INI preset or legacy `preview.ini` can also be imported. This copies stabilization and framing into OBS without changing the file.
+In the source properties select your `Gaming-PC\SteadyXR-0.10.0\SteadyXR.ini` (or the INI beside the preview you last used), then click **Import settings**. The ready-to-use 0.10.0 folder receives the previous viewer's INI unchanged if it has no settings yet. A complete INI preset or legacy `preview.ini` can also be imported. This copies stabilization and framing into OBS without changing the file.
 
 OBS stores subsequent edits with this source in the scene collection. Render-area extension stays in the settings beside the registered OpenXR layer; the source does not overwrite it. Use the standalone app to change extra rendered area for the next game launch, then close it before returning to the OBS source.
 
 ## Controls and behavior
+
+Optional spectator camera and image-effects groups add gaze framing, learned chat exclusion, natural stabilization, exposure/adaptation, bloom and color. All start off and import with complete INI presets. Learn chat uses a three-second countdown and one second of stable eye samples; cancel/clear and a native OBS hotkey are available. Relearn after tracking reference, eye, source or session changes. Status reports runtime and controller state; unavailable gaze falls back to head following. Image-effects A/B keeps the same camera geometry. Separately captured overlays are composited after effects.
+
+For a second PC, add **SteadyXR Visual Effects** to its capture-card source. It needs no OpenXR session or tracking sender. Keep local image effects off to move their processing cost off the game PC. Its effects start off; configure exposure/adaptation, bloom, color and metering region explicitly. It processes SDR and preserves premultiplied alpha; unsupported HDR color spaces pass through with status feedback. See [spectator features](spectator-features.md).
 
 The default output is 3840×2160, 16:9 and 60 FPS. Eye, output resolution, aspect, smoothing, horizon lock, adaptive leveling, mirror allowance/softness, crop, per-eye edge reserves and Y offset are adjustable. Natural, Stream Comfort and Strong leveling apply the same built-in tuning as the standalone preview while keeping framing. Crop margins remain available as stabilization reserve behind the visible frame.
 

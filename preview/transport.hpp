@@ -26,8 +26,9 @@ struct OverlayCatalog {
     OverlayInfo layers[max_overlay_layers]{};
 };
 
-// All shared data is accessed under Channel's named mutex. No C++ atomics cross
-// processes. GPU textures use key 0 for the writer and key 1 for the reader.
+// Shared data uses Channel's named mutex except gaze_requested, whose aligned
+// LONG is read with Windows Interlocked operations on the runtime input path.
+// No C++ atomics cross processes. GPU textures use writer key 0 / reader key 1.
 struct View {
     std::uint64_t texture_handle{};
     std::uint32_t width{}, height{}, format{};
