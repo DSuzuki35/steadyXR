@@ -8,6 +8,10 @@
 #include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
 namespace vrst::preview {
+#ifdef VRST_VISUAL_EFFECTS_TESTING
+int fail_surface_view{};
+void fail_next_surface_view(int stage) { fail_surface_view=stage; }
+#endif
 namespace {
 const char shader_source[] = R"(
 cbuffer Params : register(b0) {
@@ -179,6 +183,7 @@ struct VisualEffects::Impl {
             device->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &shader));
     }
     bool surface(Surface &s, unsigned w, unsigned h) {
+        Surface ready;
         D3D11_TEXTURE2D_DESC d{};
         d.Width = w;
         d.Height = h;
@@ -186,10 +191,17 @@ struct VisualEffects::Impl {
         d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         d.SampleDesc.Count = 1;
         d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-        if (FAILED(device->CreateTexture2D(&d, nullptr, &s.texture)) ||
-            FAILED(device->CreateShaderResourceView(s.texture.Get(), nullptr, &s.srv)) ||
-            FAILED(device->CreateUnorderedAccessView(s.texture.Get(), nullptr, &s.uav)))
+        if (FAILED(device->CreateTexture2D(&d, nullptr, &ready.texture)))
             return false;
+#ifdef VRST_VISUAL_EFFECTS_TESTING
+        if (fail_surface_view==1) { fail_surface_view=0; return false; }
+#endif
+        if (FAILED(device->CreateShaderResourceView(ready.texture.Get(), nullptr, &ready.srv))) return false;
+#ifdef VRST_VISUAL_EFFECTS_TESTING
+        if (fail_surface_view==2) { fail_surface_view=0; return false; }
+#endif
+        if (FAILED(device->CreateUnorderedAccessView(ready.texture.Get(), nullptr, &ready.uav))) return false;
+        s=std::move(ready);
         diagnostics.allocations++;
         return true;
     }

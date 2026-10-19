@@ -7,6 +7,9 @@ struct ID3D11DeviceContext;
 struct ID3D11Texture2D;
 
 namespace vrst::preview {
+#ifdef VRST_VISUAL_EFFECTS_TESTING
+void fail_next_surface_view(int stage); // Fault injection exists only in the dedicated test build.
+#endif
 enum class VisualOutcome { bypass, processed, unsupported_input, resource_failure };
 struct VisualDiagnostics {
     VisualOutcome outcome = VisualOutcome::bypass;
@@ -30,6 +33,8 @@ struct VisualDiagnostics {
 // Supports 1-mip non-MSAA RGBA/BGRA8 UNORM/SRGB/TYPELESS and linear RGBA16F.
 // No HDR, YUV, limited-range conversion or implicit HDR assumptions: unsupported
 // inputs return original and report unsupported_input. No CPU pixel readback.
+// The host supplies the captured source frame ID and timestamp unchanged for
+// redraws, and calls reset() on source/session replacement before processing it.
 class VisualEffects {
   public:
     VisualEffects();

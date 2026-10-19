@@ -315,6 +315,19 @@ int main() {
         require(e.diagnostics().frame_dispatches == 1 && e.diagnostics().resource_bytes < memory,
                 "disabled bloom frees resources and skips passes");
     });
+    test("surface view failure returns input and recovers on retry", [&] {
+        for (int stage : {1,2}) {
+            VisualEffects e;
+            auto t=g.texture(16,16,{.2f,.3f,.4f,1});
+            auto s=neutral_linear();
+            vrst::preview::fail_next_surface_view(stage);
+            require(e.process(g.device.Get(),g.context.Get(),t.Get(),s,1,0)==t.Get(),"failure returns original");
+            require(e.diagnostics().outcome==VisualOutcome::resource_failure && !e.diagnostics().frame_dispatches,
+                    "failed surface never dispatched");
+            const auto p=g.run(e,t.Get(),s,2,.016);
+            check_near(p[0],.2f,.001f,"retry creates complete writable output");
+        }
+    });
     test("caller compute bindings and graphics state preserved", [&] {
         VisualEffects e;
         auto t = g.texture(16, 16, {.2f, .2f, .2f, 1});
