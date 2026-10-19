@@ -2,6 +2,8 @@
 #include <openxr/openxr.h>
 #include <vrst/spectator.hpp>
 #include <cstdint>
+#include <vector>
+#include <utility>
 
 namespace vrst::preview {
 enum class GazeCapability : std::uint32_t { disabled, unsupported, waiting_actions, inactive, tracked, unknown_time };
@@ -10,6 +12,9 @@ struct GazeRuntime {
     XrInstance instance{};
     XrActionSet set{};
     XrAction action{};
+    bool ever_attached{};
+    unsigned action_generation{};
+    std::vector<std::pair<XrActionSet,XrAction>> retired; // Kept alive for earlier sessions.
     XrPath profile{}, binding{};
 #define GAZE_PROC(n) PFN_xr##n n{};
     GAZE_PROC(CreateActionSet) GAZE_PROC(DestroyActionSet) GAZE_PROC(CreateAction)
@@ -21,11 +26,14 @@ struct GazeRuntime {
     void initialize(XrInstance, PFN_xrGetInstanceProcAddr, bool extension_enabled);
     void release();
     XrResult suggest(const XrInteractionProfileSuggestedBinding*);
+    bool create_actions(XrActionSet&, XrAction&);
 };
 struct GazeCapture {
     GazeRuntime *runtime{};
     XrSession session{};
     XrSpace local{}, gaze{};
+    XrActionSet action_set{};
+    XrAction action{};
     bool attached{}, synchronized{};
     GazeCapability capability{GazeCapability::unsupported};
     void initialize(GazeRuntime&, XrSession, XrSystemId);

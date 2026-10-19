@@ -149,9 +149,12 @@ Channel::~Channel() {
 }
 bool Channel::request_gaze(bool enabled) {
     if (!lock(true)) return false;
-    shared_->gaze_requested = enabled ? 1u : 0u;
+    InterlockedExchange(&shared_->gaze_requested, enabled ? 1L : 0L);
     unlock();
     return true;
+}
+bool Channel::gaze_requested() const {
+    return shared_ && InterlockedCompareExchange(&shared_->gaze_requested, 0, 0) != 0;
 }
 bool Channel::heartbeat(unsigned eye, unsigned fps) {
     if (!lock())
@@ -168,7 +171,7 @@ bool Channel::heartbeat(unsigned eye, unsigned fps) {
             if (owner == consumers.end() || shared_->consumer_pid != GetCurrentProcessId() || shared_->paused) {
                 shared_->ready = 2;
                 shared_->overlay_selection = {};
-                shared_->gaze_requested = 0;
+                InterlockedExchange(&shared_->gaze_requested, 0);
             }
             consumers[name_] = this;
             shared_->consumer_pid = GetCurrentProcessId();
@@ -198,7 +201,7 @@ void Channel::release_consumer() {
                 shared_->heartbeat_ms = 0;
                 shared_->ready = 2;
                 shared_->overlay_selection = {};
-                shared_->gaze_requested = 0;
+                InterlockedExchange(&shared_->gaze_requested, 0);
             }
             consumers.erase(owner);
         }

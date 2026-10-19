@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdio>
 #include <vector>
 namespace vrst::preview {
 bool gaze_extension_available(PFN_xrGetInstanceProcAddr gipa) {
@@ -28,14 +29,7 @@ void GazeRuntime::initialize(XrInstance value, PFN_xrGetInstanceProcAddr gipa, b
     if (!CreateActionSet || !DestroyActionSet || !CreateAction || !DestroyAction || !StringToPath ||
         !SuggestInteractionProfileBindings || !AttachSessionActionSets || !SyncActions || !GetActionStatePose ||
         !CreateActionSpace || !CreateReferenceSpace || !DestroySpace || !LocateSpace || !GetSystemProperties) return;
-    XrActionSetCreateInfo si{XR_TYPE_ACTION_SET_CREATE_INFO};
-    std::strcpy(si.actionSetName,"steadyxr_spectator_gaze");
-    std::strcpy(si.localizedActionSetName,"SteadyXR spectator gaze");
-    if (XR_FAILED(CreateActionSet(instance,&si,&set))) { set={}; return; }
-    XrActionCreateInfo ai{XR_TYPE_ACTION_CREATE_INFO};
-    ai.actionType=XR_ACTION_TYPE_POSE_INPUT;
-    std::strcpy(ai.actionName,"steadyxr_gaze_pose"); std::strcpy(ai.localizedActionName,"Spectator gaze pose");
-    if (XR_FAILED(CreateAction(set,&ai,&action)) ||
+    if (!create_actions(set,action) ||
         XR_FAILED(StringToPath(instance,"/interaction_profiles/ext/eye_gaze_interaction",&profile)) ||
         XR_FAILED(StringToPath(instance,"/user/eyes_ext/input/gaze_ext/pose",&binding))) { release(); return; }
     XrActionSuggestedBinding own{action,binding};
@@ -43,10 +37,21 @@ void GazeRuntime::initialize(XrInstance value, PFN_xrGetInstanceProcAddr gipa, b
     info.interactionProfile=profile; info.countSuggestedBindings=1; info.suggestedBindings=&own;
     if (XR_FAILED(SuggestInteractionProfileBindings(instance,&info))) release();
 }
+bool GazeRuntime::create_actions(XrActionSet &new_set, XrAction &new_action) {
+    XrActionSetCreateInfo si{XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::snprintf(si.actionSetName,sizeof(si.actionSetName),"steadyxr_spectator_gaze_%u",++action_generation);
+    std::snprintf(si.localizedActionSetName,sizeof(si.localizedActionSetName),"SteadyXR spectator gaze %u",action_generation);
+    if (XR_FAILED(CreateActionSet(instance,&si,&new_set))) { new_set={}; return false; }
+    XrActionCreateInfo ai{XR_TYPE_ACTION_CREATE_INFO}; ai.actionType=XR_ACTION_TYPE_POSE_INPUT;
+    std::strcpy(ai.actionName,"steadyxr_gaze_pose"); std::strcpy(ai.localizedActionName,"Spectator gaze pose");
+    if (XR_SUCCEEDED(CreateAction(new_set,&ai,&new_action))) return true;
+    DestroyActionSet(new_set); new_set={}; new_action={}; return false;
+}
 void GazeRuntime::release() {
     if (action && DestroyAction) DestroyAction(action);
     if (set && DestroyActionSet) DestroyActionSet(set);
-    action={}; set={};
+    for (const auto &old : retired) { DestroyAction(old.second); DestroyActionSet(old.first); }
+    retired.clear(); action={}; set={}; ever_attached=false;
 }
 XrResult GazeRuntime::suggest(const XrInteractionProfileSuggestedBinding *info) {
     if (!SuggestInteractionProfileBindings) return XR_ERROR_FUNCTION_UNSUPPORTED;
@@ -56,10 +61,24 @@ XrResult GazeRuntime::suggest(const XrInteractionProfileSuggestedBinding *info) 
     try {
         std::vector<XrActionSuggestedBinding> bindings;
         if(info->countSuggestedBindings) bindings.assign(info->suggestedBindings,info->suggestedBindings+info->countSuggestedBindings);
-        bindings.push_back({action,binding});
+        // OpenXR forbids suggesting bindings for any action set that has ever
+        // been attached. New game bindings therefore need a fresh private set.
+        // Earlier sessions keep their own action/space handles until destruction.
+        bindings.reserve(bindings.size()+1);
+        retired.reserve(retired.size()+1);
+        XrActionSet candidate_set=set; XrAction candidate_action=action;
+        if (ever_attached && !create_actions(candidate_set,candidate_action))
+            return SuggestInteractionProfileBindings(instance,info);
+        bindings.push_back({candidate_action,binding});
         auto merged=*info; merged.countSuggestedBindings=uint32_t(bindings.size()); merged.suggestedBindings=bindings.data();
         const auto result=SuggestInteractionProfileBindings(instance,&merged);
-        if (XR_SUCCEEDED(result)) return result;
+        if (XR_SUCCEEDED(result)) {
+            if (ever_attached) {
+                retired.emplace_back(set,action); set=candidate_set; action=candidate_action; ever_attached=false;
+            }
+            return result;
+        }
+        if (candidate_set!=set) { DestroyAction(candidate_action); DestroyActionSet(candidate_set); }
     } catch (...) {}
     return SuggestInteractionProfileBindings(instance,info);
 }
@@ -71,7 +90,8 @@ void GazeCapture::initialize(GazeRuntime &r, XrSession value, XrSystemId system)
     if (XR_FAILED(r.GetSystemProperties(r.instance,system,&properties)) || !eyes.supportsEyeGazeInteraction) return;
     XrReferenceSpaceCreateInfo reference{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     reference.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_LOCAL; reference.poseInReferenceSpace.orientation.w=1;
-    XrActionSpaceCreateInfo space{XR_TYPE_ACTION_SPACE_CREATE_INFO}; space.action=r.action; space.poseInActionSpace.orientation.w=1;
+    action=r.action; action_set=r.set;
+    XrActionSpaceCreateInfo space{XR_TYPE_ACTION_SPACE_CREATE_INFO}; space.action=action; space.poseInActionSpace.orientation.w=1;
     if (XR_FAILED(r.CreateReferenceSpace(session,&reference,&local)) || XR_FAILED(r.CreateActionSpace(session,&space,&gaze))) {
         release(); return;
     }
@@ -87,11 +107,19 @@ void GazeCapture::release() {
 XrResult GazeCapture::attach(const XrSessionActionSetsAttachInfo *info) {
     if (!runtime || !runtime->AttachSessionActionSets) return XR_ERROR_FUNCTION_UNSUPPORTED;
     if (gaze && !attached && info && info->countActionSets && info->actionSets) try {
+        if (action!=runtime->action) {
+            runtime->DestroySpace(gaze); gaze={};
+            action=runtime->action; action_set=runtime->set;
+            XrActionSpaceCreateInfo space{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+            space.action=action; space.poseInActionSpace.orientation.w=1;
+            if (XR_FAILED(runtime->CreateActionSpace(session,&space,&gaze)))
+                return runtime->AttachSessionActionSets(session,info);
+        }
         std::vector<XrActionSet> sets(info->actionSets,info->actionSets+info->countActionSets);
-        sets.push_back(runtime->set);
+        sets.push_back(action_set);
         auto merged=*info; merged.countActionSets=uint32_t(sets.size()); merged.actionSets=sets.data();
         auto result=runtime->AttachSessionActionSets(session,&merged);
-        if (XR_SUCCEEDED(result)) { attached=true; return result; }
+        if (XR_SUCCEEDED(result)) { attached=true; runtime->ever_attached=true; return result; }
     } catch (...) {}
     return runtime->AttachSessionActionSets(session,info);
 }
@@ -102,7 +130,7 @@ XrResult GazeCapture::sync(const XrActionsSyncInfo *info, bool requested) {
         (!info->countActiveActionSets || info->activeActionSets)) {
         std::array<XrActiveActionSet,64> sets{};
         if (info->countActiveActionSets) std::copy_n(info->activeActionSets,info->countActiveActionSets,sets.begin());
-        sets[info->countActiveActionSets]={runtime->set,XR_NULL_PATH};
+        sets[info->countActiveActionSets]={action_set,XR_NULL_PATH};
         auto merged=*info; merged.countActiveActionSets=info->countActiveActionSets+1; merged.activeActionSets=sets.data();
         auto result=runtime->SyncActions(session,&merged);
         if (XR_SUCCEEDED(result)) { synchronized=result==XR_SUCCESS; return result; }
@@ -115,7 +143,7 @@ GazeSample GazeCapture::sample(bool requested, XrTime time, XrSpace submitted_sp
     capability=!requested ? GazeCapability::disabled : !gaze ? GazeCapability::unsupported :
                !attached ? GazeCapability::waiting_actions : GazeCapability::inactive;
     if (!requested || !gaze || !attached || !synchronized) return out;
-    XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO}; info.action=runtime->action;
+    XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO}; info.action=action;
     XrActionStatePose state{XR_TYPE_ACTION_STATE_POSE};
     if (XR_FAILED(runtime->GetActionStatePose(session,&info,&state)) || !state.isActive) return out;
     XrEyeGazeSampleTimeEXT timestamp{XR_TYPE_EYE_GAZE_SAMPLE_TIME_EXT};

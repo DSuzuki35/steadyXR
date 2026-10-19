@@ -1107,7 +1107,7 @@ XrResult XRAPI_CALL layer_sync_actions(XrSession handle, const XrActionsSyncInfo
     STATE_LOCK;
     auto it=sessions.find(handle);
     if (it==sessions.end()) return XR_ERROR_HANDLE_INVALID;
-    return it->second->gaze.sync(info,it->second->gaze_requested);
+    return it->second->gaze.sync(info,it->second->gaze_requested && channel.gaze_requested());
 }
 XrResult XRAPI_CALL layer_suggest_bindings(XrInstance handle, const XrInteractionProfileSuggestedBinding *info) {
     STATE_LOCK;

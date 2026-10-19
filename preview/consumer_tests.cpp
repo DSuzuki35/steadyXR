@@ -76,6 +76,9 @@ int main() {
     check(second.overlay_catalog().layers[0].slot == 3 && !second.owns_consumer(),
           "catalog can be inspected without taking capture ownership");
     check(first.request_gaze(true), "owner requests gaze");
+    check(second.gaze_requested(), "producer observes permission without taking mutex");
+    check(first.request_gaze(false) && !second.gaze_requested(), "disable immediately revokes permission");
+    check(first.request_gaze(true), "owner restores permission");
     check(!second.request_gaze(false), "non-owner cannot disable gaze");
     if (first.lock()) { check(first.data()->gaze_requested == 1, "gaze request retained"); first.unlock(); }
     check(!second.heartbeat(0, 90) && !second.owns_consumer(), "second local consumer cannot steal capture");

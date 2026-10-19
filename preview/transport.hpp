@@ -57,7 +57,8 @@ struct Frame {
 struct Shared {
     std::uint32_t magic{}, version{}, size{}, ready{};
     std::uint32_t consumer_pid{}, paused{1}, eye{}, fps{60};
-    std::uint32_t gaze_requested{}, gaze_capability{};
+    LONG gaze_requested{}; // Atomic permission bit; writes still require consumer mutex ownership.
+    std::uint32_t gaze_capability{};
     std::uint64_t heartbeat_ms{};
     std::uint32_t producer_pid{}, status_code{};
     std::uint32_t render_enabled{};
@@ -97,6 +98,7 @@ class Channel {
     // One active renderer per channel; separate OBS sources cannot steal frames.
     bool heartbeat(unsigned eye, unsigned fps);
     bool request_gaze(bool); // Only the current owning consumer can request runtime work.
+    bool gaze_requested() const; // Atomic read for the runtime's input cycle; no mutex/syscall.
     bool select_overlays(const OverlaySelection &); // Only the active owning consumer can write.
     OverlayCatalog overlay_catalog(); // Read-only snapshot; empty if unavailable/busy.
     void release_consumer();

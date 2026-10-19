@@ -3,6 +3,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#include <unordered_map>
+#include <algorithm>
 using namespace vrst;
 using namespace vrst::preview;
 namespace {
@@ -12,6 +14,9 @@ bool supported=true, active=true, tracked=true, extension=true, fail_attach=fals
 XrTime sample_time=1000000000;
 std::vector<XrActionSet> attached_sets, synced_sets;
 std::vector<XrActionSuggestedBinding> bindings;
+std::unordered_map<XrActionSet,XrAction> owned_actions;
+std::vector<XrAction> frozen_actions;
+XrAction queried_action{};
 void check(bool v, const char *s) { if (!v) throw std::runtime_error(s); }
 XrResult XRAPI_CALL enumerate(const char*, uint32_t capacity, uint32_t *n, XrExtensionProperties *p) {
     *n=extension?1:0;
@@ -19,19 +24,23 @@ XrResult XRAPI_CALL enumerate(const char*, uint32_t capacity, uint32_t *n, XrExt
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL create_set(XrInstance,const XrActionSetCreateInfo*,XrActionSet *out) {
-    ++created; *out=handle<XrActionSet>(10); return XR_SUCCESS;
+    ++created; *out=handle<XrActionSet>(1000+created); return XR_SUCCESS;
 }
 XrResult XRAPI_CALL destroy_set(XrActionSet) { ++destroyed; return XR_SUCCESS; }
-XrResult XRAPI_CALL create_action(XrActionSet,const XrActionCreateInfo*,XrAction *out) {
-    ++created; *out=handle<XrAction>(11); return XR_SUCCESS;
+XrResult XRAPI_CALL create_action(XrActionSet set,const XrActionCreateInfo*,XrAction *out) {
+    ++created; *out=handle<XrAction>(2000+created); owned_actions[set]=*out; return XR_SUCCESS;
 }
 XrResult XRAPI_CALL destroy_action(XrAction) { ++destroyed; return XR_SUCCESS; }
 XrResult XRAPI_CALL path(XrInstance,const char *s,XrPath *out) { *out=std::strstr(s,"interaction_profiles")?42:43; return XR_SUCCESS; }
 XrResult XRAPI_CALL suggest(XrInstance,const XrInteractionProfileSuggestedBinding *info) {
+    for(unsigned i=0;i<info->countSuggestedBindings;++i)
+        if(std::find(frozen_actions.begin(),frozen_actions.end(),info->suggestedBindings[i].action)!=frozen_actions.end())
+            return XR_ERROR_ACTIONSETS_ALREADY_ATTACHED;
     bindings.assign(info->suggestedBindings,info->suggestedBindings+info->countSuggestedBindings); return XR_SUCCESS;
 }
 XrResult XRAPI_CALL attach(XrSession,const XrSessionActionSetsAttachInfo *info) {
     ++attaches; attached_sets.assign(info->actionSets,info->actionSets+info->countActionSets);
+    for(auto set:attached_sets) if(owned_actions.count(set)) frozen_actions.push_back(owned_actions[set]);
     return fail_attach && info->countActionSets>1 ? XR_ERROR_RUNTIME_FAILURE : XR_SUCCESS;
 }
 XrResult XRAPI_CALL sync(XrSession,const XrActionsSyncInfo *info) {
@@ -39,7 +48,7 @@ XrResult XRAPI_CALL sync(XrSession,const XrActionsSyncInfo *info) {
     for(unsigned i=0;i<info->countActiveActionSets;++i) synced_sets.push_back(info->activeActionSets[i].actionSet);
     return XR_SUCCESS;
 }
-XrResult XRAPI_CALL state(XrSession,const XrActionStateGetInfo*,XrActionStatePose *out) { ++calls; out->isActive=active; return XR_SUCCESS; }
+XrResult XRAPI_CALL state(XrSession,const XrActionStateGetInfo *info,XrActionStatePose *out) { ++calls; queried_action=info->action; out->isActive=active; return XR_SUCCESS; }
 XrResult XRAPI_CALL create_reference(XrSession,const XrReferenceSpaceCreateInfo *info,XrSpace *out) {
     check(info->referenceSpaceType==XR_REFERENCE_SPACE_TYPE_LOCAL,"stable LOCAL reference");
     *out=handle<XrSpace>(20); ++spaces; return XR_SUCCESS;
@@ -102,10 +111,24 @@ int main() { try {
     auto gaze=capture.sample(true,1000000000,handle<XrSpace>(22),{0,0,0,1},7);
     check(gaze.flags==(GazeValid|GazeTracked|GazeTimeKnown) && gaze.reference_epoch==7 && gaze.sample_time_ns==sample_time,"timestamped tracked gaze");
     check(gaze.direction.z < -.99 && angle_between(gaze.reference_from_eye,axis_angle({0,1,0},pi/2))<.00001,"eye pose transformed from submitted space");
+    gaze=capture.sample(true,1000000000,handle<XrSpace>(22),{.70710678f,0,0,.70710678f},7);
+    check(angle_between(gaze.reference_from_eye,multiply(axis_angle({0,1,0},pi/2),axis_angle({1,0,0},pi/2)))<.00001,
+          "nonidentity submitted eye composes in correct order");
     sample_time=0; gaze=capture.sample(true,1000000000,handle<XrSpace>(22),{0,0,0,1},8);
     check(!(gaze.flags&GazeTimeKnown) && gaze.reference_epoch==8 && capture.capability==GazeCapability::unknown_time,"explicit unknown clock and epoch");
     active=false; check(!capture.sample(true,1000000000,handle<XrSpace>(22),{0,0,0,1},8).flags,"inactive action rejected"); active=true;
     tracked=false; check(!(capture.sample(true,1000000000,handle<XrSpace>(22),{0,0,0,1},8).flags&GazeTracked),"untracked rejected"); tracked=true;
+    GazeCapture recreated; recreated.initialize(runtime,handle<XrSession>(4),77);
+    const auto original_action=capture.action;
+    check(runtime.suggest(&suggested)==XR_SUCCESS && bindings.size()==2 && runtime.action!=original_action,
+          "later app bindings use fresh unattached private action without dropping app bindings");
+    check(recreated.attach(&attachment)==XR_SUCCESS && recreated.action==runtime.action,
+          "session created before suggestions refreshes its private action space at attach");
+    recreated.sync(&si,true); recreated.sample(true,1000000000,handle<XrSpace>(22),{0,0,0,1},8);
+    check(queried_action==runtime.action,"recreated session uses new action");
+    capture.sync(&si,true); capture.sample(true,1000000000,handle<XrSpace>(22),{0,0,0,1},8);
+    check(queried_action==original_action,"existing session retains its own action handle");
+    recreated.release();
     capture.release(); check(spaces==0,"release owned spaces");
     supported=false; capture.initialize(runtime,handle<XrSession>(3),77); check(spaces==0 && capture.capability==GazeCapability::unsupported,"headset without eye gaze"); supported=true;
     capture.initialize(runtime,handle<XrSession>(3),77); fail_attach=true;
