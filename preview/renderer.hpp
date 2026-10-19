@@ -1,5 +1,6 @@
 #pragma once
 #include "transport.hpp"
+#include "visual_effects.hpp"
 #include <memory>
 #include <vector>
 #include <vrst/core.hpp>
@@ -8,6 +9,9 @@ struct ID3D11Texture2D;
 
 namespace vrst::preview {
 struct Options {
+    SpectatorSettings spectator{};
+    VisualSettings visual{};
+    bool compare_effects{}; // Persisted comparison scope; compare_original activates it transiently.
     OverlaySelection overlays{};
     double smoothing{40}, crop{10};
     bool mirror{true}, stabilize{true};
@@ -39,11 +43,17 @@ class FrameStabilizer {
     Composition update(const Frame &, const Options &);
     void reset();
     void reset_horizon(); // Re-select upright hemisphere without clearing smoothing history.
+    void learn_chat() { spectator_.begin_chat_calibration(0); }
+    void cancel_chat() { spectator_.cancel_chat_calibration(); }
+    void clear_chat() { spectator_.clear_chat_zone(); }
+    SpectatorStatus spectator_status() const { return spectator_.status(); }
+    bool calibration_active() const { return spectator_.calibration_active(); }
 
   private:
     PoseHistory history_;
     Frame previous_{};
     double horizon_up_sign_{};
+    SpectatorController spectator_;
 };
 
 class Renderer {
@@ -65,6 +75,13 @@ class Renderer {
     bool draw(const Options &, bool present = true, const wchar_t *waiting_text = nullptr);
     void reset();
     void reset_horizon();
+    void learn_chat();
+    void cancel_chat();
+    void clear_chat();
+    SpectatorStatus spectator_status() const;
+    bool calibration_active() const;
+    unsigned gaze_capability() const;
+    const VisualDiagnostics &visual_diagnostics() const;
     std::wstring error() const;
     bool has_frame() const;
     std::uint64_t sequence() const;

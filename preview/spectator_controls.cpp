@@ -67,6 +67,11 @@ struct SpectatorControls::Impl {
             L"Waiting for game action set attachment", L"Eye tracking inactive", L"Eye tracking available",
             L"Eye tracking has unknown sample time"};
         std::wstring text = capabilities[std::min(renderer->gaze_capability(), 5u)];
+        const wchar_t *states[]{L"Gaze framing off", L"Gaze currently untracked", L"Gaze sample stale",
+            L"Waiting for a steady fixation", L"Gaze framing active", L"Chat gaze excluded; head following continues"};
+        text += L" — ";
+        text += options->spectator.bypass ? L"Spectator enhancements bypassed" :
+            !options->spectator.gaze_enabled ? states[0] : states[static_cast<unsigned>(s.gaze_state)];
         if (s.calibration_phase == ChatCalibrationPhase::countdown) {
             wchar_t count[64]{};
             swprintf(count, 64, L"\r\nLook at chat; hold steady. Starting in %.1f s.", s.countdown_seconds);
@@ -79,7 +84,7 @@ struct SpectatorControls::Impl {
                 s.calibration_failure == ChatCalibrationFailure::reference_changed ? L"\r\nLearning reset: tracking reference changed. Learn again." :
                 L"\r\nLearning failed: insufficient valid eye samples. Check eye tracking.";
         } else text += s.zone_valid ? L"\r\nChat zone learned for this session. " : L"\r\nNo learned chat zone in this session. ";
-        if (s.in_chat_zone) text += L"Chat gaze excluded; head following continues.";
+        if (s.in_chat_zone && !options->spectator.chat_enabled) text += L"Looking at learned chat zone; exclusion is off.";
         SetWindowTextW(status, text.c_str());
         EnableWindow(GetDlgItem(window, cancel_id), renderer->calibration_active());
     }

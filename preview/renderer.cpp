@@ -106,8 +106,20 @@ float4 PS(Varying v):SV_TARGET {
  return float4(color.rgb,1);
 }
 float4 Downsample(Varying v):SV_TARGET { return contextImage.Sample(linearClamp,v.uv); }
-float4 Overlay(Varying v):SV_TARGET {
+float4 VisualComposite(Varying v):SV_TARGET {
  bool original=comparison.x>.5 && v.uv.x>=.5;
+ if(comparison.x>1.5) {
+   v.uv=float2(frac(v.uv.x*2),(v.uv.y-.25)*2);
+   if(v.uv.y<0 || v.uv.y>1) return float4(0,0,0,1);
+ }
+ if(any(v.uv<rect0.xy) || any(v.uv>rect0.xy+rect0.zw)) {
+   if(comparison.x>1.5) return float4(0,0,0,1);
+   discard; // Keep letterboxing outside the effects image untouched.
+ }
+ return original ? focusImage.Sample(linearClamp,v.uv) : contextImage.Sample(linearClamp,v.uv);
+}
+float4 Overlay(Varying v):SV_TARGET {
+ bool original=comparison.x>.5 && comparison.y<.5 && v.uv.x>=.5;
  if(comparison.x>1.5) {
    v.uv=float2(frac(v.uv.x*2),(v.uv.y-.25)*2);
    if(v.uv.y<0 || v.uv.y>1) discard;
@@ -202,6 +214,39 @@ void rect(float *r, float *c, const View &v) {
 bool same(LUID a, LUID b) {
     return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
 }
+// A conservative rectangle of captured pixels, excluding mirror/black borders.
+// The projection is convex in front of the eye, so checking four corners is enough.
+VisualRegion captured_region(const Params &p, const D3D11_VIEWPORT &vp, unsigned w, unsigned h) {
+    auto inside = [&](double x, double y) {
+        double u{}, v{};
+        if (p.image_mode[0] > .5f) {
+            u = p.image_row_x[0] * x + p.image_row_x[1] * y + p.image_row_x[2];
+            v = p.image_row_y[0] * x + p.image_row_y[1] * y + p.image_row_y[2];
+        } else {
+            const Vec3 ray = rotate(Quat{p.correction[0], p.correction[1], p.correction[2], p.correction[3]},
+                {p.output[0] + (p.output[1] - p.output[0]) * x,
+                 p.output[2] + (p.output[3] - p.output[2]) * y, -1});
+            if (ray.z >= -.05) return false;
+            u = (ray.x / -ray.z - p.input[0]) / (p.input[1] - p.input[0]);
+            v = (p.input[2] - ray.y / -ray.z) / (p.input[2] - p.input[3]);
+        }
+        return u >= .001 && u <= .999 && v >= .001 && v <= .999;
+    };
+    double lo = 0, hi = .499;
+    for (unsigned i = 0; i < 12; ++i) {
+        const double radius = (lo + hi) * .5;
+        if (inside(.5-radius,.5-radius) && inside(.5+radius,.5-radius) &&
+            inside(.5-radius,.5+radius) && inside(.5+radius,.5+radius)) lo = radius;
+        else hi = radius;
+    }
+    float left = float(.5-lo), right = float(.5+lo), top = left, bottom = right;
+    // Camera comparisons meter only the stabilized panel.
+    if (p.comparison[0] > 1.5f) {
+        left *= .5f; right *= .5f; top = .25f + top*.5f; bottom = .25f + bottom*.5f;
+    } else if (p.comparison[0] > .5f) right = std::min(right, .499f);
+    return {(vp.TopLeftX+left*vp.Width)/w, (vp.TopLeftY+top*vp.Height)/h,
+            (vp.TopLeftX+right*vp.Width)/w, (vp.TopLeftY+bottom*vp.Height)/h};
+}
 std::atomic<std::uint64_t> next_output_generation{0};
 
 // Keep the resources alive even when reporting device loss releases the renderer.
@@ -244,6 +289,13 @@ struct Renderer::Impl {
     ComPtr<ID3D11VertexShader> vs;
     ComPtr<ID3D11PixelShader> ps;
     ComPtr<ID3D11PixelShader> downsample;
+    ComPtr<ID3D11PixelShader> visual_composite;
+    ComPtr<ID3D11ShaderResourceView> visual_view, comparison_view;
+    ComPtr<ID3D11Texture2D> comparison_image;
+    VisualEffects visual_effects;
+    bool visual_active{};
+    std::uint64_t visual_session{}, visual_epoch{}, visual_generation{};
+    unsigned visual_producer{};
     ComPtr<ID3D11PixelShader> overlay_shader;
     ComPtr<ID3D11BlendState> overlay_blend;
     ComPtr<ID3D11Buffer> constants;
@@ -254,6 +306,7 @@ struct Renderer::Impl {
     Frame frame{};
     Frame opened{};
     FrameStabilizer stabilizer;
+    unsigned gaze_capability{};
     ImageStabilizer image_stabilizer;
     ImageResult image_result{};
     bool window_mode{};
@@ -270,6 +323,49 @@ struct Renderer::Impl {
     std::wstring error;
     unsigned width{}, height{};
     std::uint64_t demo_sequence{};
+
+    void release_visual() {
+        visual_view.Reset();
+        comparison_view.Reset();
+        comparison_image.Reset();
+        visual_composite.Reset();
+        if (visual_active) visual_effects.reset();
+        visual_active = false;
+        visual_session = visual_epoch = visual_generation = 0;
+        visual_producer = 0;
+    }
+    bool make_visual(bool paired) {
+        if (!visual_composite) {
+            ComPtr<ID3DBlob> blob, errors;
+            HRESULT hr = D3DCompile(shader, sizeof(shader)-1, nullptr, nullptr, nullptr, "VisualComposite",
+                "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &errors);
+            if (FAILED(hr) || FAILED(hr = device->CreatePixelShader(blob->GetBufferPointer(),
+                blob->GetBufferSize(), nullptr, &visual_composite))) return fail(L"Effects composite shader", hr);
+        }
+        if (!paired) {
+            comparison_image.Reset();
+            comparison_view.Reset();
+            return true;
+        }
+        D3D11_TEXTURE2D_DESC d{}, existing{};
+        output->GetDesc(&d);
+        if (comparison_image) comparison_image->GetDesc(&existing);
+        if (existing.Width == d.Width && existing.Height == d.Height) return true;
+        d.MiscFlags = 0;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11ShaderResourceView> view;
+        D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
+        sv.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        sv.Texture2D.MipLevels = 1;
+        HRESULT hr = device->CreateTexture2D(&d, nullptr, &texture);
+        if (FAILED(hr) || FAILED(hr = device->CreateShaderResourceView(texture.Get(), &sv, &view)))
+            return fail(L"Effects comparison image", hr);
+        comparison_image = texture;
+        comparison_view = view;
+        return true;
+    }
 
     bool fail(const wchar_t *where, HRESULT hr = E_FAIL) {
         std::wostringstream stream;
@@ -295,6 +391,7 @@ struct Renderer::Impl {
             context->ClearState();
             context->Flush();
         }
+        release_visual();
         for (unsigned i = 0; i < max_images; ++i) {
             srv[i].Reset();
             local[i].Reset();
@@ -749,6 +846,8 @@ void Renderer::source_changed() {
     r.pending.clear();
     r.free_pending.clear();
     r.stabilizer.reset();
+    r.release_visual();
+    r.gaze_capability = 0;
     r.image_stabilizer.reset();
     r.image_result = {};
     r.window_mode = false;
@@ -781,6 +880,7 @@ std::uint64_t Renderer::output_generation() const {
 }
 void Renderer::reset() {
     impl_->stabilizer.reset();
+    impl_->release_visual();
     impl_->image_stabilizer.reset();
     impl_->image_result = {};
     impl_->pending.clear();
@@ -788,6 +888,13 @@ void Renderer::reset() {
 void Renderer::reset_horizon() {
     impl_->stabilizer.reset_horizon();
 }
+void Renderer::learn_chat() { impl_->stabilizer.learn_chat(); }
+void Renderer::cancel_chat() { impl_->stabilizer.cancel_chat(); }
+void Renderer::clear_chat() { impl_->stabilizer.clear_chat(); }
+SpectatorStatus Renderer::spectator_status() const { return impl_->stabilizer.spectator_status(); }
+bool Renderer::calibration_active() const { return impl_->stabilizer.calibration_active(); }
+unsigned Renderer::gaze_capability() const { return impl_->gaze_capability; }
+const VisualDiagnostics &Renderer::visual_diagnostics() const { return impl_->visual_effects.diagnostics(); }
 std::wstring Renderer::error() const {
     return impl_->error;
 }
@@ -807,6 +914,7 @@ bool Renderer::consume(Channel &channel, bool require_consumer) {
         source_changed();
     if (!channel.lock(require_consumer))
         return false;
+    r.gaze_capability = channel.data()->gaze_capability;
     struct Unlock {
         Channel &c;
         ~Unlock() {
@@ -1010,6 +1118,10 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
         writer.acquired = true;
     }
     const bool black = waiting_text || r.offscreen;
+    auto visual = options.visual;
+    visual.bypass = visual.bypass || options.spectator.bypass;
+    const bool effects = visual.active() && r.frame.view_count && !waiting_text;
+    if (!effects && r.visual_active) r.release_visual();
     const float clear[4] = {black ? 0.f : .005f, black ? 0.f : .009f, black ? 0.f : .016f, 1};
     r.context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
     r.context->ClearRenderTargetView(r.output_target.Get(), clear);
@@ -1044,7 +1156,7 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
     } else if (r.frame.view_count) {
         Params p{};
         const bool paired =
-            options.compare_original && options.compare_mode >= 1 && options.compare_mode <= 2;
+            options.compare_original && !options.compare_effects && options.compare_mode >= 1 && options.compare_mode <= 2;
         p.comparison[0] = paired ? float(options.compare_mode) : 0.f;
         p.image_mode[1] =
             float(std::isfinite(options.mirror_limit) ? std::clamp(options.mirror_limit, 0., 50.) / 100 : 0.);
@@ -1062,7 +1174,7 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
             settings.output_16_9 = false;
             settings.edge_reserve = sanitize_edge_reserve(options.edge_reserve[std::min(options.eye, 1u)]);
             auto result = r.image_result;
-            if (!options.stabilize || (options.compare_original && !paired))
+            if (!options.stabilize || (options.compare_original && !options.compare_effects && !paired))
                 result.correction = {};
             double source_aspect = double(r.frame.views[0].width) / r.frame.views[0].height;
             if (settings.edge_reserve.enabled) {
@@ -1165,6 +1277,62 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
         r.context->Draw(3, 0);
         ID3D11ShaderResourceView *empty[2] = {};
         r.context->PSSetShaderResources(0, 2, empty);
+        if (effects) {
+            const bool compare = options.compare_original && options.compare_effects;
+            const unsigned layout = compare && options.compare_mode <= 2 ? options.compare_mode : 0;
+            if (!r.make_visual(layout != 0)) return false;
+            r.visual_active = true;
+            r.context->OMSetRenderTargets(0, nullptr, nullptr);
+            if (r.visual_session != r.frame.session || r.visual_epoch != r.frame.reference_epoch ||
+                r.visual_producer != r.frame.producer_pid || r.visual_generation != r.frame.generation) {
+                r.visual_view.Reset();
+                r.visual_effects.reset();
+                r.visual_session = r.frame.session;
+                r.visual_epoch = r.frame.reference_epoch;
+                r.visual_producer = r.frame.producer_pid;
+                r.visual_generation = r.frame.generation;
+            }
+            if (layout) r.context->CopyResource(r.comparison_image.Get(), r.output.Get());
+            visual.input_transfer = VisualTransfer::srgb;
+            visual.premultiplied_alpha = false;
+            visual.content_region = captured_region(p, vp, r.output_width, r.output_height);
+            auto *processed = r.visual_effects.process(r.device.Get(), r.context.Get(), r.output.Get(), visual,
+                r.frame.sequence, double(r.frame.display_time) * 1e-9);
+            if (processed != r.output.Get() && !(compare && layout == 0)) {
+                ComPtr<ID3D11Resource> current;
+                if (r.visual_view) r.visual_view->GetResource(&current);
+                if (current.Get() != processed) {
+                    ComPtr<ID3D11ShaderResourceView> view;
+                    hr = r.device->CreateShaderResourceView(processed, nullptr, &view);
+                    if (FAILED(hr)) return r.fail(L"Effects output view", hr);
+                    r.visual_view = view;
+                }
+                auto composite = p;
+                composite.comparison[0] = float(layout);
+                composite.rect0[0] = vp.TopLeftX/r.output_width;
+                composite.rect0[1] = vp.TopLeftY/r.output_height;
+                composite.rect0[2] = vp.Width/r.output_width;
+                composite.rect0[3] = vp.Height/r.output_height;
+                hr = r.context->Map(r.constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+                if (FAILED(hr)) return r.fail(L"Effects comparison parameters", hr);
+                std::memcpy(mapped.pData, &composite, sizeof(composite));
+                r.context->Unmap(r.constants.Get(), 0);
+                D3D11_VIEWPORT full{0,0,float(r.output_width),float(r.output_height),0,1};
+                r.context->RSSetViewports(1, &full);
+                r.context->OMSetRenderTargets(1, &rt, nullptr);
+                r.context->PSSetShader(r.visual_composite.Get(), nullptr, 0);
+                ID3D11ShaderResourceView *images[]{r.visual_view.Get(), r.comparison_view.Get()};
+                r.context->PSSetShaderResources(0, 2, images);
+                r.context->Draw(3, 0);
+                r.context->PSSetShaderResources(0, 2, empty);
+                if (layout) {
+                    p.comparison[0] = float(layout);
+                    p.comparison[1] = 1; // Effects comparison keeps identical camera orientation.
+                }
+            }
+            r.context->RSSetViewports(1, &vp);
+            r.context->OMSetRenderTargets(1, &rt, nullptr);
+        }
         if (!r.window_mode) {
             r.context->PSSetShader(r.overlay_shader.Get(), nullptr, 0);
             r.context->OMSetBlendState(r.overlay_blend.Get(), nullptr, 0xffffffff);

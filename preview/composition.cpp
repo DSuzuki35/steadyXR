@@ -73,8 +73,11 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     if (frame.session != previous_.session || frame.generation != previous_.generation ||
         frame.view_count != previous_.view_count || frame.reference_epoch != previous_.reference_epoch ||
         frame.producer_pid != previous_.producer_pid || frame.sequence < previous_.sequence ||
-        frame.display_time < previous_.display_time || frame.eye != previous_.eye)
-        reset();
+        frame.display_time < previous_.display_time || frame.eye != previous_.eye) {
+        // A learning request can be armed before the first captured frame.
+        if (previous_.session) reset();
+        else { history_.clear(); horizon_up_sign_=0; }
+    }
     history_.set_smoothing(options.smoothing);
     if (frame.sequence != previous_.sequence || history_.size() == 0) {
         Pose pose;
@@ -97,14 +100,29 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     settings.mirror_edges = options.mirror;
     settings.output_16_9 = false;
     settings.edge_reserve = options.edge_reserve[frame.eye];
-    const bool stabilize = options.stabilize && !options.compare_original;
-    const bool final_framing = settings.edge_reserve.enabled ||
+    const bool compare_camera = options.compare_original && !options.compare_effects;
+    const bool stabilize = options.stabilize && !compare_camera;
+    const bool camera_enabled = !options.spectator.bypass &&
+        (options.spectator.gaze_enabled || (options.spectator.natural_enabled && options.stabilize));
+    Quat correction = stabilize ? pose.correction : Quat{};
+    if (camera_enabled || spectator_.calibration_active()) {
+        SpectatorInput input;
+        input.source_orientation=orientation(frame.views[0]);
+        input.base_target_orientation=multiply(input.source_orientation,options.stabilize ? pose.correction : Quat{});
+        input.gaze=frame.gaze; input.time_ns=static_cast<std::uint64_t>(frame.display_time);
+        input.session=frame.session; input.sequence=frame.sequence; input.reference_epoch=frame.reference_epoch;
+        auto tuning=options.spectator;
+        tuning.natural_enabled=tuning.natural_enabled && options.stabilize;
+        const auto target=spectator_.update(input,tuning);
+        if (camera_enabled) correction=compare_camera ? Quat{} : normalized(multiply(conjugate(input.source_orientation),target));
+    }
+    const bool final_framing = camera_enabled || settings.edge_reserve.enabled ||
                                (std::isfinite(options.vertical_offset) && options.vertical_offset != 0);
     result.warp =
         make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
-                  stabilize && !final_framing ? pose.correction : Quat{}, projection(frame.views[0]));
-    if (final_framing && stabilize)
-        result.warp.correction = pose.correction;
+                  !final_framing ? correction : Quat{}, projection(frame.views[0]));
+    if (final_framing)
+        result.warp.correction = correction;
     auto effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
     // Projection poses are expressed in the application's layer space, not
     // necessarily gravity-aligned runtime space. iRacing can submit an upright
@@ -158,6 +176,7 @@ void FrameStabilizer::reset() {
     history_.clear();
     previous_ = {};
     horizon_up_sign_ = 0;
+    spectator_.reset();
 }
 void FrameStabilizer::reset_horizon() {
     horizon_up_sign_ = 0;

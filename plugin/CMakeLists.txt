@@ -2,7 +2,7 @@ add_library(vr-stabilizer MODULE obs_filter.cpp image_filter.cpp timing_overlay.
 target_compile_features(vr-stabilizer PRIVATE cxx_std_17)
 target_link_libraries(vr-stabilizer PRIVATE vrst_receiver vrst_core OBS::libobs)
 if(WIN32 AND TARGET vrst-preview-renderer)
-  target_sources(vr-stabilizer PRIVATE openxr_source.cpp openxr_source_settings.cpp)
+  target_sources(vr-stabilizer PRIVATE openxr_source.cpp openxr_source_settings.cpp spectator_effects_filter.cpp)
   target_compile_definitions(vr-stabilizer PRIVATE VRST_WITH_OPENXR_SOURCE=1)
   target_link_libraries(vr-stabilizer PRIVATE vrst-preview-renderer vrst-preview-build-expiry)
   if(VRST_BUILD_TESTS)

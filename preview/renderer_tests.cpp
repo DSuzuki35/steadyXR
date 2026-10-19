@@ -299,6 +299,13 @@ void overlay_tests() {
     require(std::abs(int(center & 255) - 188) <= 2 && std::abs(int((center >> 16) & 255) - 187) <= 2,
             "straight alpha quad blends red over blue in linear light");
     require(pixels[180 * w + 50] == 0xffff0000u, "quad geometry clips outside physical size");
+    options.visual.exposure = true;
+    options.visual.exposure_ev = -2;
+    draw();
+    require(std::abs(int(pixels[180 * w + 320] & 255) - 188) <= 2 &&
+                std::abs(int((pixels[180 * w + 320] >> 16) & 255) - 99) <= 2,
+            "effects darken game before overlay; overlay colors and alpha stay unchanged");
+    options.visual = {};
     options.overlays.mode = 0;
     draw();
     require(pixels[180 * w + 320] == 0xffff0000u, "disabling overlays immediately hides retained image");
@@ -502,8 +509,65 @@ void overlay_tests() {
             "invalid overlay geometry rejects mixed frames");
     std::cout << "Native GPU: overlay composition and selection passed\n";
 }
+void visual_host_tests() {
+    Renderer renderer;
+    require(renderer.attach_offscreen() && renderer.demo(0), "visual host fixture");
+    Options options;
+    options.output_width = 640;
+    options.output_height = 360;
+    options.stabilize = false;
+    options.crop = 0;
+    std::vector<std::uint32_t> pixels;
+    unsigned w{}, h{};
+    auto draw = [&] {
+        require(renderer.draw(options) && renderer.readback(pixels, w, h), "visual host draw");
+        return pixels;
+    };
+    const auto original = draw();
+    require(renderer.visual_diagnostics().allocations == 0 && renderer.visual_diagnostics().dispatches == 0,
+            "default preview allocates no effects resources and dispatches no work");
+    options.visual.exposure = true;
+    options.visual.exposure_ev = -2;
+    const auto enhanced = draw();
+    const auto allocations = renderer.visual_diagnostics().allocations;
+    require(allocations > 0 && renderer.visual_diagnostics().frame_dispatches == 1,
+            "manual exposure uses one GPU compute pass");
+    require(draw() == enhanced && renderer.visual_diagnostics().allocations == allocations,
+            "effects reuse GPU resources on redraw");
+    require((enhanced[180 * w + 320] & 255) < (original[180 * w + 320] & 255) - 30,
+            "local preview applies exposure to game image");
+    options.compare_effects = options.compare_original = true;
+    require(draw() == original, "effects original A/B preserves exact geometry and source colors");
+    options.compare_mode = 1;
+    draw();
+    require(pixels[180 * w + 200] == enhanced[180 * w + 200] &&
+                pixels[180 * w + 440] == original[180 * w + 440], "effects split uses same framing");
+    options.compare_mode = 2;
+    draw();
+    require(pixels[10 * w + 160] == 0xff000000u &&
+                pixels[180 * w + 160] == enhanced[180 * w + 320] &&
+                pixels[180 * w + 480] == original[180 * w + 320], "effects fitted side-by-side");
+    options.compare_original = false;
+    options.visual.exposure_ev = 0;
+    draw();
+    for (std::size_t i = 0; i < pixels.size(); ++i)
+        for (unsigned shift : {0u, 8u, 16u, 24u})
+            require(std::abs(int((pixels[i] >> shift) & 255) - int((original[i] >> shift) & 255)) <= 1,
+                    "neutral effects preserve SDR and alpha with one transfer encode");
+    options.visual.bloom = options.visual.adaptation = options.visual.color = true;
+    draw();
+    options.spectator.bypass = true;
+    require(draw() == original, "master bypass restores original pixels");
+    options.spectator.bypass = false;
+    options.visual = {};
+    require(draw() == original, "switching every effect off restores original pixels");
+    require(renderer.visual_diagnostics().resource_bytes == 0 && renderer.visual_diagnostics().dispatches == 0,
+            "all-off frees effects resources and stops GPU work");
+    std::cout << "Native GPU: preview exposure, transfer, A/B and bypass passed\n";
+}
 int main(int argc, char **argv) {
     try {
+        visual_host_tests();
         overlay_tests();
         offscreen_tests<Renderer>();
         WNDCLASSW wc{};

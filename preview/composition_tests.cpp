@@ -32,6 +32,40 @@ Frame frame(std::uint64_t sequence, double angle = 0) {
 int main() {
     try {
         {
+            FrameStabilizer camera;
+            Options gaze; gaze.smoothing=0; gaze.crop=35; gaze.mirror=false;
+            gaze.stabilize=false; gaze.spectator.gaze_enabled=true; gaze.spectator.gaze_strength=100;
+            auto input=frame(1);
+            for(unsigned i=1;i<=180;++i) {
+                input=frame(i);
+                input.gaze.flags=GazeValid|GazeTracked|GazeTimeKnown;
+                input.gaze.sample_time_ns=input.display_time; input.gaze.reference_epoch=input.reference_epoch;
+                input.gaze.direction=rotate(axis_angle({0,1,0},.3),{0,0,-1});
+                camera.update(input,gaze);
+            }
+            auto enhanced=camera.update(input,gaze);
+            check(angle_between(enhanced.warp.correction,{})>.05,"gaze works independently of existing stabilization");
+            gaze.compare_original=true;
+            check(angle_between(camera.update(input,gaze).warp.correction,{})<1e-6,"camera A/B uses original geometry");
+            gaze.compare_effects=true;
+            check(angle_between(camera.update(input,gaze).warp.correction,enhanced.warp.correction)<1e-6,
+                  "effects A/B preserves enhanced camera geometry without advancing frame");
+            gaze.compare_original=false; gaze.compare_effects=false; gaze.crop=0;
+            check(angle_between(camera.update(input,gaze).warp.correction,{})<1e-6,"gaze respects horizontal crop limit");
+        }
+        {
+            FrameStabilizer camera; Options options; camera.learn_chat();
+            for(unsigned i=1;i<=270;++i) {
+                auto input=frame(i); input.gaze.flags=GazeValid|GazeTracked|GazeTimeKnown;
+                input.gaze.sample_time_ns=input.display_time; input.gaze.reference_epoch=input.reference_epoch;
+                camera.update(input,options);
+            }
+            check(camera.spectator_status().zone_valid,"explicit calibration with framing disabled survives first frame");
+            auto reset=frame(271); reset.reference_epoch=2;
+            camera.update(reset,options);
+            check(!camera.spectator_status().zone_valid,"reference reset clears learned zone even while disabled");
+        }
+        {
             Options edges;
             edges.smoothing = 0;
             edges.aspect = 1;
