@@ -18,19 +18,28 @@ void outline(HDC dc, RECT r, COLORREF color) {
     SetDCBrushColor(dc, color);
     FrameRect(dc, &r, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
 }
+void rounded(HDC dc, RECT r, COLORREF color, COLORREF edge, int radius = 12) {
+    const auto brush = SelectObject(dc, GetStockObject(DC_BRUSH));
+    const auto pen = SelectObject(dc, GetStockObject(DC_PEN));
+    SetDCBrushColor(dc, color);
+    SetDCPenColor(dc, edge);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
+    SelectObject(dc, pen);
+    SelectObject(dc, brush);
+}
 void label(HDC dc, HWND window, RECT r, COLORREF color, UINT flags) {
     wchar_t value[1024]{};
     GetWindowTextW(window, value, 1024);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, color);
     auto previous = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0)));
-    DrawTextW(dc, value, -1, &r, flags);
+    DrawTextW(dc, value, -1, &r, flags | DT_NOPREFIX);
     SelectObject(dc, previous);
 }
 void checkbox(HDC dc, HWND window) {
     RECT r{};
     GetClientRect(window, &r);
-    fill(dc, r, panel);
+    fill(dc, r, GetPropW(window, L"SteadyXRSurface") ? bg : panel);
     RECT box{2, (r.bottom - 18) / 2, 20, (r.bottom + 18) / 2};
     const bool enabled = IsWindowEnabled(window),
                checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -66,6 +75,48 @@ LRESULT CALLBACK check_proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_
         InvalidateRect(window, nullptr, FALSE);
     if (message == WM_NCDESTROY)
         RemoveWindowSubclass(window, check_proc, 1);
+    return result;
+}
+LRESULT CALLBACK button_proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR) {
+    const bool tab = GetPropW(window, L"SteadyXRTab") != nullptr;
+    if (tab && (message == WM_PAINT || message == WM_PRINTCLIENT)) {
+        PAINTSTRUCT ps{};
+        DRAWITEMSTRUCT item{};
+        item.CtlType = ODT_BUTTON;
+        item.CtlID = GetDlgCtrlID(window);
+        item.itemAction = ODA_DRAWENTIRE;
+        item.hwndItem = window;
+        item.hDC = message == WM_PAINT ? BeginPaint(window, &ps) : reinterpret_cast<HDC>(w);
+        GetClientRect(window, &item.rcItem);
+        if (!IsWindowEnabled(window))
+            item.itemState |= ODS_DISABLED;
+        if (SendMessageW(window, BM_GETSTATE, 0, 0) & BST_PUSHED)
+            item.itemState |= ODS_SELECTED;
+        if (GetFocus() == window)
+            item.itemState |= ODS_FOCUS;
+        if (SendMessageW(window, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS)
+            item.itemState |= ODS_NOFOCUSRECT;
+        SendMessageW(GetParent(window), WM_DRAWITEM, item.CtlID, reinterpret_cast<LPARAM>(&item));
+        if (message == WM_PAINT)
+            EndPaint(window, &ps);
+        return 0;
+    }
+    if (message == WM_MOUSEMOVE && !GetPropW(window, L"SteadyXRHover")) {
+        SetPropW(window, L"SteadyXRHover", reinterpret_cast<HANDLE>(1));
+        TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, window, 0};
+        TrackMouseEvent(&tracking);
+        InvalidateRect(window, nullptr, FALSE);
+    }
+    if (message == WM_MOUSELEAVE) {
+        RemovePropW(window, L"SteadyXRHover");
+        InvalidateRect(window, nullptr, FALSE);
+    }
+    const auto result = DefSubclassProc(window, message, w, l);
+    if (tab && (message == BM_SETCHECK || message == BM_SETSTATE || message == WM_ENABLE ||
+                message == WM_SETFOCUS || message == WM_KILLFOCUS || message == WM_UPDATEUISTATE))
+        InvalidateRect(window, nullptr, FALSE);
+    if (message == WM_NCDESTROY)
+        RemoveWindowSubclass(window, button_proc, 1);
     return result;
 }
 LRESULT CALLBACK combo_proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR) {
@@ -114,7 +165,7 @@ void Theme::initialize() {
     };
     body = font(16, FW_NORMAL);
     title_ = font(27, FW_SEMIBOLD);
-    heading_ = font(15, FW_SEMIBOLD);
+    heading_ = font(20, FW_SEMIBOLD);
     background_ = CreateSolidBrush(bg);
     panel_ = CreateSolidBrush(panel);
     field_ = CreateSolidBrush(field);
@@ -136,6 +187,8 @@ Theme::~Theme() {
         DestroyIcon(small_icon);
 }
 DWORD Theme::style(const wchar_t *kind, DWORD value) const {
+    if (!std::wcscmp(kind, L"STATIC"))
+        return value | SS_NOPREFIX;
     if (!std::wcscmp(kind, L"BUTTON") && (value & BS_TYPEMASK) == BS_PUSHBUTTON)
         return (value & ~BS_TYPEMASK) | BS_OWNERDRAW;
     if (!std::wcscmp(kind, TRACKBAR_CLASSW))
@@ -153,6 +206,11 @@ void Theme::control(HWND window, const wchar_t *kind, bool heading) {
     if (!std::wcscmp(kind, L"BUTTON") &&
         (GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK) == BS_AUTOCHECKBOX)
         SetWindowSubclass(window, check_proc, 1, 0);
+    if (!std::wcscmp(kind, L"BUTTON")) {
+        const auto type = GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK;
+        if (type == BS_OWNERDRAW || type == BS_AUTORADIOBUTTON)
+            SetWindowSubclass(window, button_proc, 1, 0);
+    }
     if (!std::wcscmp(kind, TRACKBAR_CLASSW))
         SetWindowTheme(window, L"", L"");
 }
@@ -162,6 +220,12 @@ void Theme::titlebar(HWND window) {
     SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
     SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(small_icon));
 }
+void Theme::surface(HWND window, HDC dc, RECT card) {
+    RECT r{};
+    GetClientRect(window, &r);
+    fill(dc, r, bg);
+    rounded(dc, card, panel, border, 18);
+}
 bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &result) {
     result = 0;
     if (message == WM_CTLCOLORSTATIC || message == WM_CTLCOLORBTN || message == WM_CTLCOLOREDIT ||
@@ -169,11 +233,12 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         auto dc = reinterpret_cast<HDC>(w);
         const auto child = reinterpret_cast<HWND>(l);
         const bool input = message == WM_CTLCOLOREDIT || message == WM_CTLCOLORLISTBOX;
-        SetTextColor(dc, !IsWindowEnabled(child)              ? disabled
-                         : GetPropW(child, L"HorizonHeading") ? accent
-                                                              : text);
-        SetBkColor(dc, input ? field : panel);
-        result = reinterpret_cast<LRESULT>(input ? field_ : panel_);
+        const bool surface = GetPropW(child, L"SteadyXRSurface") != nullptr;
+        SetTextColor(dc, !IsWindowEnabled(child)             ? disabled
+                         : GetPropW(child, L"SteadyXRMuted") ? muted
+                                                             : text);
+        SetBkColor(dc, input ? field : surface ? bg : panel);
+        result = reinterpret_cast<LRESULT>(input ? field_ : surface ? background_ : panel_);
         return true;
     }
     if (message == WM_ERASEBKGND) {
@@ -185,25 +250,17 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         auto dc = message == WM_PAINT ? BeginPaint(window, &ps) : reinterpret_cast<HDC>(w);
         RECT r{};
         GetClientRect(window, &r);
-        fill(dc, r, bg);
-        fill(dc, {12, 88, 632, 815}, panel);
-        fill(dc, {640, 88, 1024, 815}, panel);
-        fill(dc, {28, 322, 616, 323}, border);
-        fill(dc, {28, 543, 616, 544}, border);
-        DrawIconEx(dc, 22, 12, icon, 60, 60, 0, nullptr, DI_NORMAL);
+        surface(window, dc, {24, 164, r.right - 24, 550});
+        DrawIconEx(dc, 24, 18, icon, 52, 52, 0, nullptr, DI_NORMAL);
         auto old = SelectObject(dc, title_);
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, text);
-        RECT title{94, 14, 700, 48};
+        RECT title{92, 16, 580, 50};
         DrawTextW(dc, L"SteadyXR", -1, &title, DT_SINGLELINE);
         SelectObject(dc, body);
         SetTextColor(dc, muted);
-        RECT tagline{96, 49, 790, 75};
+        RECT tagline{94, 52, 590, 78};
         DrawTextW(dc, L"A steady view. Every corner.", -1, &tagline, DT_SINGLELINE);
-        RECT version{890, 28, 1009, 59};
-        fill(dc, version, field);
-        SetTextColor(dc, accent);
-        DrawTextW(dc, L"PREVIEW  0.10.0", -1, &version, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         SelectObject(dc, old);
         if (message == WM_PAINT)
             EndPaint(window, &ps);
@@ -214,15 +271,26 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         if (item.CtlType != ODT_BUTTON)
             return false;
         const bool primary = item.CtlID == 103, enabled = !(item.itemState & ODS_DISABLED);
-        auto color = primary && enabled ? accent : field;
+        const bool tab = GetPropW(item.hwndItem, L"SteadyXRTab") != nullptr;
+        const bool selected = tab && SendMessageW(item.hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        const bool hover = enabled && GetPropW(item.hwndItem, L"SteadyXRHover");
+        const bool surface = GetPropW(item.hwndItem, L"SteadyXRSurface") != nullptr;
+        auto color = primary && enabled ? accent : tab && !selected ? bg : field;
+        if (hover && !primary)
+            color = RGB(43, 57, 73);
         if (item.itemState & ODS_SELECTED)
             color = primary ? RGB(33, 174, 188) : border;
-        fill(item.hDC, item.rcItem, color);
-        outline(item.hDC, item.rcItem, primary && enabled ? accent : border);
+        fill(item.hDC, item.rcItem, surface ? bg : panel);
+        rounded(item.hDC, item.rcItem, color,
+                (primary && enabled) || selected ? accent
+                : tab && !hover                  ? bg
+                                                 : border);
         label(item.hDC, item.hwndItem, item.rcItem,
-              !enabled  ? disabled
-              : primary ? bg
-                        : text,
+              !enabled        ? disabled
+              : primary       ? bg
+              : selected      ? accent
+              : tab && !hover ? muted
+                              : text,
               DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         if ((item.itemState & ODS_FOCUS) && !(item.itemState & ODS_NOFOCUSRECT)) {
             auto focus = item.rcItem;

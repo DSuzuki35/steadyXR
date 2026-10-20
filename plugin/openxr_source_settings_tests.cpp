@@ -1,5 +1,6 @@
 #include "../preview/overlay_settings.hpp"
 #include "../preview/visual_settings_io.hpp"
+#include "../preview/director_settings_io.hpp"
 #include "openxr_source_settings.hpp"
 #include <filesystem>
 #include <fstream>
@@ -26,6 +27,9 @@ int main() {
               "native source defaults");
         check(c.options.mirror_stretch == 0, "edge stretch defaults to existing mirror behavior");
         check(c.options.overlays.mode == 0, "overlay capture defaults to None");
+        check(!c.options.director.lookahead_enabled && !c.options.director.auto_crop_enabled &&
+                  !c.options.director.speed_fov_enabled && c.options.director.telemetry_game == 0,
+              "director defaults to off with automatic telemetry selection");
         check(!c.options.spectator.gaze_enabled && !c.options.spectator.natural_enabled &&
                   !c.options.visual.active() && !c.options.compare_effects,
               "legacy OBS source retains disabled spectator and visual features");
@@ -36,6 +40,11 @@ int main() {
                 varied.options.spectator.*f.member = true;
             for (const auto &f : spectator_number_fields)
                 varied.options.spectator.*f.member = f.minimum + (f.maximum - f.minimum) * .37;
+            for (const auto &f : director_bool_fields)
+                varied.options.director.*f.member = true;
+            for (const auto &f : director_number_fields)
+                varied.options.director.*f.member = f.maximum;
+            varied.options.director.telemetry_game = 2;
             for (const auto &f : visual_bool_fields)
                 varied.options.visual.*f.member = true;
             for (const auto &f : visual_number_fields)
@@ -65,6 +74,19 @@ int main() {
                               1e-5 &&
                           obs_properties_get(properties, key(f.key).c_str()),
                       "spectator tuning roundtrips");
+            for (const auto &f : director_bool_fields)
+                check(restored.options.director.*f.member &&
+                          obs_properties_get(properties, key(f.key).c_str()),
+                      "director toggle survives scene JSON and has a native property");
+            for (const auto &f : director_number_fields)
+                check(std::abs(restored.options.director.*f.member - varied.options.director.*f.member) <
+                              1e-5 &&
+                          obs_properties_get(properties, key(f.key).c_str()),
+                      "director tuning survives scene JSON and has a native property");
+            auto *telemetry = obs_properties_get(properties, "DirectorTelemetryGame");
+            check(restored.options.director.telemetry_game == 2 && telemetry &&
+                      obs_property_list_item_count(telemetry) == 3,
+                  "director telemetry selection persists and exposes all supported games");
             for (const auto &f : visual_bool_fields)
                 check(restored.options.visual.*f.member && obs_properties_get(properties, key(f.key).c_str()),
                       "visual toggle survives scene JSON and has a native property");
@@ -83,12 +105,28 @@ int main() {
                   "comparison scope and transfer persist");
             const auto preset = (dir / "spectator-visual.ini").wstring();
             check(write_spectator_settings(preset, varied.options.spectator) &&
+                      write_director_settings(preset, varied.options.director) &&
                       write_visual_settings(preset, varied.options.visual) &&
                       WritePrivateProfileStringW(L"Preview", L"CompareEffects", L"1", preset.c_str()),
                   "shared complete optional preset writes");
             std::string error;
             check(vrst_plugin::openxr_import(scene, preset, error), "complete optional preset imports");
             const auto imported = vrst_plugin::openxr_settings(scene);
+            for (const auto &f : director_bool_fields)
+                check(imported.options.director.*f.member, "shared director preset toggle imports");
+            for (const auto &f : director_number_fields)
+                check(std::abs(imported.options.director.*f.member - varied.options.director.*f.member) <
+                          1e-5,
+                      "shared director preset tuning imports");
+            check(imported.options.director.telemetry_game == 2, "shared director telemetry imports");
+            obs_data_set_double(scene, "DirectorLookaheadFrames", NAN);
+            obs_data_set_double(scene, "DirectorAutoCropMaxPercent", 999);
+            obs_data_set_double(scene, "DirectorSpeedFovPercent", -1);
+            obs_data_set_int(scene, "DirectorTelemetryGame", 99);
+            const auto invalid_director = vrst_plugin::openxr_settings(scene).options.director;
+            check(invalid_director.lookahead_frames == 3 && invalid_director.auto_crop_max_percent == 30 &&
+                      invalid_director.speed_fov_percent == 0 && invalid_director.telemetry_game == 0,
+                  "invalid scene director values fall back or clamp safely");
             for (const auto &f : spectator_bool_fields)
                 check(imported.options.spectator.*f.member, "shared spectator preset toggle imports");
             for (const auto &f : spectator_number_fields)
@@ -183,12 +221,18 @@ int main() {
         obs_data_set_bool(s, "render_enabled", true);
         obs_data_set_double(s, "render_left", 17);
         obs_data_set_bool(s, "SpectatorGazeEnabled", true);
+        obs_data_set_bool(s, "DirectorLookaheadEnabled", true);
+        obs_data_set_bool(s, "DirectorAutoCropEnabled", true);
+        obs_data_set_bool(s, "DirectorSpeedFovEnabled", true);
+        obs_data_set_int(s, "DirectorTelemetryGame", 2);
         obs_data_set_bool(s, "VisualExposure", true);
         obs_data_set_bool(s, "compare_effects", true);
         std::string error;
         check(vrst_plugin::openxr_import(s, old.wstring(), error), "literal legacy INI imports");
         c = vrst_plugin::openxr_settings(s);
         check(!c.options.spectator.gaze_enabled && !c.options.spectator.natural_enabled &&
+                  !c.options.director.lookahead_enabled && !c.options.director.auto_crop_enabled &&
+                  !c.options.director.speed_fov_enabled && c.options.director.telemetry_game == 0 &&
                   !c.options.visual.active() && !c.options.compare_effects,
               "legacy preset import resets optional features to off even after enabled scene settings");
         check(c.options.smoothing == 63 && c.options.crop == 14 && c.options.eye == 1 && c.fps == 90 &&

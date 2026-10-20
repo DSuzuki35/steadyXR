@@ -1,6 +1,7 @@
 #include "openxr_source_settings.hpp"
 #include "../preview/overlay_settings.hpp"
 #include "../preview/visual_settings_io.hpp"
+#include "../preview/director_settings_io.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -126,6 +127,11 @@ void openxr_defaults(obs_data_t *s) {
         obs_data_set_default_bool(s, utf8(f.key).c_str(), o.spectator.*f.member);
     for (const auto &f : spectator_number_fields)
         obs_data_set_default_double(s, utf8(f.key).c_str(), o.spectator.*f.member);
+    for (const auto &f : director_bool_fields)
+        obs_data_set_default_bool(s, utf8(f.key).c_str(), o.director.*f.member);
+    for (const auto &f : director_number_fields)
+        obs_data_set_default_double(s, utf8(f.key).c_str(), o.director.*f.member);
+    obs_data_set_default_int(s, "DirectorTelemetryGame", 0);
     obs_data_set_default_bool(s, "compare_effects", false);
     for (const auto &n : numbers)
         obs_data_set_default_double(s, n.key, o.*n.member);
@@ -156,6 +162,14 @@ OpenXRSettings openxr_settings(obs_data_t *s) {
         c.options.spectator.*f.member =
             number(s, utf8(f.key).c_str(), c.options.spectator.*f.member, f.minimum, f.maximum);
     c.options.spectator = vrst::sanitize_spectator_settings(c.options.spectator);
+    for (const auto &f : director_bool_fields)
+        c.options.director.*f.member = flag(s, utf8(f.key).c_str(), false);
+    for (const auto &f : director_number_fields)
+        c.options.director.*f.member =
+            number(s, utf8(f.key).c_str(), c.options.director.*f.member, f.minimum, f.maximum);
+    c.options.director.telemetry_game = director_telemetry_selection(
+        obs_data_get_double(s, "DirectorTelemetryGame"));
+    c.options.director = sanitize_director_settings(c.options.director);
     c.options.compare_effects = flag(s, "compare_effects", false);
     for (const auto &n : numbers)
         c.options.*n.member = number(s, n.key, c.options.*n.member, n.low, n.high);
@@ -194,6 +208,12 @@ void openxr_store(obs_data_t *s, const OpenXRSettings &c) {
         obs_data_set_bool(s, utf8(f.key).c_str(), camera.*f.member);
     for (const auto &f : spectator_number_fields)
         obs_data_set_double(s, utf8(f.key).c_str(), camera.*f.member);
+    const auto director = sanitize_director_settings(c.options.director);
+    for (const auto &f : director_bool_fields)
+        obs_data_set_bool(s, utf8(f.key).c_str(), director.*f.member);
+    for (const auto &f : director_number_fields)
+        obs_data_set_double(s, utf8(f.key).c_str(), director.*f.member);
+    obs_data_set_int(s, "DirectorTelemetryGame", director.telemetry_game);
     obs_data_set_bool(s, "compare_effects", c.options.compare_effects);
     for (const auto &n : numbers)
         obs_data_set_double(s, n.key, c.options.*n.member);
@@ -225,6 +245,29 @@ void openxr_add_properties(obs_properties_t *p) {
         obs_properties_add_float(camera, utf8(f.key).c_str(), utf8(f.label).c_str(), f.minimum, f.maximum,
                                  .1);
     obs_properties_add_group(p, "spectator_camera", "Optional spectator camera", OBS_GROUP_NORMAL, camera);
+    auto *director = obs_properties_create();
+    for (const auto &f : director_bool_fields)
+        obs_properties_add_bool(director, utf8(f.key).c_str(), utf8(f.label).c_str());
+    for (const auto &f : director_number_fields) {
+        if (f.member == &DirectorSettings::lookahead_frames)
+            obs_properties_add_int(director, utf8(f.key).c_str(), utf8(f.label).c_str(),
+                                   int(f.minimum), int(f.maximum), 1);
+        else
+            obs_properties_add_float(director, utf8(f.key).c_str(), utf8(f.label).c_str(),
+                                     f.minimum, f.maximum, .1);
+    }
+    auto *telemetry = obs_properties_add_list(director, "DirectorTelemetryGame", "Speed telemetry",
+                                             OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+    for (unsigned i = 0; i < std::size(director_telemetry_labels); ++i)
+        obs_property_list_add_int(telemetry, utf8(director_telemetry_labels[i]).c_str(), i);
+    obs_properties_add_text(
+        director, "director_help",
+        "Lookahead delays OpenXR video by the requested frames, reduced when the 256 MiB GPU buffer cap "
+        "is reached. Add the actual video delay to the OBS audio sync offset. Automatic crop covers "
+        "exposed edges up to its limit. Speed framing adds crop at low speed and restores normal framing "
+        "at high speed. Missing telemetry returns framing to neutral. All controls follow spectator bypass.",
+        OBS_TEXT_INFO);
+    obs_properties_add_group(p, "director", "Optional Director camera", OBS_GROUP_NORMAL, director);
     visual_add_properties(p);
     obs_properties_add_bool(p, "compare_effects", "A/B compares visual effects only (same camera geometry)");
     auto *eye = obs_properties_add_list(p, "eye", "Captured eye", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
@@ -285,6 +328,7 @@ bool openxr_import(obs_data_t *s, const std::wstring &path, std::string &error) 
     OpenXRSettings c;
     auto &o = c.options;
     o.spectator = read_spectator_settings(path);
+    o.director = read_director_settings(path);
     o.visual = read_visual_settings(path);
     o.compare_effects = v(L"CompareEffects", 0, 0, 1) != 0;
     o.overlays = vrst::preview::read_overlay_settings(path);

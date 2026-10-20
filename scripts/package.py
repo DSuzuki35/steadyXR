@@ -13,7 +13,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
 p.add_argument('--openxr', type=Path, help='Include the standalone preview and its pinned OpenXR source headers')
-p.add_argument('--version', default='0.10.0')
+p.add_argument('--version', default='0.12.0')
 p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
 stage = root / 'dist' / f'SteadyXR-{a.version}-Windows-x64'
@@ -51,6 +51,8 @@ for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd'
     copy(root / name, name)
 copy(a.openvr / 'LICENSE', 'licenses/OpenVR-LICENSE.txt')
 copy(root / 'docs/spectator-features.md', 'docs/spectator-features.md')
+for guide in ['viewer-director.md', 'telemetry.md']:
+    copy(root / 'docs' / guide, Path('docs') / guide)
 if a.openxr:
     for name in ['SteadyXR.exe', 'SteadyXR-OpenXR.dll']:
         copy(output(Path('preview') / name), Path('preview') / name)
@@ -58,6 +60,14 @@ if a.openxr:
     copy(a.build / 'preview/steadyxr-build.json', 'preview/SteadyXR-build.json')
     copy(root / 'preview/README.md', 'preview/README.md')
     copy(root / 'docs/spectator-features.md', 'preview/Spectator-Guide.md')
+    copy(root / 'docs/viewer-director.md', 'preview/Viewer-Director-Guide.md')
+    copy(root / 'docs/telemetry.md', 'preview/Telemetry-Guide.md')
+    for name, old, new in [
+        ('Spectator-Guide.md', '(viewer-director.md)', '(Viewer-Director-Guide.md)'),
+        ('Viewer-Director-Guide.md', '(telemetry.md)', '(Telemetry-Guide.md)'),
+    ]:
+        guide = stage / 'preview' / name
+        guide.write_text(guide.read_text(encoding='utf-8').replace(old, new), encoding='utf-8')
     for name in ['SteadyXR.ico', 'SteadyXR.png']:
         copy(root / 'preview/assets' / name, Path('preview') / name)
     copy(root / 'Start-Preview.cmd', 'Start-Preview.cmd')

@@ -110,6 +110,7 @@ void SpectatorController::reset() {
 }
 void SpectatorController::suspend() {
     initialized_ = fixation_ = have_sample_ = natural_active_ = false;
+    natural_motion_active_ = false;
     yaw_ = pitch_ = yaw_velocity_ = pitch_velocity_ = 0;
     status_.in_chat_zone = false;
     status_.gaze_state = GazeState::disabled;
@@ -136,26 +137,31 @@ Quat SpectatorController::update(const SpectatorInput &i, const SpectatorSetting
         return s.bypass || (!s.gaze_enabled && !s.natural_enabled) ? i.base_target_orientation : output_;
     const bool discontinuity = !initialized_ || reference_changed || i.time_ns - time_ > 250000000ULL ||
                                angle_between(previous_source_, source) > 45 * rad;
+    const bool use_natural_motion =
+        i.use_natural_motion_orientation && valid(i.natural_motion_orientation);
+    const Quat motion = use_natural_motion ? normalized(i.natural_motion_orientation) : source;
+    const bool natural_discontinuity = discontinuity || use_natural_motion != natural_motion_active_ ||
+                                       angle_between(previous_natural_motion_, motion) > 45 * rad;
     const double dt = discontinuity ? .01 : double(i.time_ns - time_) * 1e-9;
     if (discontinuity) {
-        natural_target_ = source;
+        natural_target_ = motion;
         velocity_ = speed_ = natural_step_velocity_ = {};
         yaw_ = pitch_ = yaw_velocity_ = pitch_velocity_ = 0;
         fixation_ = have_sample_ = false;
         status_.in_chat_zone = false;
     }
     if (s.natural_enabled) {
-        if (!natural_active_ || discontinuity || s.natural_suppression <= 0) {
-            natural_target_ = source;
+        if (!natural_active_ || natural_discontinuity || s.natural_suppression <= 0) {
+            natural_target_ = motion;
             velocity_ = speed_ = natural_step_velocity_ = {};
         } else {
-            const auto change = rotation_vector(multiply(conjugate(previous_source_), source));
-            auto error = rotation_vector(multiply(conjugate(source), natural_target_));
+            const auto change = rotation_vector(multiply(conjugate(previous_natural_motion_), motion));
+            auto error = rotation_vector(multiply(conjugate(motion), natural_target_));
             error.x = natural_axis(change.x, error.x, velocity_.x, speed_.x, dt, s.natural_pitch, s);
             error.y = natural_axis(change.y, error.y, velocity_.y, speed_.y, dt, s.natural_yaw, s);
             error.z = natural_axis(change.z, error.z, velocity_.z, speed_.z, dt, s.natural_roll, s);
             const double n = length(error), limit = s.natural_max_correction_degrees * rad;
-            const auto candidate = normalized(multiply(source, axis_angle(error, std::min(n, limit))));
+            const auto candidate = normalized(multiply(motion, axis_angle(error, std::min(n, limit))));
             const auto delta = rotation_vector(multiply(conjugate(natural_target_), candidate));
             auto wanted = limited(Vec3{delta.x / dt, delta.y / dt, delta.z / dt}, 360 * rad);
             const auto acceleration =
@@ -180,14 +186,14 @@ Quat SpectatorController::update(const SpectatorInput &i, const SpectatorSetting
             natural_step_velocity_ = rotate(conjugate(rotation), natural_step_velocity_);
             // Image-margin/correction safety takes precedence over the motion
             // envelope when the source moves farther than the allowed lag.
-            const double correction = angle_between(source, natural_target_);
+            const double correction = angle_between(motion, natural_target_);
             if (correction > limit) {
-                natural_target_ = slerp(source, natural_target_, limit / correction);
+                natural_target_ = slerp(motion, natural_target_, limit / correction);
                 natural_step_velocity_ = {};
             }
             // Disabling an axis removes its correction, including any motion
             // retained by the shared speed/acceleration envelope.
-            auto residual = rotation_vector(multiply(conjugate(source), natural_target_));
+            auto residual = rotation_vector(multiply(conjugate(motion), natural_target_));
             if (s.natural_pitch <= 0) {
                 residual.x = 0;
                 natural_step_velocity_.x = 0;
@@ -200,7 +206,7 @@ Quat SpectatorController::update(const SpectatorInput &i, const SpectatorSetting
                 residual.z = 0;
                 natural_step_velocity_.z = 0;
             }
-            natural_target_ = normalized(multiply(source, axis_angle(residual, length(residual))));
+            natural_target_ = normalized(multiply(motion, axis_angle(residual, length(residual))));
         }
     }
     natural_active_ = s.natural_enabled;
@@ -347,6 +353,8 @@ Quat SpectatorController::update(const SpectatorInput &i, const SpectatorSetting
     time_ = i.time_ns;
     sequence_ = i.sequence;
     previous_source_ = source;
+    previous_natural_motion_ = motion;
+    natural_motion_active_ = use_natural_motion;
     return s.bypass || (!s.gaze_enabled && !s.natural_enabled) ? i.base_target_orientation : output_;
 }
 } // namespace vrst

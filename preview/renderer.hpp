@@ -1,4 +1,5 @@
 #pragma once
+#include "director.hpp"
 #include "transport.hpp"
 #include "visual_effects.hpp"
 #include <memory>
@@ -11,6 +12,7 @@ namespace vrst::preview {
 struct Options {
     SpectatorSettings spectator{};
     VisualSettings visual{};
+    DirectorSettings director{};
     bool compare_effects{}; // Persisted comparison scope; compare_original activates it transiently.
     OverlaySelection overlays{};
     double smoothing{40}, crop{10};
@@ -40,7 +42,8 @@ struct Composition {
 };
 class FrameStabilizer {
   public:
-    Composition update(const Frame &, const Options &);
+    Composition update(const Frame &, const Options &, const Quat *lookahead_target = nullptr,
+                       double speed_kph = -1);
     void reset();
     void reset_horizon(); // Re-select upright hemisphere without clearing smoothing history.
     void learn_chat() {
@@ -58,6 +61,12 @@ class FrameStabilizer {
     bool calibration_active() const {
         return spectator_.calibration_active();
     }
+    DirectorStatus director_status() const {
+        return director_.status();
+    }
+    void reset_director() {
+        director_.reset();
+    }
 
   private:
     PoseHistory history_;
@@ -65,6 +74,7 @@ class FrameStabilizer {
     double horizon_up_sign_{};
     SpectatorController spectator_;
     bool spectator_active_{};
+    DirectorController director_;
 };
 
 class Renderer {
@@ -90,6 +100,7 @@ class Renderer {
     void cancel_chat();
     void clear_chat();
     SpectatorStatus spectator_status() const;
+    DirectorStatus director_status() const;
     bool calibration_active() const;
     unsigned gaze_capability() const;
     const VisualDiagnostics &visual_diagnostics() const;

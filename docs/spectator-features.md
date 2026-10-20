@@ -1,4 +1,6 @@
-# SteadyXR 0.10.0 spectator features
+# SteadyXR 0.11.0 spectator features
+
+Version 0.12.0 adds the optional **Director** page: lookahead, automatic crop and iRacing/LMU speed framing. See [Viewer camera controls](viewer-director.md) for setup, video delay, memory budget and two-PC limits.
 
 Every new feature is optional and off by default, including when loading old settings. Existing stabilization stays available. The master bypass disables the new camera and image processing without erasing tuning. DLSS 5 remains a research item in TODO.md.
 
@@ -10,9 +12,9 @@ Disabled image effects add no GPU passes or textures. The layer queries eye stat
 
 ## Gaze and chat
 
-Open **Spectator camera / effects…** in the preview, or the spectator groups in the direct OBS source. Enable gaze framing and tune strength, fixation dwell, neutral zone, horizontal/vertical travel and response. Framing stays within the captured image margins. Natural stabilization can be used independently; its suppression, turn response, settling and per-axis controls balance jitter suppression against head following.
+Open **Spectator & effects → Gaze & chat** in the preview, or the spectator groups in the direct OBS source. Enable gaze framing and tune strength, fixation dwell, neutral zone, horizontal/vertical travel and response. Framing stays within the captured image margins. The **Motion** page controls natural stabilization independently; its suppression, turn response, settling and per-axis controls balance jitter suppression against head following.
 
-Enable chat exclusion, then press **Learn chat position** (standalone default **Ctrl+Alt+C**, configurable native OBS hotkey). Look at chat during the three-second countdown and one-second acquisition. Stable samples learn a center direction; width/height are adjustable angular bounds. This does not infer a panel's physical size or depth. Looking there removes the gaze contribution smoothly while stabilized head following continues. Cancel and Clear are available.
+Enable chat exclusion, then press **Look at chat now / Learn** (OBS: **Learn chat position**) (standalone default **Ctrl+Alt+C**, configurable native OBS hotkey). Look at chat during the three-second countdown and one-second acquisition. Stable samples learn a center direction; width/height are adjustable angular bounds. This does not infer a panel's physical size or depth. Looking there removes the gaze contribution smoothly while stabilized head following continues. Cancel and Clear are available.
 
 The learned direction is valid for the current tracking reference only. Relearn after recentering, changing eye/source/game session, loading a preset or moving chat. Presets save tuning, never a live world anchor. The countdown advances with captured frames. Unsupported, untracked or stale gaze falls back to ordinary head stabilization; a runtime with unknown eye timestamps can frame but cannot reliably learn a chat anchor.
 
@@ -20,7 +22,7 @@ The layer uses `XR_EXT_eye_gaze_interaction` when advertised and coexists with t
 
 ## Exposure, bloom and color
 
-Manual exposure, automatic adaptation, bloom and color have separate switches. Adaptation has bounded gain and separate brightening/darkening rates. Transition strength adds a restrained temporary response to large luminance changes. Bloom uses threshold/soft knee and a reduced-resolution blur. Temperature, tint, contrast, saturation, shadows and highlights are adjustable. Filmic is an explicit opt-in preset.
+The **Exposure**, **Bloom** and **Color** pages have separate optional switches. Manual exposure stays fixed; automatic adaptation responds to the metered brightness over time. Leaving a dark tunnel can briefly brighten the view before it settles; entering shade can initially darken it before gain rises. Bloom continuously follows bright highlights, and color grading is a fixed adjustment. Adaptation has bounded gain and separate brightening/darkening rates. Transition damping restrains abrupt brightness transitions; it does not generate an artificial white flash. Bloom uses threshold/soft knee and a reduced-resolution blur. Temperature, tint, contrast, saturation, shadows and highlights are adjustable. Filmic is an explicit opt-in preset.
 
 Local/direct-source effects run after camera framing and before separately captured OpenXR overlays. Metering excludes known letterboxing and mirrored borders and intersects the user-selected metering region. On a capture-card input, baked-in HUD/chat cannot be separated; use the region controls to reduce their influence. These are SDR effects: they cannot recover clipped highlights. The OBS filter passes unsupported HDR color spaces through with a status explanation.
 

@@ -1,19 +1,21 @@
-# SteadyXR 0.10.0 OpenXR Capture for OBS
+# SteadyXR 0.12.0 OpenXR Capture for OBS
+
+Version 0.12.0 adds optional Director controls for lookahead, automatic crop and speed framing from iRacing or Le Mans Ultimate. Refresh status shows actual delay, GPU history memory and active speed source. See [Viewer camera controls](viewer-director.md); audio remains a separate source and needs the corresponding sync offset.
 
 The direct source provides the stabilized OpenXR image in OBS on the same PC as the game. The standalone app can stay closed. The original VR Stabilizer filter remains available for a capture-card source on a separate PC.
 
 ## Install
 
-1. Close OBS. Open `Gaming-PC\SteadyXR-0.10.0` and copy **obs-plugins** and **data** directly into `C:\Program Files\obs-studio` on the gaming PC. These folders sit beside SteadyXR.exe, its layer and INI; no extra nesting is needed. The identical folders remain available under `Stream-PC`. In the complete ZIP they are beside the app under `preview`, as well as under `obs-install`. If you installed the previous module with `Install-OBS.cmd`, use that installer again instead so only one module copy is installed.
+1. Close OBS. Extract `SteadyXR-0.12.0-OBS-Windows-x64.zip` and copy **obs-plugins** and **data** directly into `C:\Program Files\obs-studio` on the gaming PC. The standalone community ZIP excludes these OBS folders. The ready-to-copy delivery also provides them under `Stream-PC`. In the complete ZIP they are beside the app under `preview`, as well as under `obs-install`. If you installed the previous module with `Install-OBS.cmd`, use that installer again instead so only one module copy is installed.
 2. Start OBS and add **Sources → + → SteadyXR OpenXR Capture**.
 3. Close the standalone SteadyXR/Horizon Lock preview. The source uses the same OpenXR connection and works without the app running. Reuse this source in other scenes using **Add Existing**.
-4. Use 0.10.0's **Upgrade connection** (or **Install connection**) and restart the OpenXR/D3D11 game. The new overlay capture format requires the 0.10.0 layer; an older layer cannot provide this source's frames. Close the standalone output again after setup.
+4. Use **Capture → Upgrade connection** (or **Install connection**) and restart the OpenXR/D3D11 game if updating from a pre-0.10 layer or adopting this build's validity period. The IPC 4 format remains compatible with unexpired 0.10.0 layers. Close the standalone output again after setup.
 
 OBS and the game must run on the same graphics adapter. Stereo and context/foveal quad views use the existing capture path, including the OpenXR path used with the Pimax SteamVR driver. This is a video source; capture game audio separately in OBS as usual.
 
 ## Bring over your settings
 
-In the source properties select your `Gaming-PC\SteadyXR-0.10.0\SteadyXR.ini` (or the INI beside the preview you last used), then click **Import settings**. The ready-to-use 0.10.0 folder receives the previous viewer's INI unchanged if it has no settings yet. A complete INI preset or legacy `preview.ini` can also be imported. This copies stabilization and framing into OBS without changing the file.
+In the source properties select your `Gaming-PC\SteadyXR-0.12.0\SteadyXR.ini` (or the INI beside the preview you last used), then click **Import settings**. The ready-to-use 0.12.0 folder receives the previous viewer's INI unchanged if it has no settings yet. A complete INI preset or legacy `preview.ini` can also be imported. This copies stabilization and framing into OBS without changing the file.
 
 OBS stores subsequent edits with this source in the scene collection. Render-area extension stays in the settings beside the registered OpenXR layer; the source does not overwrite it. Use the standalone app to change extra rendered area for the next game launch, then close it before returning to the OBS source.
 

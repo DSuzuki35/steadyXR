@@ -1,10 +1,12 @@
-# SteadyXR Preview 0.10.0
+# SteadyXR Preview 0.12.0
 
-Open **Spectator camera / effects…** for gaze framing, chat exclusion, natural head movement and local exposure/bloom/color. All new features start **off**. The master bypass preserves tuning. Camera and Visual pages have independent switches and explicit opt-in presets.
+This 30-day test build is free. The control window shows its fixed UTC expiry and notes that future releases are planned to be paid, through channel subscriber/supporter access or a one-time license purchase. The notice is static UI text and does not appear in the clean captured output. The 30 days run from the build timestamp, not first launch.
 
-Enable gaze framing and chat exclusion, then press **Learn chat position** or **Ctrl+Alt+C** and look at chat: three seconds of countdown, then one second of stable samples. Adjust angular width/height. Head following continues while gaze toward chat is excluded. Relearn after recentering, changing eye/source/session, moving chat or loading a preset. Unsupported/stale gaze falls back to head stabilization. Actual Dream Air runtime compatibility still needs live validation.
+Open **Spectator & effects** for gaze framing, chat exclusion, natural head movement and local exposure/bloom/color. All new features start **off**. The master bypass preserves tuning. Gaze & chat, Motion, Exposure, Bloom, Color and Director each have their own page. Camera and visual bypass switches preserve tuning; presets are explicit opt-ins.
 
-Image effects run before separately captured overlays. **Compare image effects** uses the twenty-second A/B with identical framing. For minimum gaming-PC load, leave local image effects off and apply **SteadyXR Visual Effects** once to the capture-card source on the stream PC. The included **Spectator-Guide.md** explains the controls, SDR limits and measured costs. Install/upgrade the new connection and restart the OpenXR game for IPC 4.
+Enable gaze framing and chat exclusion, then press **Look at chat now / Learn** or **Ctrl+Alt+C** and look at chat: three seconds of countdown, then one second of stable samples. Adjust angular width/height. Head following continues while gaze toward chat is excluded. Relearn after recentering, changing eye/source/session, moving chat or loading a preset. Unsupported/stale gaze falls back to head stabilization. Actual Dream Air runtime compatibility still needs live validation.
+
+Image effects run before separately captured overlays. **A/B compares visual effects only** selects the twenty-second comparison with identical framing; start it with **Compare effects** in the main window. For minimum gaming-PC load, leave local image effects off and apply **SteadyXR Visual Effects** once to the capture-card source on the stream PC. The included **Spectator-Guide.md** explains the controls, SDR limits and measured costs. Pre-0.10 connections require an upgrade and game restart for IPC 4.
 
 Version **0.8.0** adds **Reset horizon**, global hotkeys, a temporary **20-second A/B comparison**, and compact capture/FPS feedback in the controls. The OBS drop-in folders now sit directly beside the standalone app in the delivered version folder. Existing settings and presets remain supported.
 
@@ -18,17 +20,31 @@ When no new frame arrives for two seconds, the output becomes a plain black scre
 
 Standalone gaming-PC preview with OpenXR pose stabilization or existing-window capture. Preview stabilization affects only the stream output. Optional render extension asks the game to render a wider eye projection; the runtime receives that actual projection for correct headset composition. No OBS or video encoder is required on the gaming PC.
 
-## Upgrade to 0.10.0
+## New in 0.12.0
 
-Close the previous app and start **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in **Gaming-PC/SteadyXR-0.10.0** and inherits your previous SteadyXR.ini unchanged when its own INI is missing.
+**Director** adds optional lookahead stabilization, automatic crop and speed framing for iRacing and Le Mans Ultimate. Lookahead retains at most four delayed frames within a 256 MiB texture budget and displays actual video delay for audio sync. Automatic crop and speed framing also work with existing-window capture. All three default off. See [Viewer camera controls](../docs/viewer-director.md) for costs, limits and two-PC setup. Live driving validation is still pending.
 
-**The OpenXR connection must be upgraded for 0.10.0.** Its overlay-capable capture format is incompatible with older capture DLLs. Use **Upgrade connection** (or **Install connection**) in the new app, then restart the OpenXR game. Delivery itself never changes registrations or restarts anything. Existing-window capture needs neither connection setup nor a game restart. Keep older directories until their layer is unregistered.
+## Find your controls
 
-For OBS, close OBS and copy **obs-plugins** and **data** from Gaming-PC/SteadyXR-0.10.0 directly into **C:\Program Files\obs-studio**. The same folders remain under Stream-PC and beside the app under preview in the ZIP. OBS uses the upgraded OpenXR layer without a running standalone app. Keep one active consumer: close/hide the standalone output while using OBS.
+- **Capture:** game window or OpenXR mode, eye/profile, frame rate, connection setup and layer tools.
+- **Camera:** smoothing, horizon lock, reset and the Stream Comfort starting point.
+- **Framing:** crop reserve, four trims, mirrored edges and **Render & edge settings…**.
+- **Output:** aspect ratio, resolution, monitor and fullscreen startup.
+- **Spectator & effects:** gaze/chat learning, natural motion, exposure, bloom, color and Director camera controls. This button stays visible on every main page.
+
+Open preview and pause stay at the top; comparison, presets and hotkeys stay at the bottom. Tab/Shift+Tab navigate native controls; Space activates the focused button or checkbox. Numeric effects settings apply when you leave the field. Switching pages preserves tuning and does not activate effects.
+
+## Upgrade to 0.12.0
+
+Close the previous app and start **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in **Gaming-PC/SteadyXR-0.12.0** and inherits your previous SteadyXR.ini unchanged when its own INI is missing.
+
+**0.12.0 uses the same IPC 4 capture format as 0.10.0.** An unexpired 0.10.0 connection remains compatible. For a pre-0.10 connection, or to use the new capture build and its validity period, use **Capture → Upgrade connection** (or **Install connection**), then restart the OpenXR game. Delivery itself never changes registrations or restarts anything. Existing-window capture needs neither connection setup nor a game restart. Keep older directories until their layer is unregistered.
+
+For OBS, close OBS and copy **obs-plugins** and **data** from the separate **SteadyXR-0.12.0-OBS-Windows-x64.zip** (or Stream-PC) directly into **C:\Program Files\obs-studio**. The standalone community ZIP excludes OBS binaries. OBS uses the upgraded OpenXR layer without a running standalone app. Keep one active consumer: close/hide the standalone output while using OBS.
 
 ## Additional OpenXR overlays
 
-Open **Overlay layers…** to inspect layers detected from the current game. None is the default. All supported includes future supported layers; individual checkboxes capture only the selected slots in this specific game session. The choices are included in complete presets, but a restarted game requires individual layers to be selected again. This avoids silently substituting a different overlay. Refresh the list after opening or closing an overlay. Layer labels describe type and dimensions, not an inferred program name.
+Open **Capture → Overlay layers…** to inspect layers detected from the current game. None is the default. All supported includes future supported layers; individual checkboxes capture only the selected slots in this specific game session. The choices are included in complete presets, but a restarted game requires individual layers to be selected again. This avoids silently substituting a different overlay. Refresh the list after opening or closing an overlay. Layer labels describe type and dimensions, not an inferred program name.
 
 Selected overlays use their own submitted geometry, positions and transparency and follow the stabilized game view, including 20-second A/B comparisons. No separate CPU video capture or encoder is used. Extra texture copying and drawing has a cost proportional to selected image sizes. See the packaged **docs/openxr-overlays.md** in the complete ZIP or the repository guide for setup, call order and format limits.
 
@@ -42,7 +58,7 @@ An expired capture DLL stops exporting frames and starts new OpenXR instances wi
 
 ## OpenXR layer editor
 
-Open **OpenXR layers…** in SteadyXR, or run **Gaming-PC/Start-Layer-Editor.cmd**. The editor runs only when opened, uses the Windows PowerShell/.NET Framework included with Windows, and performs no GPU capture. It does not load the listed third-party DLLs.
+Open **Capture → Layer order…** in SteadyXR, or run **Gaming-PC/Start-Layer-Editor.cmd**. The editor runs only when opened, uses the Windows PowerShell/.NET Framework included with Windows, and performs no GPU capture. It does not load the listed third-party DLLs.
 
 The default **64-bit (iRacing)** view shows system-wide and current-user implicit registrations followed by explicit registrations. Switch to 32-bit for older applications. Select a row for its technical name, full manifest/DLL paths and environment flags. Status describes the configuration visible to the editor; it cannot prove which layers an already-running game loaded. Elevated games ignore current-user registrations. Environment flags in the game process may differ from those visible to the editor.
 
@@ -62,7 +78,7 @@ Loader behavior: [Khronos OpenXR loader documentation](https://registry.khronos.
 
 ## Extra OpenXR scenery, asymmetric reserves and Y offset
 
-Open **Render / edges…** in the main window. Choose the eye profile you want to edit; this does not switch the captured eye. Select the actual stream eye in the main window.
+Open **Framing → Render & edge settings…**. Choose the eye profile you want to edit; this does not switch the captured eye. Select the actual stream eye in the main window.
 
 In window capture, the same main-window selector is named **Profile**. It selects which reserve settings apply to the existing window; it cannot change which eye the game shows in that window.
 

@@ -11,7 +11,9 @@ class SpectatorControls {
     enum Id { page_id = 3000, camera_bool_id = 3010, camera_number_id = 3030,
               visual_bool_id = 3060, visual_number_id = 3080, region_id = 3110,
               learn_id = 3120, cancel_id, clear_id, natural_id, cinematic_id,
-              filmic_id, neutral_id, compare_scope_id, status_id };
+              filmic_id, neutral_id, compare_scope_id, status_id,
+              director_bool_id = 3140, director_number_id = 3150, telemetry_id = 3160,
+              director_status_id = 3161 };
     SpectatorControls();
     ~SpectatorControls();
     void initialize(HWND, Theme &, Options &, Renderer &, std::function<void()> changed,

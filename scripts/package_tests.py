@@ -31,6 +31,7 @@ class PackageTests(unittest.TestCase):
             'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1',
             'docs/obs-openxr-source.md', 'docs/openxr-overlays.md', 'docs/local-delivery-de.txt',
             'docs/spectator-features.md',
+            'docs/viewer-director.md', 'docs/telemetry.md',
             'preview/README.md', 'preview/assets/SteadyXR.ico',
             'preview/assets/SteadyXR.png', 'preview/layers/LayerEditor.ps1',
             'preview/layers/RegistryStore.cs', 'preview/main.cpp',
@@ -86,6 +87,10 @@ class PackageTests(unittest.TestCase):
             prefix = 'SteadyXR-0.9.0-Windows-x64/'
             self.assertEqual(binary.read(prefix + 'preview/obs-plugins/64bit/vr-stabilizer.dll'),
                              b'plugin/vr-stabilizer.dll')
+            self.assertEqual(binary.read(prefix + 'preview/Viewer-Director-Guide.md'),
+                             b'docs/viewer-director.md')
+            self.assertEqual(binary.read(prefix + 'preview/Telemetry-Guide.md'),
+                             b'docs/telemetry.md')
             self.assertEqual(binary.read(prefix + 'preview/data/obs-plugins/vr-stabilizer/stabilize.effect'),
                              b'plugin/data/stabilize.effect')
             self.assertNotIn(prefix + 'preview/SteadyXR.ini', binary.namelist())

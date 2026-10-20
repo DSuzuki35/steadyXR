@@ -28,6 +28,10 @@ struct SpectatorInput {
     Quat source_orientation{}, base_target_orientation{};
     GazeSample gaze{};
     std::uint64_t time_ns{}, session{}, sequence{}, reference_epoch{};
+    // Optional captured-pose lookahead feeds the natural motion filter. The
+    // actual source above still aligns world gaze with this captured image.
+    Quat natural_motion_orientation{};
+    bool use_natural_motion_orientation{};
 };
 enum class ChatCalibrationPhase { idle, countdown, acquiring, succeeded, failed };
 enum class ChatCalibrationFailure { none, insufficient_samples, unstable, reference_changed };
@@ -64,9 +68,10 @@ class SpectatorController {
   private:
     SpectatorStatus status_{};
     bool initialized_{}, calibration_armed_{}, fixation_{}, have_sample_{}, natural_active_{};
+    bool natural_motion_active_{};
     std::uint64_t session_{}, epoch_{}, time_{}, sequence_{}, calibration_start_{}, fixation_start_{};
     std::int64_t sample_time_{};
-    Quat output_{}, previous_source_{}, natural_target_{}, head_target_{};
+    Quat output_{}, previous_source_{}, previous_natural_motion_{}, natural_target_{}, head_target_{};
     Vec3 velocity_{}, speed_{}, natural_step_velocity_{}, fixation_direction_{}, zone_direction_{};
     std::array<Vec3, 3> calibration_sums_{};
     std::array<std::uint32_t, 3> calibration_counts_{};

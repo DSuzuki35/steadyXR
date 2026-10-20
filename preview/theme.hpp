@@ -13,6 +13,7 @@ class Theme {
     DWORD style(const wchar_t *kind, DWORD value) const;
     void control(HWND window, const wchar_t *kind, bool heading = false);
     void titlebar(HWND window);
+    void surface(HWND window, HDC dc, RECT card);
     bool message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &result);
 
   private:

@@ -61,6 +61,7 @@ struct Source {
     std::mutex status_mutex;
     std::string capture_status{"Inactive | 0.0 FPS / 60 requested"};
     std::string spectator_status{"Gaze disabled"};
+    std::string director_status{"Director: disabled"};
     std::string action_status{"Choose an INI preset to import into this source."};
     std::atomic<std::uint64_t> dimensions{(std::uint64_t(3840) << 32) | 2160};
     // Graphics resources and capture state belong to the OBS graphics thread.
@@ -103,7 +104,19 @@ struct Source {
         std::snprintf(rate, sizeof(rate), " | %.1f FPS / %u requested", captured_fps, requested_fps);
         std::string text = connection + rate;
         std::string camera = "Gaze disabled / no OpenXR eye data";
+        std::string director = "Director: inactive";
         if (renderer) {
+            const auto d = renderer->director_status();
+            char detail[256]{};
+            const char *games[]{"no speed data", "iRacing", "Le Mans Ultimate"};
+            std::snprintf(detail, sizeof(detail),
+                          "Director: %.1f ms video delay / %u frames / %.1f MiB | Crop %.1f%% | Speed crop %.1f%% | %s",
+                          d.delay_ms, d.buffered_frames, double(d.buffered_bytes) / (1024 * 1024),
+                          d.auto_crop_percent, d.speed_crop_percent,
+                          d.speed_available ? games[std::min(d.telemetry_game, 2u)] : games[0]);
+            director = detail;
+            if (d.buffer_limited)
+                director += " | Lookahead reduced by memory limit";
             const char *capabilities[]{"Gaze disabled / no OpenXR eye data",
                                        "Eye tracking unsupported by runtime",
                                        "Waiting for game action set attachment",
@@ -138,6 +151,7 @@ struct Source {
             std::lock_guard<std::mutex> lock(status_mutex);
             capture_status = std::move(text);
             spectator_status = std::move(camera);
+            director_status = std::move(director);
         }
         // The properties text is an explicit snapshot. Periodic OBS property
         // reloads recreate every widget and interrupt sliders/numeric editing.
@@ -589,12 +603,14 @@ void hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *, bool pressed) {
 void refresh_status(obs_properties_t *properties, Source *s) {
     std::string capture_status = "Inactive | 0.0 FPS / 60 requested", action_status;
     std::string spectator_status = "Gaze disabled";
+    std::string director_status = "Director: inactive";
     if (s) {
         {
             std::lock_guard<std::mutex> lock(s->status_mutex);
             capture_status = s->capture_status;
             action_status = s->action_status;
             spectator_status = s->spectator_status;
+            director_status = s->director_status;
         }
         const auto now = GetTickCount64(), deadline = s->compare_until.load();
         if (deadline > now)
@@ -606,6 +622,8 @@ void refresh_status(obs_properties_t *properties, Source *s) {
     obs_property_set_description(obs_properties_get(properties, "import_status"), action_status.c_str());
     obs_property_set_description(obs_properties_get(properties, "spectator_status"),
                                  spectator_status.c_str());
+    obs_property_set_description(obs_properties_get(properties, "director_status"),
+                                 director_status.c_str());
 }
 bool refresh_status_button(obs_properties_t *properties, obs_property_t *, void *data) {
     refresh_status(properties, static_cast<Source *>(data));
@@ -786,6 +804,7 @@ obs_properties_t *properties(void *data) {
                             OBS_TEXT_INFO);
     obs_properties_add_text(p, "capture_status", "Status snapshot", OBS_TEXT_INFO);
     obs_properties_add_text(p, "spectator_status", "Gaze disabled", OBS_TEXT_INFO);
+    obs_properties_add_text(p, "director_status", "Director: inactive", OBS_TEXT_INFO);
     obs_properties_add_button2(p, "refresh_status", "Refresh status", refresh_status_button, data);
     obs_properties_add_text(
         p, "hotkey_help",
@@ -799,7 +818,7 @@ obs_properties_t *properties(void *data) {
     if (count > 0)
         WideCharToMultiByte(CP_UTF8, 0, deadline, -1, expiry.data(), count, nullptr, nullptr);
     expiry.pop_back();
-    const auto expiry_label = std::string("SteadyXR 0.10.0 build expires: ") + expiry;
+    const auto expiry_label = std::string("SteadyXR 0.12.0 build expires: ") + expiry;
     obs_properties_add_text(p, "build_expiry", expiry_label.c_str(), OBS_TEXT_INFO);
     vrst_plugin::openxr_add_properties(p);
     overlay_properties(p, static_cast<Source *>(data));

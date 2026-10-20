@@ -94,7 +94,8 @@ FramingRegion framing_region(double source_aspect, const Options &options, EdgeR
     }
     return fitted;
 }
-Composition FrameStabilizer::update(const Frame &frame, const Options &options) {
+Composition FrameStabilizer::update(const Frame &frame, const Options &options, const Quat *lookahead_target,
+                                   double speed_kph) {
     Composition result;
     if (frame.view_count < 1 || frame.view_count > 2 || frame.display_time <= 0 || frame.eye > 1)
         return result;
@@ -113,6 +114,7 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
         else {
             history_.clear();
             horizon_up_sign_ = 0;
+            director_.reset();
         }
     }
     history_.set_smoothing(options.smoothing);
@@ -138,17 +140,36 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
     settings.output_16_9 = false;
     settings.edge_reserve = options.edge_reserve[frame.eye];
     const bool compare_camera = options.compare_original && !options.compare_effects;
-    const bool stabilize = options.stabilize && !compare_camera;
+    const bool director_enabled = !options.spectator.bypass &&
+                                  (options.director.lookahead_enabled || options.director.auto_crop_enabled ||
+                                   options.director.speed_fov_enabled);
+    // Director state always sees the enhanced camera, even if the first draw
+    // of this captured frame is the original side of an A/B comparison.
+    const bool compare_before_director = compare_camera && !director_enabled;
+    const bool stabilize = options.stabilize && !compare_before_director;
+    const bool auto_crop = !options.spectator.bypass && options.director.auto_crop_enabled;
+    const bool director_framing =
+        auto_crop || (!options.spectator.bypass && options.director.speed_fov_enabled);
     const bool camera_enabled =
         !options.spectator.bypass &&
         (options.spectator.gaze_enabled || (options.spectator.natural_enabled && options.stabilize));
-    Quat correction = stabilize ? pose.correction : Quat{};
+    const auto base_correction =
+        options.director.lookahead_enabled && !options.spectator.bypass && lookahead_target &&
+                valid(*lookahead_target)
+            ? normalized(multiply(conjugate(orientation(frame.views[0])), *lookahead_target))
+            : pose.correction;
+    Quat correction = stabilize ? base_correction : Quat{};
     Quat head_correction = correction;
     if (camera_enabled || spectator_.calibration_active()) {
         SpectatorInput input;
         input.source_orientation = orientation(frame.views[0]);
         input.base_target_orientation =
-            multiply(input.source_orientation, options.stabilize ? pose.correction : Quat{});
+            multiply(input.source_orientation, options.stabilize ? base_correction : Quat{});
+        input.use_natural_motion_orientation =
+            options.stabilize && options.director.lookahead_enabled && !options.spectator.bypass &&
+            lookahead_target && valid(*lookahead_target);
+        if (input.use_natural_motion_orientation)
+            input.natural_motion_orientation = *lookahead_target;
         input.gaze = frame.gaze;
         input.time_ns = static_cast<std::uint64_t>(frame.display_time);
         input.session = frame.session;
@@ -159,17 +180,18 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
         const auto target = spectator_.update(input, tuning);
         spectator_active_ = true;
         head_correction =
-            compare_camera
+            compare_before_director
                 ? Quat{}
                 : normalized(multiply(conjugate(input.source_orientation), spectator_.head_target()));
         if (camera_enabled)
-            correction =
-                compare_camera ? Quat{} : normalized(multiply(conjugate(input.source_orientation), target));
+            correction = compare_before_director
+                             ? Quat{}
+                             : normalized(multiply(conjugate(input.source_orientation), target));
     } else if (spectator_active_) {
         spectator_.suspend();
         spectator_active_ = false;
     }
-    const bool final_framing = camera_enabled || settings.edge_reserve.enabled ||
+    const bool final_framing = director_framing || camera_enabled || settings.edge_reserve.enabled ||
                                (std::isfinite(options.vertical_offset) && options.vertical_offset != 0);
     result.warp = make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
                             !final_framing ? correction : Quat{}, projection(frame.views[0]));
@@ -219,20 +241,28 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options) 
         framing_region((out.right - out.left) / (out.up - out.down), options, settings.edge_reserve);
     const double x = out.left, y = out.up, w = out.right - out.left, h = out.down - out.up;
     out = {x + w * region.left, x + w * region.right, y + h * region.top, y + h * region.bottom};
+    // This includes actual trims, aspect and vertical placement. Auto crop can
+    // still protect gaze framing when pose stabilization itself is switched off.
+    director_.update(result.warp, options.director, static_cast<std::uint64_t>(frame.display_time),
+                     frame.sequence, speed_kph, options.spectator.bypass);
     if (final_framing) {
         // Reserve, extra framing and horizon leveling all describe the final
         // output rays. Limit those rays, not an earlier, wider intermediate.
         if (camera_enabled) {
             const auto head = level(multiply(orientation(frame.views[0]), head_correction));
             head_correction = normalized(multiply(conjugate(orientation(frame.views[0])), head));
-            const double allowance = options.mirror && std::isfinite(options.mirror_limit)
+            const double allowance = !auto_crop && options.mirror && std::isfinite(options.mirror_limit)
                                          ? std::clamp(options.mirror_limit, 0., 50.) / 100
                                          : 0;
             result.warp.correction =
                 bounded_camera(result.warp, head_correction, result.warp.correction, allowance);
         } else
-            limit_warp_correction(result.warp, result.warp.correction, settings.mirror_edges);
+            limit_warp_correction(result.warp, result.warp.correction, !auto_crop && settings.mirror_edges);
         effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
+    }
+    if (compare_camera && director_enabled) {
+        result.warp.correction = {};
+        effective_target = orientation(frame.views[0]);
     }
     result.focus_correction =
         multiply(conjugate(orientation(frame.views[frame.view_count - 1])), effective_target);
@@ -245,6 +275,7 @@ void FrameStabilizer::reset() {
     horizon_up_sign_ = 0;
     spectator_.reset();
     spectator_active_ = false;
+    director_.reset();
 }
 void FrameStabilizer::reset_horizon() {
     horizon_up_sign_ = 0;
