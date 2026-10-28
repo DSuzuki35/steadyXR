@@ -35,6 +35,11 @@ struct Slider {
         }
         if (self && message == WM_HSCROLL)
             ++self->scrolls;
+        if (self) {
+            LRESULT result{};
+            if (self->theme.message(window, message, w, l, result))
+                return result;
+        }
         return DefWindowProcW(window, message, w, l);
     }
 
@@ -244,6 +249,43 @@ void dpi_change_scales_controls_and_preserves_input() {
     check(bounds.right == Slider::width && bounds.bottom == Slider::height,
           "returning to 100 percent restores the original layout without drift");
 }
+
+void small_work_area_keeps_scaled_controls_reachable() {
+    Slider fixture;
+    const auto footer =
+        CreateWindowW(L"BUTTON", L"Open preview", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 900, 700, 180, 40,
+                      fixture.parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    fixture.theme.control(footer, L"BUTTON");
+    SetWindowPos(fixture.parent, nullptr, 0, 0, 1120, 760, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetPropW(fixture.parent, L"SteadyXRMainShell", reinterpret_cast<HANDLE>(1));
+    fixture.theme.scale_window(fixture.parent, 144);
+    const RECT available{20, 30, 1300, 750}; // A 1280 x 720 work area.
+    fixture.theme.fit_window(fixture.parent, available);
+    RECT outer{}, client{}, control{};
+    GetWindowRect(fixture.parent, &outer);
+    check(outer.left >= available.left && outer.top >= available.top && outer.right <= available.right &&
+              outer.bottom <= available.bottom,
+          "the scaled main form fits inside a 1280 x 720 work area");
+    SCROLLINFO vertical{sizeof(vertical), SIF_ALL}, horizontal{sizeof(horizontal), SIF_ALL};
+    GetScrollInfo(fixture.parent, SB_VERT, &vertical);
+    GetScrollInfo(fixture.parent, SB_HORZ, &horizontal);
+    check(vertical.nMax >= int(vertical.nPage) && horizontal.nMax >= int(horizontal.nPage),
+          "overflowing scaled content exposes native scrollbars on both axes");
+    SendMessageW(footer, WM_SETFOCUS, 0, 0);
+    GetClientRect(fixture.parent, &client);
+    GetWindowRect(footer, &control);
+    MapWindowPoints(nullptr, fixture.parent, reinterpret_cast<POINT *>(&control), 2);
+    check(control.left >= 0 && control.top >= 0 && control.right <= client.right &&
+              control.bottom <= client.bottom,
+          "keyboard focus reveals the footer control without shrinking its text");
+    SendMessageW(fixture.window, WM_SETFOCUS, 0, 0);
+    GetWindowRect(fixture.window, &control);
+    MapWindowPoints(nullptr, fixture.parent, reinterpret_cast<POINT *>(&control), 2);
+    check(control.left >= 0 && control.top >= 0 && control.right <= client.right &&
+              control.bottom <= client.bottom,
+          "focus can return to content at the top of the scrollable form");
+    check(fixture.position() == -500, "scrolling never changes camera slider values");
+}
 } // namespace
 
 int main() {
@@ -256,6 +298,7 @@ int main() {
         signed_range_fill_tracks_native_position();
         painting_preserves_native_input_and_notifications();
         dpi_change_scales_controls_and_preserves_input();
+        small_work_area_keeps_scaled_controls_reachable();
         check(GetForegroundWindow() == foreground, "slider tests never activate a window");
         std::cout << "Native slider painting and input tests passed\n";
         return 0;

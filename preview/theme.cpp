@@ -7,6 +7,7 @@
 
 namespace vrst::preview {
 namespace {
+constexpr UINT reveal_control_message = WM_APP + 0x530;
 constexpr COLORREF bg = RGB(15, 15, 18), panel = RGB(26, 27, 31), field = RGB(37, 38, 44),
                    border = RGB(50, 52, 60), text = RGB(244, 244, 246), muted = RGB(157, 160, 170),
                    accent = RGB(112, 89, 221), accent_text = RGB(167, 155, 240),
@@ -160,6 +161,14 @@ LRESULT CALLBACK combo_proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_
         RemoveWindowSubclass(window, combo_proc, 1);
     return result;
 }
+LRESULT CALLBACK focus_proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR) {
+    const auto result = DefSubclassProc(window, message, w, l);
+    if (message == WM_SETFOCUS)
+        SendMessageW(GetParent(window), reveal_control_message, reinterpret_cast<WPARAM>(window), 0);
+    if (message == WM_NCDESTROY)
+        RemoveWindowSubclass(window, focus_proc, 1);
+    return result;
+}
 } // namespace
 void Theme::initialize() {
     auto font = [](int size, int weight) {
@@ -206,6 +215,7 @@ void Theme::control(HWND window, const wchar_t *kind, bool heading) {
     SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(heading ? heading_ : body), TRUE);
     if (heading)
         SetPropW(window, L"HorizonHeading", reinterpret_cast<HANDLE>(1));
+    SetWindowSubclass(window, focus_proc, 1, 0);
     if (!std::wcscmp(kind, L"COMBOBOX")) {
         SetWindowTheme(window, L"", L"");
         SetWindowSubclass(window, combo_proc, 1, 0);
@@ -275,10 +285,118 @@ void Theme::scale_window(HWND window, UINT dpi) {
     RECT outer{0, 0, MulDiv(layout->width, dpi, 96), MulDiv(layout->height, dpi, 96)};
     // Nonclient metrics follow the actual monitor even when a diagnostic requests a different scale.
     AdjustWindowRectExForDpi(&outer, DWORD(GetWindowLongPtrW(window, GWL_STYLE)), GetMenu(window) != nullptr,
-                            DWORD(GetWindowLongPtrW(window, GWL_EXSTYLE)), GetDpiForWindow(window));
+                             DWORD(GetWindowLongPtrW(window, GWL_EXSTYLE)), GetDpiForWindow(window));
+    SetPropW(window, L"SteadyXRLayoutBusy", reinterpret_cast<HANDLE>(1));
     SetWindowPos(window, nullptr, 0, 0, outer.right - outer.left, outer.bottom - outer.top,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    RemovePropW(window, L"SteadyXRLayoutBusy");
+    if (GetPropW(window, L"SteadyXRMainShell") || GetPropW(window, L"SteadyXRScrollable")) {
+        MONITORINFO monitor{sizeof(monitor)};
+        if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor))
+            fit_window(window, monitor.rcWork);
+    }
     RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+}
+void Theme::fit_window(HWND window, const RECT &work_area) {
+    const auto layout = std::find_if(layouts_.begin(), layouts_.end(),
+                                     [window](const Layout &entry) { return entry.window == window; });
+    if (layout == layouts_.end() || work_area.right <= work_area.left || work_area.bottom <= work_area.top)
+        return;
+    SetPropW(window, L"SteadyXRScrollable", reinterpret_cast<HANDLE>(1));
+    const auto dpi = UINT(reinterpret_cast<UINT_PTR>(GetPropW(window, L"SteadyXRDpi")));
+    const int width = MulDiv(layout->width, dpi ? dpi : 96, 96);
+    const int height = MulDiv(layout->height, dpi ? dpi : 96, 96);
+    const auto actual_dpi = GetDpiForWindow(window);
+    const auto base_style = DWORD(GetWindowLongPtrW(window, GWL_STYLE)) & ~(WS_HSCROLL | WS_VSCROLL);
+    RECT border{};
+    AdjustWindowRectExForDpi(&border, base_style, GetMenu(window) != nullptr,
+                             DWORD(GetWindowLongPtrW(window, GWL_EXSTYLE)), actual_dpi);
+    const int border_width = border.right - border.left, border_height = border.bottom - border.top;
+    const int available_width = work_area.right - work_area.left;
+    const int available_height = work_area.bottom - work_area.top;
+    const int scrollbar_width = GetSystemMetricsForDpi(SM_CXVSCROLL, actual_dpi);
+    const int scrollbar_height = GetSystemMetricsForDpi(SM_CYHSCROLL, actual_dpi);
+    bool horizontal{}, vertical{};
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        horizontal = width > available_width - border_width - (vertical ? scrollbar_width : 0);
+        vertical = height > available_height - border_height - (horizontal ? scrollbar_height : 0);
+    }
+    const int outer_width =
+        std::min(available_width, width + border_width + (vertical ? scrollbar_width : 0));
+    const int outer_height =
+        std::min(available_height, height + border_height + (horizontal ? scrollbar_height : 0));
+    RECT outer{};
+    GetWindowRect(window, &outer);
+    const int x = std::clamp(int(outer.left), int(work_area.left), int(work_area.right) - outer_width);
+    const int y = std::clamp(int(outer.top), int(work_area.top), int(work_area.bottom) - outer_height);
+    SetPropW(window, L"SteadyXRLayoutBusy", reinterpret_cast<HANDLE>(1));
+    SetWindowLongPtrW(window, GWL_STYLE,
+                      base_style | (horizontal ? WS_HSCROLL : 0) | (vertical ? WS_VSCROLL : 0));
+    SetWindowPos(window, nullptr, x, y, outer_width, outer_height,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    update_scroll_range(window);
+    RemovePropW(window, L"SteadyXRLayoutBusy");
+    reveal_control(window, GetFocus());
+}
+void Theme::update_scroll_range(HWND window) {
+    const auto layout = std::find_if(layouts_.begin(), layouts_.end(),
+                                     [window](const Layout &entry) { return entry.window == window; });
+    if (layout == layouts_.end())
+        return;
+    const bool was_busy = GetPropW(window, L"SteadyXRLayoutBusy") != nullptr;
+    SetPropW(window, L"SteadyXRLayoutBusy", reinterpret_cast<HANDLE>(1));
+    const auto dpi = UINT(reinterpret_cast<UINT_PTR>(GetPropW(window, L"SteadyXRDpi")));
+    const int width = MulDiv(layout->width, dpi ? dpi : 96, 96);
+    const int height = MulDiv(layout->height, dpi ? dpi : 96, 96);
+    const int scroll_x = GetScrollPos(window, SB_HORZ), scroll_y = GetScrollPos(window, SB_VERT);
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        RECT client{};
+        GetClientRect(window, &client);
+        SCROLLINFO h{sizeof(h), SIF_RANGE | SIF_PAGE | SIF_POS, 0, width - 1, UINT(client.right), scroll_x};
+        SCROLLINFO v{sizeof(v), SIF_RANGE | SIF_PAGE | SIF_POS, 0, height - 1, UINT(client.bottom), scroll_y};
+        SetScrollInfo(window, SB_HORZ, &h, TRUE);
+        SetScrollInfo(window, SB_VERT, &v, TRUE);
+    }
+    scroll_to(window, scroll_x, scroll_y);
+    if (!was_busy)
+        RemovePropW(window, L"SteadyXRLayoutBusy");
+}
+void Theme::scroll_to(HWND window, int x, int y) {
+    const auto layout = std::find_if(layouts_.begin(), layouts_.end(),
+                                     [window](const Layout &entry) { return entry.window == window; });
+    if (layout == layouts_.end())
+        return;
+    SCROLLINFO horizontal{sizeof(horizontal), SIF_POS}, vertical{sizeof(vertical), SIF_POS};
+    horizontal.nPos = x;
+    vertical.nPos = y;
+    SetScrollInfo(window, SB_HORZ, &horizontal, TRUE);
+    SetScrollInfo(window, SB_VERT, &vertical, TRUE);
+    x = GetScrollPos(window, SB_HORZ);
+    y = GetScrollPos(window, SB_VERT);
+    const auto dpi = UINT(reinterpret_cast<UINT_PTR>(GetPropW(window, L"SteadyXRDpi")));
+    for (const auto &child : layout->children)
+        SetWindowPos(child.window, nullptr, MulDiv(child.bounds.left, dpi ? dpi : 96, 96) - x,
+                     MulDiv(child.bounds.top, dpi ? dpi : 96, 96) - y, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+}
+void Theme::reveal_control(HWND window, HWND child) {
+    if (!child || !IsChild(window, child) || !(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE))
+        return;
+    RECT client{}, bounds{};
+    GetClientRect(window, &client);
+    GetWindowRect(child, &bounds);
+    MapWindowPoints(nullptr, window, reinterpret_cast<POINT *>(&bounds), 2);
+    const int x = GetScrollPos(window, SB_HORZ), y = GetScrollPos(window, SB_VERT);
+    const auto displacement = [](int first, int last, int available) {
+        if (last - first > available)
+            return first;
+        return first < 0 ? first : last > available ? last - available : 0;
+    };
+    const int dx = displacement(bounds.left, bounds.right, client.right);
+    const int dy = displacement(bounds.top, bounds.bottom, client.bottom);
+    if (dx || dy)
+        scroll_to(window, x + dx, y + dy);
 }
 void Theme::surface(HWND window, HDC dc, RECT card) {
     RECT r{};
@@ -295,6 +413,71 @@ void Theme::surface(HWND window, HDC dc, RECT card) {
 }
 bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &result) {
     result = 0;
+    if (GetPropW(window, L"SteadyXRScrollable")) {
+        if (message == WM_SIZE && w != SIZE_MINIMIZED) {
+            if (!GetPropW(window, L"SteadyXRLayoutBusy")) {
+                update_scroll_range(window);
+                reveal_control(window, GetFocus());
+            }
+            return true;
+        }
+        if (message == reveal_control_message) {
+            reveal_control(window, reinterpret_cast<HWND>(w));
+            return true;
+        }
+        if (message == WM_COMMAND && (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == CBN_SETFOCUS))
+            reveal_control(window, reinterpret_cast<HWND>(l));
+        if ((message == WM_HSCROLL || message == WM_VSCROLL) && !l) {
+            const int axis = message == WM_HSCROLL ? SB_HORZ : SB_VERT;
+            SCROLLINFO info{sizeof(info), SIF_ALL};
+            GetScrollInfo(window, axis, &info);
+            int position = info.nPos;
+            const auto dpi = UINT(reinterpret_cast<UINT_PTR>(GetPropW(window, L"SteadyXRDpi")));
+            const int line = MulDiv(32, dpi ? dpi : 96, 96);
+            switch (LOWORD(w)) {
+            case SB_LINEUP:
+                position -= line;
+                break;
+            case SB_LINEDOWN:
+                position += line;
+                break;
+            case SB_PAGEUP:
+                position -= int(info.nPage);
+                break;
+            case SB_PAGEDOWN:
+                position += int(info.nPage);
+                break;
+            case SB_TOP:
+                position = 0;
+                break;
+            case SB_BOTTOM:
+                position = info.nMax;
+                break;
+            case SB_THUMBTRACK:
+            case SB_THUMBPOSITION:
+                position = info.nTrackPos;
+                break;
+            }
+            scroll_to(window, axis == SB_HORZ ? position : GetScrollPos(window, SB_HORZ),
+                      axis == SB_VERT ? position : GetScrollPos(window, SB_VERT));
+            return true;
+        }
+        if (message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL) {
+            const bool horizontal = message == WM_MOUSEHWHEEL || (LOWORD(w) & MK_SHIFT);
+            const auto dpi = UINT(reinterpret_cast<UINT_PTR>(GetPropW(window, L"SteadyXRDpi")));
+            const int distance = MulDiv(short(HIWORD(w)), MulDiv(96, dpi ? dpi : 96, 96), WHEEL_DELTA);
+            scroll_to(window,
+                      GetScrollPos(window, SB_HORZ) +
+                          (horizontal ? (message == WM_MOUSEHWHEEL ? distance : -distance) : 0),
+                      GetScrollPos(window, SB_VERT) - (horizontal ? 0 : distance));
+            return true;
+        }
+        if (message == WM_EXITSIZEMOVE || message == WM_DISPLAYCHANGE) {
+            MONITORINFO monitor{sizeof(monitor)};
+            if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor))
+                fit_window(window, monitor.rcWork);
+        }
+    }
     if (message == WM_DPICHANGED) {
         const auto &suggested = *reinterpret_cast<RECT *>(l);
         SetWindowPos(window, nullptr, suggested.left, suggested.top, 0, 0,
@@ -324,6 +507,7 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         auto dc = message == WM_PAINT ? BeginPaint(window, &ps) : reinterpret_cast<HDC>(w);
         RECT r{};
         GetClientRect(window, &r);
+        fill(dc, r, bg);
         const auto dpi = UINT(reinterpret_cast<UINT_PTR>(GetPropW(window, L"SteadyXRDpi")));
         const int saved = SaveDC(dc);
         if (dpi && dpi != 96) {
@@ -334,6 +518,14 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
             SetViewportExtEx(dc, dpi, dpi, nullptr);
         }
         const bool shell = GetPropW(window, L"SteadyXRMainShell") != nullptr;
+        if (GetPropW(window, L"SteadyXRScrollable")) {
+            const auto layout = std::find_if(layouts_.begin(), layouts_.end(), [window](const Layout &entry) {
+                return entry.window == window;
+            });
+            if (layout != layouts_.end())
+                r = {0, 0, layout->width, layout->height};
+            OffsetViewportOrgEx(dc, -GetScrollPos(window, SB_HORZ), -GetScrollPos(window, SB_VERT), nullptr);
+        }
         fill(dc, r, bg);
         rounded(dc, shell ? RECT{216, 154, r.right - 24, 584} : RECT{24, 164, r.right - 24, 550}, panel,
                 border, 18);

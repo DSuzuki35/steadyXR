@@ -16,6 +16,9 @@ class Theme {
     void titlebar(HWND window);
     // Capture the logical layout once, then scale controls and text without rounding drift.
     void scale_window(HWND window, UINT dpi = 0);
+    // Limit the viewport while preserving the full logical form through native scrollbars.
+    // Call after scale_window; focus and resize messages keep the form reachable thereafter.
+    void fit_window(HWND window, const RECT &work_area);
     void surface(HWND window, HDC dc, RECT card);
     bool message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &result);
 
@@ -37,5 +40,8 @@ class Theme {
     };
     std::vector<Layout> layouts_;
     std::vector<Fonts> fonts_;
+    void scroll_to(HWND window, int x, int y);
+    void update_scroll_range(HWND window);
+    void reveal_control(HWND window, HWND child);
 };
 } // namespace vrst::preview

@@ -1827,12 +1827,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         const auto controls_fit = [&trace](HWND panel) {
             RECT client{};
             GetClientRect(panel, &client);
+            const int scroll_x = GetScrollPos(panel, SB_HORZ), scroll_y = GetScrollPos(panel, SB_VERT);
+            if (GetPropW(panel, L"SteadyXRScrollable")) {
+                SCROLLINFO horizontal{sizeof(horizontal), SIF_RANGE}, vertical{sizeof(vertical), SIF_RANGE};
+                GetScrollInfo(panel, SB_HORZ, &horizontal);
+                GetScrollInfo(panel, SB_VERT, &vertical);
+                client.right = std::max(client.right, LONG(horizontal.nMax + 1));
+                client.bottom = std::max(client.bottom, LONG(vertical.nMax + 1));
+            }
             for (auto h = GetWindow(panel, GW_CHILD); h; h = GetWindow(h, GW_HWNDNEXT)) {
                 if (!(GetWindowLongPtrW(h, GWL_STYLE) & WS_VISIBLE))
                     continue;
                 RECT r{};
                 GetWindowRect(h, &r);
                 MapWindowPoints(nullptr, panel, reinterpret_cast<POINT *>(&r), 2);
+                OffsetRect(&r, scroll_x, scroll_y);
                 if (r.left < 0 || r.top < 0 || r.right > client.right || r.bottom > client.bottom) {
                     trace << "control-outside-client=" << GetDlgCtrlID(h) << " rect=" << r.left << ','
                           << r.top << ',' << r.right << ',' << r.bottom << " client=" << client.right
@@ -2696,6 +2705,37 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         }
         trace << "dpi-layouts-125-150-200=" << dpi_ok << '\n';
         okay = dpi_ok && okay;
+        state.theme.scale_window(state.controls, 144);
+        const RECT compact_work_area{0, 0, 1280, 720};
+        state.theme.fit_window(state.controls, compact_work_area);
+        RECT compact_outer{};
+        GetWindowRect(state.controls, &compact_outer);
+        bool compact_ok = compact_outer.left >= 0 && compact_outer.top >= 0 &&
+                          compact_outer.right <= 1280 && compact_outer.bottom <= 720;
+        state.show_page(3);
+        SetFocus(state.output_width);
+        bool reached_footer{}, reached_monitor{}, reached_navigation{};
+        for (unsigned i = 0; i < 40; ++i) {
+            MSG tab{};
+            tab.hwnd = GetFocus();
+            tab.message = WM_KEYDOWN;
+            tab.wParam = VK_TAB;
+            compact_ok = IsDialogMessageW(state.controls, &tab) && compact_ok;
+            const auto focused = GetFocus();
+            RECT view{}, item{};
+            GetClientRect(state.controls, &view);
+            GetWindowRect(focused, &item);
+            MapWindowPoints(nullptr, state.controls, reinterpret_cast<POINT *>(&item), 2);
+            compact_ok = IsChild(state.controls, focused) && item.left >= 0 && item.top >= 0 &&
+                         item.right <= view.right && item.bottom <= view.bottom && compact_ok;
+            reached_footer = reached_footer || focused == GetDlgItem(state.controls, show_id);
+            reached_monitor = reached_monitor || focused == state.monitor;
+            reached_navigation = reached_navigation || focused == GetDlgItem(state.controls, navigation_id + 3);
+        }
+        compact_ok = compact_ok && reached_footer && reached_monitor && reached_navigation;
+        trace << "small-work-area-keyboard-1280x720=" << compact_ok << '\n';
+        okay = compact_ok && okay;
+        state.theme.scale_window(state.controls);
         state.show_page(0);
         okay = save_controls(state.controls, state.directory + L"\\preview-controls-test.bmp") && okay;
         DestroyWindow(state.output);
