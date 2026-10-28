@@ -60,7 +60,10 @@ class ClipRecorder {
     bool submit(const Frame &, ID3D11Texture2D *const views[2], double speed_kph = -1);
     void stop(const std::wstring &reason = L"Recording stopped");
     void cancel();
-    CaptureStatus status() const;
+    // Poll on the rendering thread. Terminal polls nonblockingly reap capture
+    // resources once the worker has exited and sample callbacks have released
+    // their surfaces; the last status/path/counters remain available afterward.
+    CaptureStatus status();
 
   private:
     struct Impl;

@@ -778,6 +778,39 @@ struct ClipRecorder::Impl {
         if (worker.joinable())
             worker.join();
     }
+    void reap_terminal() {
+        const auto current = state.load();
+        if (current != CaptureState::ready && current != CaptureState::cancelled &&
+            current != CaptureState::failed)
+            return;
+        // A terminal status can precede stack unwinding and MFShutdown. Inspect
+        // the actual thread handle without waiting, rather than joining merely
+        // because the worker has published its result.
+        if (worker.joinable() && WaitForSingleObject(worker.native_handle(), 0) != WAIT_OBJECT_0)
+            return;
+        // Tracked samples may complete on Media Foundation callback threads.
+        // pending guards GPU use, and sole ownership additionally proves the
+        // callback object itself has released its retained surface references.
+        for (const auto &slot : slots)
+            if (slot && (slot->pending.load() != 0 || slot.use_count() != 1))
+                return;
+        if (worker.joinable())
+            worker.join(); // The native thread handle is already signalled.
+        for (unsigned i = 0; i < 2; ++i) {
+            input_view[i].Reset();
+            input_texture[i].Reset();
+            srgb_copy[i].Reset();
+            processor[i].Reset();
+            enumerator[i].Reset();
+        }
+        for (auto &slot : slots)
+            slot.reset();
+        video_context.Reset();
+        video.Reset();
+        context.Reset();
+        device.Reset();
+        info = {}; // Release the bounded frame metadata allocation as well.
+    }
     void set_state(CaptureState s, const std::wstring &message) {
         {
             std::lock_guard<std::mutex> lock(status_mutex);
@@ -1268,8 +1301,9 @@ void ClipRecorder::cancel() {
         r.wake.notify_one();
     }
 }
-CaptureStatus ClipRecorder::status() const {
+CaptureStatus ClipRecorder::status() {
     auto &r = *impl_;
+    r.reap_terminal();
     std::lock_guard<std::mutex> lock(r.status_mutex);
     auto out = r.status;
     out.state = r.state.load();

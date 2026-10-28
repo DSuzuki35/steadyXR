@@ -97,6 +97,80 @@ CaptureStatus wait_finished(ClipRecorder &r) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     return r.status();
 }
+ULONG references(IUnknown *object) {
+    object->AddRef();
+    return object->Release();
+}
+void check_capture_reclaimed(ClipRecorder &recorder, ID3D11Device *device, ID3D11Texture2D *source_texture,
+                             ULONG device_baseline, ULONG texture_baseline, CaptureState expected) {
+    auto terminal = recorder.status();
+    for (unsigned attempt = 0; attempt < 200; ++attempt) {
+        recorder.status(); // Polling must eventually reap without destroying the recorder.
+        if (references(device) == device_baseline && references(source_texture) == texture_baseline)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto after = recorder.status();
+    check(references(source_texture) == texture_baseline,
+          "terminal recorder releases retained source texture");
+    check(references(device) == device_baseline,
+          "terminal recorder releases all GPU surfaces/views/device references");
+    check(after.state == expected && after.state == terminal.state && after.path == terminal.path &&
+              after.message == terminal.message && after.recorded_frames == terminal.recorded_frames &&
+              after.dropped_frames == terminal.dropped_frames,
+          "resource reap preserves terminal recording status");
+    if (references(device) != device_baseline)
+        std::cout << "Retained recording device references: " << references(device)
+                  << "; baseline: " << device_baseline << '\n';
+}
+void hardware_lifetime_cases(ID3D11Device *device, const std::filesystem::path &base) {
+    for (auto format :
+         {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB}) {
+        auto f = source(1);
+        f.views[0].format = format;
+        D3D11_TEXTURE2D_DESC d{};
+        d.Width = 320;
+        d.Height = 240;
+        d.Format = format;
+        d.MipLevels = d.ArraySize = d.SampleDesc.Count = 1;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        std::vector<std::uint32_t> pixels(320 * 240, 0xff2090e0u);
+        D3D11_SUBRESOURCE_DATA data{pixels.data(), 320 * 4, 0};
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        check(SUCCEEDED(device->CreateTexture2D(&d, &data, &texture)), "lifetime test source texture");
+        if (!texture)
+            continue;
+        ID3D11Texture2D *raw[2]{texture.Get(), nullptr};
+        for (unsigned outcome = 0; outcome < 3; ++outcome) {
+            ClipRecorder recorder;
+            auto path = base;
+            path += L".lifetime-" + std::to_wstring(unsigned(format)) + L"-" + std::to_wstring(outcome);
+            std::error_code ec;
+            if (outcome == 2)
+                std::filesystem::create_directory(path, ec); // Worker initialization failure.
+            const auto device_baseline = references(device), texture_baseline = references(texture.Get());
+            check(recorder.start(device, path, f), "lifetime recording starts with GPU resources");
+            auto status = wait_prepared(recorder);
+            if (outcome != 2) {
+                check(status.state == CaptureState::recording, "lifetime encoder ready");
+                check(references(device) > device_baseline,
+                      "lifetime regression observes live GPU resource references");
+                check(recorder.submit(f, raw), "lifetime sample accepted");
+                if (outcome == 0)
+                    recorder.stop();
+                else
+                    recorder.cancel();
+                status = wait_finished(recorder);
+            }
+            const auto expected = outcome == 0   ? CaptureState::ready
+                                  : outcome == 1 ? CaptureState::cancelled
+                                                 : CaptureState::failed;
+            check_capture_reclaimed(recorder, device, texture.Get(), device_baseline, texture_baseline,
+                                    expected);
+            std::filesystem::remove_all(path, ec);
+        }
+    }
+}
 void hardware_edge_cases(ID3D11Device *device, ID3D11Texture2D *const textures[2], Frame f,
                          const std::filesystem::path &base) {
     ClipRecorder r;
@@ -362,6 +436,7 @@ void hardware_test(bool large, bool keep) {
     check(!reader.open(device.Get(), path), "video checksum mismatch rejected");
     std::filesystem::resize_file(video, std::filesystem::file_size(video) - 1);
     if (!large) {
+        hardware_lifetime_cases(device.Get(), path);
         ID3D11Texture2D *raw[2]{textures[0].Get(), textures[1].Get()};
         hardware_edge_cases(device.Get(), raw, source(), path);
     }
