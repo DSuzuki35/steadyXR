@@ -22,13 +22,14 @@ struct Options {
     double crop_left{}, crop_right{}, crop_top{}, crop_bottom{};
     double aspect{16. / 9.};
     unsigned output_width{3840}, output_height{2160};
-    double horizon_lock{}, mirror_limit{10};
+    double horizon_lock{}, pitch_lock{}, mirror_limit{10}; // Pitch 0..100; off by default.
     bool adaptive_horizon{true};
     double mirror_softness{60};
     double mirror_stretch{0}; // Mirror-to-edge extension, percent; zero preserves reflection.
     EdgeReserve edge_reserve[2]{};
     unsigned eye{};           // Window capture profile; OpenXR uses the eye stored with its frame.
-    double vertical_offset{}; // -100 highest, +100 lowest position within aspect-fit slack.
+    double horizontal_offset{}; // -100 leftmost, +100 rightmost within full captured bounds.
+    double vertical_offset{}; // -100 highest, +100 lowest within full captured bounds.
 };
 void apply_stream_comfort(Options &);
 struct FramingRegion {
@@ -45,7 +46,7 @@ class FrameStabilizer {
     Composition update(const Frame &, const Options &, const Quat *lookahead_target = nullptr,
                        double speed_kph = -1);
     void reset();
-    void reset_horizon(); // Re-select upright hemisphere without clearing smoothing history.
+    void reset_horizon(); // Re-select upright hemisphere and pitch anchor; retain smoothing history.
     void learn_chat() {
         spectator_.begin_chat_calibration(0);
     }
@@ -72,6 +73,8 @@ class FrameStabilizer {
     PoseHistory history_;
     Frame previous_{};
     double horizon_up_sign_{};
+    double pitch_anchor_{};
+    bool pitch_anchor_valid_{};
     SpectatorController spectator_;
     bool spectator_active_{};
     DirectorController director_;

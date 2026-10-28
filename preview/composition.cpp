@@ -75,23 +75,22 @@ FramingRegion framing_region(double source_aspect, const Options &options, EdgeR
         const double top = r.top + (r.bottom - r.top - h) * by;
         fitted = {left, left + w, top, top + h};
     }
-    const double offset =
-        std::isfinite(options.vertical_offset) ? std::clamp(options.vertical_offset, -100., 100.) / 100 : 0.;
-    if (offset != 0) {
-        // These coordinates are relative to the stabilization-cropped image.
-        // Recover the full captured vertical bounds, including the reserve and
-        // framing trims, so a wide feed can still be moved vertically.
-        const auto edges = sanitize_edge_reserve(reserve);
-        const double uniform = std::isfinite(options.crop) ? std::clamp(options.crop, 0., 40.) : 10.;
-        const double top = (edges.enabled ? edges.top : uniform / 2) / 100;
-        const double bottom = (edges.enabled ? edges.bottom : uniform / 2) / 100;
-        const double keep = 1 - top - bottom;
-        const double full_top = -top / keep, full_bottom = 1 + bottom / keep;
-        const double slack = offset < 0 ? fitted.top - full_top : full_bottom - fitted.bottom;
+    // Framing coordinates are relative to the reserved image. Placement spans
+    // the full captured bounds, including stabilization reserve and edge trims.
+    const auto edges = sanitize_edge_reserve(reserve);
+    const double uniform = std::isfinite(options.crop) ? std::clamp(options.crop, 0., 40.) : 10.;
+    auto place = [&](double &low, double &high, double value, double first, double last) {
+        const double offset = std::isfinite(value) ? std::clamp(value, -100., 100.) / 100 : 0.;
+        const double a = (edges.enabled ? first : uniform / 2) / 100;
+        const double b = (edges.enabled ? last : uniform / 2) / 100;
+        const double keep = 1 - a - b;
+        const double slack = offset < 0 ? low + a / keep : 1 + b / keep - high;
         const double shift = offset * std::max(0., slack);
-        fitted.top += shift;
-        fitted.bottom += shift;
-    }
+        low += shift;
+        high += shift;
+    };
+    place(fitted.left, fitted.right, options.horizontal_offset, edges.left, edges.right);
+    place(fitted.top, fitted.bottom, options.vertical_offset, edges.top, edges.bottom);
     return fitted;
 }
 Composition FrameStabilizer::update(const Frame &frame, const Options &options, const Quat *lookahead_target,
@@ -114,6 +113,7 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
         else {
             history_.clear();
             horizon_up_sign_ = 0;
+            pitch_anchor_valid_ = false;
             director_.reset();
         }
     }
@@ -133,6 +133,16 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
     const auto pose = history_.sample(static_cast<std::uint64_t>(frame.display_time));
     if (!pose.valid)
         return result;
+    if (!pitch_anchor_valid_) {
+        const auto forward = rotate(orientation(frame.views[0]), {0, 0, -1});
+        const double horizontal = std::hypot(forward.x, forward.z);
+        // A vertical startup has no reliable heading; calibrate once the view
+        // returns to an unambiguous forward direction, in either layer hemisphere.
+        if (horizontal > .25) {
+            pitch_anchor_ = std::atan2(forward.y, horizontal);
+            pitch_anchor_valid_ = true;
+        }
+    }
     Settings settings;
     settings.automatic_fov = true;
     settings.stabilization_crop = options.crop;
@@ -147,12 +157,14 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
     // of this captured frame is the original side of an A/B comparison.
     const bool compare_before_director = compare_camera && !director_enabled;
     const bool stabilize = options.stabilize && !compare_before_director;
+    const bool pitch_on = pitch_anchor_valid_ && stabilize && std::isfinite(options.pitch_lock) &&
+                          options.pitch_lock > 0;
     const bool auto_crop = !options.spectator.bypass && options.director.auto_crop_enabled;
     const bool director_framing =
         auto_crop || (!options.spectator.bypass && options.director.speed_fov_enabled);
-    const bool camera_enabled =
-        !options.spectator.bypass &&
-        (options.spectator.gaze_enabled || (options.spectator.natural_enabled && options.stabilize));
+    // Standalone profiles may still contain the legacy natural-motion flag.
+    // Ordinary PoseHistory smoothing remains the only head-motion filter.
+    const bool camera_enabled = !options.spectator.bypass && options.spectator.gaze_enabled;
     const auto base_correction =
         options.director.lookahead_enabled && !options.spectator.bypass && lookahead_target &&
                 valid(*lookahead_target)
@@ -165,18 +177,13 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
         input.source_orientation = orientation(frame.views[0]);
         input.base_target_orientation =
             multiply(input.source_orientation, options.stabilize ? base_correction : Quat{});
-        input.use_natural_motion_orientation =
-            options.stabilize && options.director.lookahead_enabled && !options.spectator.bypass &&
-            lookahead_target && valid(*lookahead_target);
-        if (input.use_natural_motion_orientation)
-            input.natural_motion_orientation = *lookahead_target;
         input.gaze = frame.gaze;
         input.time_ns = static_cast<std::uint64_t>(frame.display_time);
         input.session = frame.session;
         input.sequence = frame.sequence;
         input.reference_epoch = frame.reference_epoch;
         auto tuning = options.spectator;
-        tuning.natural_enabled = tuning.natural_enabled && options.stabilize;
+        tuning.natural_enabled = false;
         const auto target = spectator_.update(input, tuning);
         spectator_active_ = true;
         head_correction =
@@ -191,7 +198,8 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
         spectator_.suspend();
         spectator_active_ = false;
     }
-    const bool final_framing = director_framing || camera_enabled || settings.edge_reserve.enabled ||
+    const bool final_framing = director_framing || camera_enabled || pitch_on || settings.edge_reserve.enabled ||
+                               (std::isfinite(options.horizontal_offset) && options.horizontal_offset != 0) ||
                                (std::isfinite(options.vertical_offset) && options.vertical_offset != 0);
     result.warp = make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,
                             !final_framing ? correction : Quat{}, projection(frame.views[0]));
@@ -211,6 +219,23 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
     const bool level_on =
         horizon_up_sign_ != 0 && stabilize && std::isfinite(options.horizon_lock) && options.horizon_lock > 0;
     auto level = [&](Quat target) {
+        if (pitch_on) {
+            const auto forward = rotate(target, {0, 0, -1});
+            const double horizontal = std::hypot(forward.x, forward.z);
+            const double fade = std::clamp((horizontal - .05) / .20, 0., 1.);
+            if (fade > 0) {
+                const double delta = std::atan2(forward.y, horizontal) - pitch_anchor_;
+                constexpr double knee = 15 * pi / 180;
+                // One spatial response after ordinary smoothing: small changes
+                // stay near the anchor, deliberate larger looks follow smoothly.
+                // Maximum correction is strength * knee/2, with no dead zone or
+                // time-dependent anchor drift (including repeated draws/seeks).
+                const double amount = delta * (std::clamp(options.pitch_lock, 0., 100.) / 100) * fade /
+                                      (1 + delta * delta / (knee * knee));
+                const Vec3 right{-forward.z / horizontal, 0, forward.x / horizontal};
+                target = normalized(multiply(axis_angle(right, -amount), target));
+            }
+        }
         if (level_on) {
             const auto right = rotate(target, {1, 0, 0}), up = rotate(target, {0, 1, 0});
             const double fade = std::clamp((std::hypot(up.y, right.y) - .05) / .20, 0., 1.);
@@ -231,7 +256,7 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
         }
         return target;
     };
-    if (level_on) {
+    if (level_on || pitch_on) {
         effective_target = level(effective_target);
         result.warp.correction =
             normalized(multiply(conjugate(orientation(frame.views[0])), effective_target));
@@ -248,14 +273,18 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
     if (final_framing) {
         // Reserve, extra framing and horizon leveling all describe the final
         // output rays. Limit those rays, not an earlier, wider intermediate.
-        if (camera_enabled) {
+        if (camera_enabled || pitch_on) {
             const auto head = level(multiply(orientation(frame.views[0]), head_correction));
             head_correction = normalized(multiply(conjugate(orientation(frame.views[0])), head));
             const double allowance = !auto_crop && options.mirror && std::isfinite(options.mirror_limit)
                                          ? std::clamp(options.mirror_limit, 0., 50.) / 100
                                          : 0;
-            result.warp.correction =
-                bounded_camera(result.warp, head_correction, result.warp.correction, allowance);
+            const auto requested = result.warp.correction;
+            result.warp.correction = bounded_camera(result.warp, head_correction, requested, allowance);
+            const double angle = angle_between({}, requested);
+            if (angle > 1e-9)
+                result.warp.correction_fraction =
+                    std::clamp(angle_between({}, result.warp.correction) / angle, 0., 1.);
         } else
             limit_warp_correction(result.warp, result.warp.correction, !auto_crop && settings.mirror_edges);
         effective_target = multiply(orientation(frame.views[0]), result.warp.correction);
@@ -273,11 +302,13 @@ void FrameStabilizer::reset() {
     history_.clear();
     previous_ = {};
     horizon_up_sign_ = 0;
+    pitch_anchor_valid_ = false;
     spectator_.reset();
     spectator_active_ = false;
     director_.reset();
 }
 void FrameStabilizer::reset_horizon() {
     horizon_up_sign_ = 0;
+    pitch_anchor_valid_ = false;
 }
 } // namespace vrst::preview

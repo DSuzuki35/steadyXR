@@ -29,8 +29,165 @@ Frame frame(std::uint64_t sequence, double angle = 0) {
     f.views[1].fov[1] = f.views[1].fov[2] = .25f;
     return f;
 }
+Frame oriented_frame(std::uint64_t sequence, Quat q) {
+    auto f = frame(sequence);
+    for (auto &v : f.views) {
+        v.orientation[0] = float(q.x);
+        v.orientation[1] = float(q.y);
+        v.orientation[2] = float(q.z);
+        v.orientation[3] = float(q.w);
+    }
+    return f;
+}
 int main() {
     try {
+        {
+            Options tuning;
+            tuning.smoothing = 0;
+            tuning.crop = 40;
+            tuning.mirror = false;
+            tuning.pitch_lock = 100;
+            FrameStabilizer pitch;
+            const auto anchor = axis_angle({0, 1, 0}, .3);
+            check(angle_between(pitch.update(oriented_frame(1, anchor), tuning).warp.correction, {}) < 1e-6,
+                  "pitch calibration must preserve the first forward view");
+            const auto moved = multiply(axis_angle({0, 1, 0}, .6), axis_angle({1, 0, 0}, .06));
+            const auto result = pitch.update(oriented_frame(2, moved), tuning);
+            const auto forward = rotate(multiply(moved, result.warp.correction), {0, 0, -1});
+            check(std::abs(forward.y) < .01 && angle_between(result.warp.correction, {}) > .04,
+                  "pitch strength must suppress small up/down movements near the calibrated view");
+            check(std::abs(std::atan2(-forward.x, -forward.z) - .6) < 1e-6,
+                  "pitch correction must retain current yaw");
+            const auto repeat = pitch.update(oriented_frame(2, moved), tuning);
+            check(angle_between(result.warp.correction, repeat.warp.correction) < 1e-6,
+                  "redrawing a pitch frame must not move its anchor or change correction");
+            pitch.reset_horizon();
+            check(angle_between(pitch.update(oriented_frame(2, moved), tuning).warp.correction, {}) < 1e-6,
+                  "Set forward view must recalibrate pitch immediately on the retained frame");
+            auto reset = oriented_frame(3, axis_angle({1, 0, 0}, -.3));
+            reset.reference_epoch++;
+            check(angle_between(pitch.update(reset, tuning).warp.correction, {}) < 1e-6,
+                  "reference changes must discard a stale pitch anchor");
+        }
+        {
+            Options options;
+            options.smoothing = 0;
+            options.crop = 40;
+            options.mirror = false;
+            for (double hemisphere : {0., pi}) {
+                const auto neutral = multiply(axis_angle({0, 0, 1}, hemisphere),
+                                              axis_angle({1, 0, 0}, .2));
+                for (double movement : {-.8, -.08, .08, .8}) {
+                    FrameStabilizer pitch;
+                    options.pitch_lock = 100;
+                    pitch.update(oriented_frame(1, neutral), options);
+                    const auto moved = multiply(neutral, axis_angle({1, 0, 0}, movement));
+                    const auto result = pitch.update(oriented_frame(2, moved), options);
+                    const auto target = multiply(moved, result.warp.correction);
+                    const double residual = angle_between(neutral, target);
+                    check(result.valid && valid(result.warp.correction) && corners_inside(result.warp),
+                          "pitch correction must stay finite and inside available source margins");
+                    check(residual < std::abs(movement) &&
+                              (std::abs(movement) < .1 ? residual < .02 : residual > .65),
+                          "pitch must damp near-anchor motion and release large looks in either hemisphere");
+                }
+            }
+            FrameStabilizer disabled, reference;
+            options.pitch_lock = 0;
+            disabled.update(oriented_frame(1, {}), options);
+            reference.update(oriented_frame(1, {}), options);
+            const auto input = oriented_frame(2, axis_angle({1, 0, 0}, .1));
+            const auto ordinary = reference.update(input, options);
+            for (double invalid : {0., -100., double(NAN), double(INFINITY)}) {
+                options.pitch_lock = invalid;
+                check(angle_between(disabled.update(input, options).warp.correction,
+                                    ordinary.warp.correction) < 1e-6,
+                      "disabled or invalid pitch strengths must preserve ordinary smoothing");
+            }
+            options.pitch_lock = 100;
+            options.compare_original = true;
+            check(angle_between(disabled.update(input, options).warp.correction, {}) < 1e-6,
+                  "original comparison must bypass pitch correction");
+            options.compare_original = false;
+            options.stabilize = false;
+            check(angle_between(disabled.update(input, options).warp.correction, {}) < 1e-6,
+                  "stabilization bypass must bypass pitch correction");
+        }
+        {
+            FrameStabilizer camera;
+            Options options;
+            options.stabilize = false;
+            options.crop = 20;
+            options.aspect = 1;
+            options.horizontal_offset = -100;
+            const auto left = camera.update(frame(1), options).warp;
+            options.horizontal_offset = 100;
+            const auto right = camera.update(frame(1), options).warp;
+            check(std::abs(map_uv(left, 0, .5)[0]) < 1e-6 &&
+                      std::abs(map_uv(right, 1, .5)[0] - 1) < 1e-6 &&
+                      std::abs(map_uv(left, 1, .5)[0] - .8) < 1e-6,
+                  "horizontal placement must span the captured reserve without changing zoom");
+        }
+        {
+            Options options;
+            options.smoothing = 0;
+            options.pitch_lock = 100;
+            options.crop = 0;
+            options.aspect = 1;
+            options.mirror = false;
+            FrameStabilizer limited;
+            limited.update(frame(1), options);
+            const auto result = limited.update(oriented_frame(2, axis_angle({1, 0, 0}, .08)), options);
+            check(result.valid && corners_inside(result.warp) && result.warp.correction_fraction < .01,
+                  "insufficient pitch margins must limit correction and report the missing fraction");
+            options.mirror = true;
+            options.mirror_limit = 1;
+            const auto mirrored = limited.update(oriented_frame(2, axis_angle({1, 0, 0}, .08)), options);
+            check(mirrored.warp.correction_fraction > .01 && mirrored.warp.correction_fraction < 1,
+                  "pitch correction must respect the finite mirror allowance");
+            for (double u : {0., 1.})
+                for (double v : {0., 1.}) {
+                    const auto uv = map_uv(mirrored.warp, u, v);
+                    check(uv[0] >= -.010001 && uv[0] <= 1.010001 && uv[1] >= -.010001 && uv[1] <= 1.010001,
+                          "pitch-corrected corners must stay within the configured mirror allowance");
+                }
+            FrameStabilizer vertical;
+            const auto pole = axis_angle({1, 0, 0}, pi / 2);
+            check(angle_between(vertical.update(oriented_frame(1, pole), options).warp.correction, {}) < 1e-6,
+                  "vertical startup must defer pitch calibration");
+            const auto forward = axis_angle({1, 0, 0}, .2);
+            check(angle_between(vertical.update(oriented_frame(2, forward), options).warp.correction, {}) < 1e-6,
+                  "deferred pitch calibration must use the first unambiguous forward view");
+            options.crop = 40;
+            options.mirror_limit = 10;
+            for (unsigned i = 3; i <= 183; ++i) {
+                const auto q = axis_angle({1, 0, 0}, (i - 3) * pi / 180);
+                const auto composed = vertical.update(oriented_frame(i, q), options);
+                check(composed.valid && valid(composed.warp.correction) &&
+                          angle_between(composed.warp.correction, {}) <= 7.50001 * pi / 180,
+                      "pitch must remain finite and bounded while crossing a vertical pole");
+            }
+        }
+        {
+            FrameStabilizer ordinary, legacy;
+            Options options;
+            options.smoothing = 65;
+            options.crop = 30;
+            for (unsigned i = 1; i <= 120; ++i) {
+                auto input = frame(i, std::sin(i * .11) * .18);
+                options.spectator.gaze_enabled = i > 60;
+                input.gaze.flags = GazeValid | GazeTracked | GazeTimeKnown;
+                input.gaze.sample_time_ns = input.display_time;
+                input.gaze.reference_epoch = input.reference_epoch;
+                input.gaze.direction = rotate(axis_angle({0, 1, 0}, .08), {0, 0, -1});
+                options.spectator.natural_enabled = false;
+                const auto expected = ordinary.update(input, options);
+                options.spectator.natural_enabled = true;
+                const auto actual = legacy.update(input, options);
+                check(angle_between(actual.warp.correction, expected.warp.correction) < 1e-6,
+                      "legacy natural setting must not replace ordinary standalone smoothing");
+            }
+        }
         {
             FrameStabilizer camera;
             Options gaze;
