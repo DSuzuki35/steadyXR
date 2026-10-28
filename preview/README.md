@@ -1,8 +1,10 @@
-# SteadyXR Preview 0.14.0
+# SteadyXR Preview 0.15.0
 
 This community test build is free and has **no expiry**. Future paid releases are planned separately. The notice stays in the controls and never appears in the clean captured output.
 
-Open **Spectator & effects** for gaze framing, chat exclusion, natural head movement and local exposure/bloom/color. All new features start **off**. The master bypass preserves tuning. Gaze & chat, Motion, Exposure, Bloom, Color and Director each have their own page. Camera and visual bypass switches preserve tuning; presets are explicit opt-ins.
+Version 0.15 adds the native Capture Workshop, optional pitch steadiness and draggable framing. Normal smoothing remains; Natural Head Movement is removed. See **Workshop-Guide.md** (source: docs/workshop.md). The capture DLL stays the signed 0.14.0 component, byte-identical.
+
+Open **Gaze & effects** for gaze framing, chat exclusion and local exposure/bloom/color. All new features start **off**. The master bypass preserves tuning. Gaze & chat, Exposure, Bloom, Color and Director each have their own page. Camera and visual bypass switches preserve tuning; presets are explicit opt-ins.
 
 Enable gaze framing and chat exclusion, then press **Look at chat now / Learn** or **Ctrl+Alt+C** and look at chat: three seconds of countdown, then one second of stable samples. Adjust angular width/height. Head following continues while gaze toward chat is excluded. Relearn after recentering, changing eye/source/session, moving chat or loading a preset. Unsupported/stale gaze falls back to head stabilization. Actual Dream Air runtime compatibility still needs live validation.
 
@@ -186,3 +188,4 @@ For your own preset, enter a name and click **Save new**. This saves a complete 
 Select a saved preset and click **Load** to restore it, **Overwrite selected** to replace it with current settings, or **Delete** to remove it. Live preview settings apply immediately; changed OpenXR render expansion applies at the next game launch. No automatic game restart occurs. A saved window source is matched by executable and title; if unavailable, select it when it is running.
 
 Custom presets live in **Gaming-PC/Presets**, shared across versioned preview folders. Keep this folder when moving the app to another PC. Each preset is an INI file; saving a new name never overwrites an existing preset. Failed writes are reported rather than treated as successful saves.
+

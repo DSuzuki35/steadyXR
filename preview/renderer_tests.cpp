@@ -590,6 +590,25 @@ void visual_host_tests() {
 }
 int main(int argc, char **argv) {
     try {
+        {
+            Renderer replay;
+            require(replay.attach_offscreen(), "replay device");
+            require(replay.demo(1, true), "source full-image pair");
+            Frame source{};
+            ID3D11Texture2D *textures[2]{};
+            require(replay.source_snapshot(source, textures), "full source snapshot available");
+            require(source.view_count == 2 && source.views[0].rect_width == 512,
+                    "snapshot must preserve full source and focus, not output aspect crop");
+            ComPtr<ID3D11Texture2D> saved[2]{textures[0], textures[1]};
+            replay.source_changed();
+            textures[0] = saved[0].Get();
+            textures[1] = saved[1].Get();
+            require(replay.consume_replay(source, textures, 100),
+                    "replay accepts source images and pose together");
+            require(replay.sequence() == source.sequence, "replay retains source sequence");
+            source.views[0].rect_width = 999;
+            require(!replay.consume_replay(source, textures), "replay rejects image metadata mismatch");
+        }
         visual_host_tests();
         overlay_tests();
         offscreen_tests<Renderer>();

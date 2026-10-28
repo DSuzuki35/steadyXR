@@ -14,6 +14,7 @@
 #include "theme.hpp"
 #include "visual_settings_io.hpp"
 #include "window_capture.hpp"
+#include "workshop.hpp"
 #include <algorithm>
 #include <cmath>
 #include <commctrl.h>
@@ -162,6 +163,8 @@ struct App {
     bool connection_enable{};
     Channel channel;
     Renderer renderer;
+    Workshop workshop;
+    bool workshop_was_paused{}, workshop_paused{};
     WindowCapture capture;
     std::vector<CaptureWindow> sources;
     HWND source_window{};
@@ -386,11 +389,12 @@ struct App {
         layer_editor_process = execute.hProcess;
     }
     bool waiting(std::uint64_t now) const {
-        return expired || capture_conflict || !renderer.has_frame() ||
+        return workshop.editing() || expired || capture_conflict || !renderer.has_frame() ||
                (!paused && last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000);
     }
     const wchar_t *waiting_text() const {
-        return expired            ? L"Build expired. Please install a newer SteadyXR build."
+        return workshop.editing() ? L"Live paused - editing a recording in Workshop"
+               : expired          ? L"Build expired. Please install a newer SteadyXR build."
                : capture_conflict ? L"OpenXR capture is in use by OBS or another preview."
                : window_mode      ? L"Waiting for window capture…"
                                   : L"Waiting for OpenXR capture…";
@@ -582,7 +586,7 @@ struct App {
             rate = 60;
     }
     bool active() const {
-        return !expired && !paused && IsWindowVisible(output) && !IsIconic(output);
+        return !workshop.editing() && !expired && !paused && IsWindowVisible(output) && !IsIconic(output);
     }
     void restart_source() {
         cancel_comparison();
@@ -1464,6 +1468,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         }
         return result;
     }
+    std::filesystem::path startup_clip;
+    for (int i = 1; arguments && i + 1 < argument_count; ++i)
+        if (wcscmp(arguments[i], L"--clip") == 0)
+            startup_clip = arguments[i + 1];
     if (arguments)
         LocalFree(arguments);
     const bool verify_window = std::wstring(command).find(L"--verify-window") != std::wstring::npos;
@@ -1485,6 +1493,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         CloseHandle(singleton);
         return 0;
     }
+    struct UiApartment {
+        HRESULT initialized{CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)};
+        ~UiApartment() {
+            if (SUCCEEDED(initialized))
+                CoUninitialize();
+        }
+    } ui_apartment;
     App state;
     app = &state;
     state.diagnostic = self_test;
@@ -1844,8 +1859,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 OffsetRect(&r, scroll_x, scroll_y);
                 if (r.left < 0 || r.top < 0 || r.right > client.right || r.bottom > client.bottom) {
                     trace << "control-outside-client=" << GetDlgCtrlID(h) << " rect=" << r.left << ','
-                          << r.top << ',' << r.right << ',' << r.bottom << " client=" << client.right
-                          << ',' << client.bottom << '\n';
+                          << r.top << ',' << r.right << ',' << r.bottom << " client=" << client.right << ','
+                          << client.bottom << '\n';
                     return false;
                 }
             }
@@ -2710,8 +2725,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.theme.fit_window(state.controls, compact_work_area);
         RECT compact_outer{};
         GetWindowRect(state.controls, &compact_outer);
-        bool compact_ok = compact_outer.left >= 0 && compact_outer.top >= 0 &&
-                          compact_outer.right <= 1280 && compact_outer.bottom <= 720;
+        bool compact_ok = compact_outer.left >= 0 && compact_outer.top >= 0 && compact_outer.right <= 1280 &&
+                          compact_outer.bottom <= 720;
         state.show_page(3);
         SetFocus(state.output_width);
         bool reached_footer{}, reached_monitor{}, reached_navigation{};
@@ -2730,7 +2745,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                          item.right <= view.right && item.bottom <= view.bottom && compact_ok;
             reached_footer = reached_footer || focused == GetDlgItem(state.controls, show_id);
             reached_monitor = reached_monitor || focused == state.monitor;
-            reached_navigation = reached_navigation || focused == GetDlgItem(state.controls, navigation_id + 3);
+            reached_navigation =
+                reached_navigation || focused == GetDlgItem(state.controls, navigation_id + 3);
         }
         compact_ok = compact_ok && reached_footer && reached_monitor && reached_navigation;
         trace << "small-work-area-keyboard-1280x720=" << compact_ok << '\n';
@@ -2745,10 +2761,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         app = nullptr;
         return okay ? 0 : 1;
     }
+    state.workshop.initialize(state.controls, state.theme, state.renderer, state.ini,
+                              {[&] { return state.active() && (!state.window_mode || state.demo); },
+                               [&](bool pause) {
+                                   if (pause && !state.workshop_paused) {
+                                       state.workshop_was_paused = state.paused;
+                                       state.workshop_paused = true;
+                                       state.paused = true;
+                                   } else if (!pause && state.workshop_paused) {
+                                       state.paused = state.workshop_was_paused;
+                                       state.workshop_paused = false;
+                                       state.renderer.source_changed();
+                                       state.last_received_ms = 0;
+                                   }
+                                   state.dirty = true;
+                                   state.heartbeat();
+                                   state.labels();
+                               },
+                               [&](const Options &draft) {
+                                   state.set_tuning(draft);
+                                   state.save();
+                               },
+                               [&] { return state.options; }});
+    state.workshop_open_callback = [&] { state.workshop.open(); };
     ShowWindow(state.controls, show);
     ShowWindow(state.output, SW_SHOW);
-    if (state.start_fullscreen && !state.fullscreen)
+    if (state.start_fullscreen && !state.fullscreen && startup_clip.empty())
         state.toggle_fullscreen();
+    if (!startup_clip.empty())
+        state.workshop.open_clip(startup_clip);
     state.heartbeat();
     state.update_status();
     std::uint64_t last_status = 0, last_heartbeat = 0;
@@ -2762,8 +2803,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 state.quit = true;
                 break;
             }
-            if (!state.spectator_controls.route(msg) && !state.overlays.route(msg) &&
-                !state.presets.route(msg) && !state.advanced.route(msg) &&
+            if (!state.workshop.route(msg) && !state.spectator_controls.route(msg) &&
+                !state.overlays.route(msg) && !state.presets.route(msg) && !state.advanced.route(msg) &&
                 !IsDialogMessageW(state.controls, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -2772,6 +2813,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         if (state.quit)
             break;
         const auto now = GetTickCount64();
+        state.workshop.tick();
         state.refresh_comparison(now);
         if (now - last_heartbeat >= 200) {
             state.heartbeat();
@@ -2813,6 +2855,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             if (received) {
                 state.last_received_ms = now;
                 ++state.fps_frames;
+                state.workshop.on_frame();
             }
             if ((received || state.dirty) && !state.waiting(now))
                 state.renderer.draw(state.draw_options(now));
@@ -2836,7 +2879,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             InvalidateRect(state.output, nullptr, FALSE);
             was_waiting = waiting;
         }
-        const DWORD delay = !state.active() ? 50
+        const DWORD delay = state.workshop.editing() ? 8
+                            : !state.active()        ? 50
                             : submitted_feed
                                 ? 1
                                 : DWORD(std::clamp(next_frame - double(GetTickCount64()), 1., 16.));

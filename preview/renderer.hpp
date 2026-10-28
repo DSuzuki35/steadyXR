@@ -18,6 +18,7 @@ struct Options {
     double smoothing{40}, crop{10};
     bool mirror{true}, stabilize{true};
     bool compare_original{}; // Transient A/B bypass; keep framing and continue motion history.
+    bool workshop_source{};  // Transient full-source framing view; never persisted to a live profile.
     unsigned compare_mode{}; // 0 original, 1 same-framing split, 2 fitted side-by-side; inactive normally.
     double crop_left{}, crop_right{}, crop_top{}, crop_bottom{};
     double aspect{16. / 9.};
@@ -27,9 +28,9 @@ struct Options {
     double mirror_softness{60};
     double mirror_stretch{0}; // Mirror-to-edge extension, percent; zero preserves reflection.
     EdgeReserve edge_reserve[2]{};
-    unsigned eye{};           // Window capture profile; OpenXR uses the eye stored with its frame.
+    unsigned eye{};             // Window capture profile; OpenXR uses the eye stored with its frame.
     double horizontal_offset{}; // -100 leftmost, +100 rightmost within full captured bounds.
-    double vertical_offset{}; // -100 highest, +100 lowest within full captured bounds.
+    double vertical_offset{};   // -100 highest, +100 lowest within full captured bounds.
 };
 void apply_stream_comfort(Options &);
 struct FramingRegion {
@@ -92,6 +93,9 @@ class Renderer {
     std::uint64_t output_handle() const;
     std::uint64_t output_generation() const;
     bool consume(Channel &channel, bool require_consumer = false);
+    // Borrowed consumer-owned source textures, valid until the next consume.
+    bool source_snapshot(Frame &, ID3D11Texture2D *textures[2]) const;
+    bool consume_replay(const Frame &, ID3D11Texture2D *const textures[2], double speed_kph = -1);
     ID3D11Device *device() const;
     bool consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, const Options &);
     void source_changed();
@@ -109,6 +113,7 @@ class Renderer {
     const VisualDiagnostics &visual_diagnostics() const;
     std::wstring error() const;
     bool has_frame() const;
+    double correction_fraction() const;
     std::uint64_t sequence() const;
     unsigned views() const;
     // Diagnostic readback is used only by tests, never the live preview path.
