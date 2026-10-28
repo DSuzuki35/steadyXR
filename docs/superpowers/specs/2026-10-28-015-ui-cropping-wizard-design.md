@@ -1,6 +1,6 @@
 # SteadyXR 0.15.0: native UI and capture workshop
 
-Status: proposed design for user review, not approved for product implementation.
+Status: approved for implementation by Dan on 2026-10-28 ("lets go"). UI language: English. Natural Head Movement is removed; ordinary smoothing remains.
 
 ## Intent and agreed constraints
 
@@ -12,7 +12,7 @@ The signed 0.14.0 capture DLL MUST remain byte-identical:
 
 `74a6943f014d85b81f301da852b61d5a8cb2251a199130978bf4cbdba097d91d`
 
-No capture DLL rebuild, replacement with unsigned output, signing, injection change or IPC layout change is part of 0.15.0. Existing game/runtime configuration is preserved. All new features are optional. 0.14.0 remains an independently usable release.
+No capture DLL rebuild, replacement with unsigned output, signing, injection change or IPC layout change is part of 0.15.0. Existing game/runtime configuration is preserved. All new features are optional. All UI labels, hints and errors remain English. Remove Natural Head Movement controls and disable legacy natural-motion settings in the standalone; preserve ordinary smoothing and gaze framing. 0.14.0 remains an independently usable release.
 
 ## Approaches
 
@@ -56,7 +56,7 @@ Dan chose to pause live output while editing a clip in Workshop, to avoid parall
 
 Dan approved the visual direction and requested direct mouse editing: drag the crop interior to reposition it, and drag any edge or corner to resize it. Keep the selected output aspect ratio fixed. Synchronize the crop/zoom and horizontal/vertical position controls continuously in both directions; render from the same canonical crop rectangle. Opposite edges/corners anchor resizing; edge handles preserve the transverse center. Clamp to the recorded source bounds and supported crop limits. Use pointer capture, visible handles, appropriate cursors, cancel on Escape, keyboard fine movement, and a Center action. Convert normalized source coordinates to the existing profile parameters explicitly; demo percentages are not an unverified mapping to renderer settings. Mouse editing changes only draft settings until Apply.
 
-Provide play/pause, looping, scrub timeline, before/after toggle and optional split comparison. Reuse the same native stabilization/composition functions as the live preview. Changes to crop, smoothing, natural movement, roll leveling and pitch stabilization update the replay. Stateful filters must reset and warm up deterministically after a seek or settings change; process from the clip start or a valid state checkpoint so scrubbing does not invent a different camera path.
+Provide play/pause, looping, scrub timeline, before/after toggle and optional split comparison. Reuse the same native stabilization/composition functions as the live preview. Changes to crop, smoothing, roll leveling and pitch stabilization update the replay. Stateful filters must reset and warm up deterministically after a seek or settings change; process from the clip start or a valid state checkpoint so scrubbing does not invent a different camera path.
 
 Draw safe-frame/source-boundary guides and mark frames exposing unavailable pixels. Optional Analyze clip computes a crop recommendation for the currently selected settings from the entire recorded sample, with small configurable margin and explicit coverage limits. Changing stabilization invalidates the previous recommendation. Report sample gaps; a clip cannot prove safe framing for unrecorded movements.
 
@@ -68,7 +68,7 @@ Use a draft settings copy during experimentation. **Apply profile** explicitly c
 
 Existing horizon leveling compensates roll (tilting sideways); it does not hold vertical viewing direction. Add optional pitch stabilization in the standalone's camera composition, independently of yaw and roll, with strength and an explicit **Set forward view** action. Default off.
 
-Recommend softly anchoring pitch near the calibrated direction while letting sustained intentional large looks follow smoothly. Give the user a bounded strength/response control; avoid snap-back, hard thresholds and double filtering with Natural motion. Exact response curve is left to implementation, verified with recorded and synthetic start/stop/reversal scenarios. Report insufficient image margins instead of silently claiming stabilization succeeded.
+Recommend softly anchoring pitch near the calibrated direction while letting sustained intentional large looks follow smoothly. Give the user a bounded strength/response control; avoid snap-back, hard thresholds and double filtering with ordinary smoothing. Exact response curve is left to implementation, verified with recorded and synthetic start/stop/reversal scenarios. Report insufficient image margins instead of silently claiming stabilization succeeded.
 
 Projection orientations are in application layer space, not guaranteed absolute gravity/world coordinates. Calibration and reference-epoch/session resets must be respected. Name this feature **Vertical steadiness / Pitch stabilization**, not a claim of a physically perfect world horizon. It cannot remove true positional head bob, parallax or camera translations without position/depth data. Do not modify the DLL to obtain them.
 
@@ -80,4 +80,5 @@ Validate recorded image/orientation association, time gaps, cancellation/partial
 
 ## Scope / remaining approval
 
-This is a substantial standalone UI, recording/playback and camera feature release. OBS's existing binary is reused; a new OBS plugin DLL is outside the no-DLL-change scope. The design and clickable layout need Dan's approval before production implementation. Specific codec details and the calibrated pitch response are engineering decisions within the constraints above, to be validated before final delivery.
+This is a substantial standalone UI, recording/playback and camera feature release. OBS's existing binary is reused; a new OBS plugin DLL is outside the no-DLL-change scope. Dan approved the design direction and requested implementation. Specific codec details and the calibrated pitch response are engineering decisions within the constraints above, to be validated before final delivery.
+
