@@ -380,10 +380,10 @@ struct PresetsDialog::Impl {
         child(L"STATIC", L"BUILT-IN STARTING POINTS", 0, 24, 20, 696, 26, 0, true);
         child(L"STATIC", L"Apply a tuning starting point, then adjust it to suit your stream.", 0, 24, 55,
               696, 24);
-        child(L"BUTTON", L"Natural", BS_PUSHBUTTON, 24, 94, 216, 38, natural_id);
+        child(L"BUTTON", L"Responsive", BS_PUSHBUTTON, 24, 94, 216, 38, natural_id);
         child(L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 264, 94, 216, 38, comfort_id);
         child(L"BUTTON", L"Strong Leveling", BS_PUSHBUTTON, 504, 94, 216, 38, strong_id);
-        child(L"STATIC", L"Light smoothing and leveling.\r\nMore natural head motion.", 0, 24, 142, 216, 48);
+        child(L"STATIC", L"Light smoothing and leveling.\r\nResponsive head turns.", 0, 24, 142, 216, 48);
         child(L"STATIC", L"Balanced smoothing.\r\nA steady spectator view.", 0, 264, 142, 216, 48);
         child(L"STATIC", L"Stronger horizon correction.\r\nSteadier near-level horizon.", 0, 504, 142, 216,
               48);

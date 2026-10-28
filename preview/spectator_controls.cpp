@@ -1,8 +1,8 @@
 #define UNICODE
 #define _UNICODE
 #include "spectator_controls.hpp"
-#include "spectator_settings.hpp"
 #include "director_settings_io.hpp"
+#include "spectator_settings.hpp"
 #include "visual_settings_io.hpp"
 #include <commctrl.h>
 #include <cwchar>
@@ -15,7 +15,7 @@ struct SpectatorControls::Impl {
     Options *options{};
     Renderer *renderer{};
     std::function<void()> changed, learn;
-    std::vector<HWND> pages[6];
+    std::vector<HWND> pages[5];
     std::wstring last_status, last_director_status;
     unsigned selected{};
     bool loading{};
@@ -69,10 +69,10 @@ struct SpectatorControls::Impl {
         if (!window)
             return;
         loading = true;
-        for (unsigned i = 0; i < std::size(spectator_bool_fields); ++i)
+        for (unsigned i = 0; i < 3u; ++i)
             CheckDlgButton(window, camera_bool_id + i,
                            options->spectator.*spectator_bool_fields[i].member ? BST_CHECKED : BST_UNCHECKED);
-        for (unsigned i = 0; i < std::size(spectator_number_fields); ++i)
+        for (unsigned i = 0; i < 8u; ++i)
             text_number(camera_number_id + i, options->spectator.*spectator_number_fields[i].member);
         for (unsigned i = 0; i < std::size(visual_bool_fields); ++i)
             CheckDlgButton(window, visual_bool_id + i,
@@ -145,8 +145,8 @@ struct SpectatorControls::Impl {
                  L"Lookahead %ls: requested %.0f frames; actual %u frames / %.1f ms; %.1f MiB GPU.\r\n"
                  L"Automatic crop %.1f%%; speed crop %.1f%%.",
                  options->director.lookahead_enabled ? L"on" : L"off", options->director.lookahead_frames,
-                 d.buffered_frames, d.delay_ms, double(d.buffered_bytes) / (1024 * 1024),
-                 d.auto_crop_percent, d.speed_crop_percent);
+                 d.buffered_frames, d.delay_ms, double(d.buffered_bytes) / (1024 * 1024), d.auto_crop_percent,
+                 d.speed_crop_percent);
         std::wstring director_text = detail;
         if (options->spectator.bypass)
             director_text += L"\r\nSpectator camera bypassed.";
@@ -202,7 +202,7 @@ struct SpectatorControls::Impl {
         }
         if (id == compare_scope_id)
             options->compare_effects = IsDlgButtonChecked(window, id) == BST_CHECKED;
-        else if (id >= camera_bool_id && id < camera_bool_id + int(std::size(spectator_bool_fields)))
+        else if (id >= camera_bool_id && id < camera_bool_id + int(3u))
             options->spectator.*spectator_bool_fields[id - camera_bool_id].member =
                 IsDlgButtonChecked(window, id) == BST_CHECKED;
         else if (id >= visual_bool_id && id < visual_bool_id + int(std::size(visual_bool_fields)))
@@ -216,8 +216,7 @@ struct SpectatorControls::Impl {
                 return;
             options->director.telemetry_game = director_telemetry_selection(
                 double(SendMessageW(GetDlgItem(window, telemetry_id), CB_GETCURSEL, 0, 0)));
-        }
-        else if (id >= camera_number_id && id < camera_number_id + int(std::size(spectator_number_fields))) {
+        } else if (id >= camera_number_id && id < camera_number_id + int(8u)) {
             if (notification != EN_KILLFOCUS)
                 return;
             double value{};
@@ -229,7 +228,8 @@ struct SpectatorControls::Impl {
             double value{};
             if (read_number(id, value))
                 options->visual.*visual_number_fields[id - visual_number_id].member = float(value);
-        } else if (id >= director_number_id && id < director_number_id + int(std::size(director_number_fields))) {
+        } else if (id >= director_number_id &&
+                   id < director_number_id + int(std::size(director_number_fields))) {
             if (notification != EN_KILLFOCUS)
                 return;
             double value{};
@@ -241,18 +241,6 @@ struct SpectatorControls::Impl {
             double value{};
             if (read_number(id, value))
                 options->visual.metering_region.*visual_region_fields[id - region_id].member = float(value);
-        } else if (id == natural_id || id == cinematic_id) {
-            auto &s = options->spectator;
-            const auto natural = SpectatorSettings{};
-            s.bypass = false;
-            s.natural_enabled = true;
-            s.natural_suppression = id == cinematic_id ? 85 : natural.natural_suppression;
-            s.natural_follow = id == cinematic_id ? 45 : natural.natural_follow;
-            s.natural_settling_ms = id == cinematic_id ? 300 : natural.natural_settling_ms;
-            s.natural_max_correction_degrees = natural.natural_max_correction_degrees;
-            s.natural_yaw = natural.natural_yaw;
-            s.natural_pitch = natural.natural_pitch;
-            s.natural_roll = natural.natural_roll;
         } else if (id == filmic_id) {
             auto v = VisualSettings{};
             v.color = v.bloom = true;
@@ -266,6 +254,7 @@ struct SpectatorControls::Impl {
         else
             return;
         options->spectator = sanitize_spectator_settings(options->spectator);
+        options->spectator.natural_enabled = false;
         options->director = sanitize_director_settings(options->director);
         options->visual = options->visual.bounded();
         refresh();
@@ -281,24 +270,24 @@ struct SpectatorControls::Impl {
         RECT r{0, 0, 1000, 750};
         const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
         AdjustWindowRectEx(&r, style, FALSE, WS_EX_CONTROLPARENT);
-        window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName,
-                                 L"SteadyXR - Spectator camera / visual effects", style, 120, 80,
-                                 r.right - r.left, r.bottom - r.top, parent, nullptr, cls.hInstance, this);
+        window =
+            CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"SteadyXR - Gaze & effects", style, 120,
+                            80, r.right - r.left, r.bottom - r.top, parent, nullptr, cls.hInstance, this);
         if (!window)
             return;
         theme->titlebar(window);
-        const auto heading = child(L"STATIC", L"Spectator & effects", 0, 28, 22, 580, 32, 0);
+        const auto heading = child(L"STATIC", L"Gaze & effects", 0, 28, 22, 580, 32, 0);
         theme->control(heading, L"STATIC", true);
         note(L"Shape the view your audience sees. Every enhancement is optional.", 28, 60, 600, 26);
         child(L"BUTTON", L"Bypass spectator camera", BS_AUTOCHECKBOX, 650, 20, 324, 28, camera_bool_id);
         child(L"BUTTON", L"Bypass visual effects", BS_AUTOCHECKBOX, 650, 60, 324, 28, visual_bool_id);
-        const wchar_t *tabs[]{L"Gaze & chat", L"Motion", L"Exposure", L"Bloom", L"Color", L"Director"};
-        const wchar_t *titles[]{L"Follow your focus", L"Natural head movement", L"Adapt to changing light",
-                                L"Give bright areas a soft glow", L"Create your look", L"Camera timing & framing"};
+        const wchar_t *tabs[]{L"Gaze & chat", L"Exposure", L"Bloom", L"Color", L"Director"};
+        const wchar_t *titles[]{L"Follow your focus", L"Adapt to changing light",
+                                L"Give bright areas a soft glow", L"Create your look",
+                                L"Camera timing & framing"};
         const wchar_t *descriptions[]{
             L"Requires OpenXR eye tracking. Chat exclusion ignores gaze toward chat while head following "
             L"continues.",
-            L"Calm small vibrations while preserving intentional turns. Presets provide a starting point.",
             L"Leave a tunnel: the view briefly brightens, then settles. Enter shade: it gradually brightens "
             L"again.",
             L"Bloom follows bright highlights continuously; it does not trigger a flash when lighting "
@@ -309,7 +298,7 @@ struct SpectatorControls::Impl {
         for (int p = 0; p < int(std::size(pages)); ++p) {
             const auto tab =
                 child(L"BUTTON", tabs[p], BS_AUTORADIOBUTTON | BS_PUSHLIKE | (p == 0 ? WS_GROUP : 0),
-                      28 + p * 158, 102, 152, 42, page_id + p);
+                      28 + p * 190, 102, 184, 42, page_id + p);
             SetPropW(tab, L"SteadyXRTab", reinterpret_cast<HANDLE>(1));
             const auto title = child(L"STATIC", titles[p], 0, 44, 184, 912, 28, 0, p);
             theme->control(title, L"STATIC", true);
@@ -330,63 +319,51 @@ struct SpectatorControls::Impl {
         child(L"BUTTON", L"Cancel learning", BS_PUSHBUTTON, 330, 600, 220, 34, cancel_id, 0);
         child(L"BUTTON", L"Clear chat zone", BS_PUSHBUTTON, 566, 600, 220, 34, clear_id, 0);
 
-        child(L"BUTTON", L"Enable natural head movement", BS_AUTOCHECKBOX, 44, 256, 912, 28,
-              camera_bool_id + 3, 1);
-        for (unsigned i = 8; i < std::size(spectator_number_fields); ++i) {
-            const auto &f = spectator_number_fields[i];
-            number(f.label, f.minimum, f.maximum, i - 8, camera_number_id + i, 1);
-        }
-        child(L"BUTTON", L"Natural preset", BS_PUSHBUTTON, 44, 520, 220, 36, natural_id, 1);
-        child(L"BUTTON", L"Cinematic preset", BS_PUSHBUTTON, 280, 520, 220, 36, cinematic_id, 1);
-        note(L"Natural keeps the camera responsive. Cinematic adds more smoothing and a slower settle.\r\n"
-             L"These presets enable natural motion; gaze and chat settings stay as configured.",
-             44, 584, 912, 48, 1);
-
-        child(L"BUTTON", L"Enable manual exposure", BS_AUTOCHECKBOX, 44, 256, 440, 28, visual_bool_id + 1, 2);
+        child(L"BUTTON", L"Enable manual exposure", BS_AUTOCHECKBOX, 44, 256, 440, 28, visual_bool_id + 1, 1);
         child(L"BUTTON", L"Enable light adaptation", BS_AUTOCHECKBOX, 518, 256, 440, 28, visual_bool_id + 2,
-              2);
+              1);
         for (unsigned i = 0; i < std::size(visual_number_fields); ++i) {
             const auto &f = visual_number_fields[i];
-            const int group = i < 8 ? 2 : i < 12 ? 3 : 4;
+            const int group = i < 8 ? 1 : i < 12 ? 2 : 3;
             const int index = i < 8 ? i : i < 12 ? i - 8 : i - 12;
             number(f.label, f.minimum, f.maximum, index, visual_number_id + i, group);
         }
         note(L"Metering region · 0 = left/top, 1 = right/bottom. Use the road area to reduce dashboard "
              L"influence.",
-             44, 504, 912, 26, 2);
+             44, 504, 912, 26, 1);
         for (unsigned i = 0; i < std::size(visual_region_fields); ++i)
-            number(visual_region_fields[i].label, 0, 1, i, region_id + i, 2, 536);
+            number(visual_region_fields[i].label, 0, 1, i, region_id + i, 1, 536);
 
-        child(L"BUTTON", L"Enable bloom", BS_AUTOCHECKBOX, 44, 256, 912, 28, visual_bool_id + 3, 3);
+        child(L"BUTTON", L"Enable bloom", BS_AUTOCHECKBOX, 44, 256, 912, 28, visual_bool_id + 3, 2);
         note(L"Threshold selects the highlights that glow. Soft knee blends the transition.\r\n"
              L"Strength controls how much glow is added; radius controls how far it spreads.\r\n\r\n"
              L"Start subtle: too much bloom can hide track detail and wash out the picture.",
-             44, 438, 912, 116, 3);
+             44, 438, 912, 116, 2);
         child(L"BUTTON", L"Enable color adjustments", BS_AUTOCHECKBOX, 44, 256, 912, 28, visual_bool_id + 4,
-              4);
+              3);
         note(L"Temperature shifts warm / cool; tint shifts green / magenta.\r\n"
              L"Contrast and saturation shape the overall look. Shadows and highlights tune the tonal "
              L"balance.\r\n\r\n"
              L"Use A/B below to compare the grade with the same camera framing.",
-             44, 488, 912, 112, 4);
+             44, 488, 912, 112, 3);
 
         for (unsigned i = 0; i < std::size(director_bool_fields); ++i)
             child(L"BUTTON", director_bool_fields[i].label, BS_AUTOCHECKBOX | (i == 0 ? WS_GROUP : 0),
-                  44 + int(i) * 306, 256, 300, 28, director_bool_id + i, 5);
+                  44 + int(i) * 306, 256, 300, 28, director_bool_id + i, 4);
         for (unsigned i = 0; i < std::size(director_number_fields); ++i) {
             const auto &f = director_number_fields[i];
-            number(f.label, f.minimum, f.maximum, i, director_number_id + i, 5);
+            number(f.label, f.minimum, f.maximum, i, director_number_id + i, 4);
         }
-        child(L"STATIC", L"Speed telemetry", 0, 44, 456, 200, 26, 0, 5);
-        const auto telemetry = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL,
-                                     250, 450, 260, 160, telemetry_id, 5);
+        child(L"STATIC", L"Speed telemetry", 0, 44, 456, 200, 26, 0, 4);
+        const auto telemetry =
+            child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 250, 450, 260, 160, telemetry_id, 4);
         for (const auto label : director_telemetry_labels)
             SendMessageW(telemetry, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
-        note(L"Low speed adds crop; high speed restores normal framing.", 530, 450, 426, 44, 5);
-        director_status = child(L"STATIC", L"", 0, 44, 504, 912, 68, director_status_id, 5);
+        note(L"Low speed adds crop; high speed restores normal framing.", 530, 450, 426, 44, 4);
+        director_status = child(L"STATIC", L"", 0, 44, 504, 912, 68, director_status_id, 4);
         note(L"OpenXR lookahead delays video: add the shown delay to the OBS audio sync offset.\r\n"
              L"Window capture supports automatic crop and speed framing; lookahead needs OpenXR.",
-             44, 584, 912, 48, 5);
+             44, 584, 912, 48, 4);
 
         child(L"BUTTON", L"Apply filmic visual preset", BS_PUSHBUTTON, 28, 658, 280, 36, filmic_id);
         child(L"BUTTON", L"Reset visual effects to off", BS_PUSHBUTTON, 324, 658, 280, 36, neutral_id);
@@ -396,6 +373,7 @@ struct SpectatorControls::Impl {
                         28, 712, 944, 26, compare_scope_id);
         refresh();
         show_page();
+        theme->scale_window(window);
     }
     static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         auto self = reinterpret_cast<Impl *>(GetWindowLongPtrW(h, GWLP_USERDATA));

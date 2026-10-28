@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 #include <windows.h>
 
 namespace vrst::preview {
@@ -13,11 +14,28 @@ class Theme {
     DWORD style(const wchar_t *kind, DWORD value) const;
     void control(HWND window, const wchar_t *kind, bool heading = false);
     void titlebar(HWND window);
+    // Capture the logical layout once, then scale controls and text without rounding drift.
+    void scale_window(HWND window, UINT dpi = 0);
     void surface(HWND window, HDC dc, RECT card);
     bool message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &result);
 
   private:
     HFONT title_{}, heading_{};
     HBRUSH background_{}, panel_{}, field_{};
+    struct Placement {
+        HWND window;
+        RECT bounds;
+    };
+    struct Layout {
+        HWND window;
+        int width, height;
+        std::vector<Placement> children;
+    };
+    struct Fonts {
+        UINT dpi;
+        HFONT body, heading;
+    };
+    std::vector<Layout> layouts_;
+    std::vector<Fonts> fonts_;
 };
 } // namespace vrst::preview

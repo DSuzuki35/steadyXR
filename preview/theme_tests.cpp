@@ -126,6 +126,9 @@ void repeated_native_paint_keeps_track_and_thumb() {
     const auto thumb = slider.rectangle(TBM_GETTHUMBRECT);
     const auto y = (channel.top + channel.bottom) / 2;
     const auto background = canvas.pixel(0, Slider::height - 1);
+    check(background == RGB(26, 27, 31), "slider uses the approved dark surface");
+    check(canvas.pixel((thumb.left + thumb.right) / 2, thumb.top + 2) == RGB(112, 89, 221),
+          "slider uses the approved violet accent");
     check(canvas.pixel(channel.right - 2, y) != background, "first native paint draws the track");
     check(canvas.pixel((thumb.left + thumb.right) / 2, thumb.top + 2) != background,
           "first native paint draws the thumb");
@@ -216,6 +219,31 @@ void painting_preserves_native_input_and_notifications() {
     check(slider.position() > -499, "custom painted slider retains native thumb dragging");
     check(slider.scrolls > notifications, "native drag changes still notify the parent");
 }
+
+void dpi_change_scales_controls_and_preserves_input() {
+    Slider slider;
+    const auto text = CreateWindowW(L"STATIC", L"DPI text", WS_CHILD, 0, 0, 100, 24, slider.parent, nullptr,
+                                    GetModuleHandleW(nullptr), nullptr);
+    slider.theme.control(text, L"STATIC");
+    RECT suggested{0, 0, 578, 60};
+    LRESULT result{};
+    check(slider.theme.message(slider.parent, WM_DPICHANGED, MAKELONG(144, 144),
+                               reinterpret_cast<LPARAM>(&suggested), result),
+          "theme handles per-monitor DPI changes");
+    RECT bounds{};
+    GetClientRect(slider.window, &bounds);
+    check(bounds.right == 578 && bounds.bottom == 60, "DPI change scales native controls to 150 percent");
+    LOGFONTW font{};
+    GetObjectW(reinterpret_cast<HFONT>(SendMessageW(text, WM_GETFONT, 0, 0)), sizeof(font), &font);
+    check(font.lfHeight == -24, "DPI change scales native control text");
+    check(slider.position() == -500, "DPI change preserves slider value");
+    suggested = {0, 0, Slider::width, Slider::height};
+    slider.theme.message(slider.parent, WM_DPICHANGED, MAKELONG(96, 96), reinterpret_cast<LPARAM>(&suggested),
+                         result);
+    GetClientRect(slider.window, &bounds);
+    check(bounds.right == Slider::width && bounds.bottom == Slider::height,
+          "returning to 100 percent restores the original layout without drift");
+}
 } // namespace
 
 int main() {
@@ -227,6 +255,7 @@ int main() {
         clipped_native_paint_restores_track_under_old_thumb();
         signed_range_fill_tracks_native_position();
         painting_preserves_native_input_and_notifications();
+        dpi_change_scales_controls_and_preserves_input();
         check(GetForegroundWindow() == foreground, "slider tests never activate a window");
         std::cout << "Native slider painting and input tests passed\n";
         return 0;
