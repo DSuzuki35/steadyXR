@@ -377,6 +377,25 @@ int main(int argc, char **argv) {
     std::wstring error;
     auto info = valid_info();
     check(validate_clip_metadata(info, error), "valid two-view metadata");
+    auto sixty = info;
+    sixty.options.duration_seconds = 60;
+    check(validate_clip_metadata(sixty, error), "60-second workshop option supported");
+    sixty.options.duration_seconds = 61;
+    check(!validate_clip_metadata(sixty, error), "61-second duration rejected");
+    sixty = info;
+    sixty.options.duration_seconds = 60;
+    sixty.options.fps = 60;
+    sixty.frames.resize(3600, info.frames.front());
+    for (std::size_t i = 0; i < sixty.frames.size(); ++i) {
+        auto &sample = sixty.frames[i];
+        sample.frame.sequence = i + 1;
+        sample.frame.display_time = info.frames.front().frame.display_time + std::int64_t(i) * 16666667;
+        sample.media_time = (sample.frame.display_time - info.frames.front().frame.display_time) / 100;
+    }
+    check(validate_clip_metadata(sixty, error), "60 seconds at 60 FPS fits bounded metadata");
+    auto oversized = sixty;
+    oversized.frames.push_back(sixty.frames.back());
+    check(!validate_clip_metadata(oversized, error), "3601 frames rejected");
     auto header = sps(20, 15);
     check(clip_detail::bounded_h264_sps(header.data(), header.size(), 320, 240),
           "valid bounded H.264 sequence header");
@@ -432,6 +451,9 @@ int main(int argc, char **argv) {
     check(read_clip_metadata(path, loaded, error), "metadata read");
     check(loaded.frames.size() == 3 && loaded.frames.back().frame.sequence == 3,
           "metadata exact association");
+    check(write_clip_metadata(path, sixty, error) && read_clip_metadata(path, loaded, error) &&
+              loaded.frames.size() == 3600,
+          "maximum 60-second clip metadata roundtrip stays within file allocation limit");
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         out << "not a clip";

@@ -108,7 +108,7 @@ bool bounded_h264_sps(const unsigned char *data, std::size_t size, unsigned widt
 }
 } // namespace clip_detail
 namespace {
-constexpr unsigned max_frames = 1800, max_edge = 2048, queue_slots = 4;
+constexpr unsigned max_frames = 3600, max_edge = 2048, queue_slots = 4;
 constexpr std::uint64_t max_video_bytes = 512ull * 1024 * 1024;
 constexpr std::uint64_t max_metadata_bytes = 2ull * 1024 * 1024;
 bool fail(std::wstring &error, const wchar_t *text) {
@@ -121,7 +121,7 @@ std::wstring hr_text(const wchar_t *text, HRESULT hr) {
     return s.str();
 }
 bool valid_options(const CaptureOptions &o) {
-    return o.duration_seconds >= 1 && o.duration_seconds <= 30 && (o.fps == 30 || o.fps == 60) &&
+    return o.duration_seconds >= 1 && o.duration_seconds <= 60 && (o.fps == 30 || o.fps == 60) &&
            o.longest_edge >= 64 && o.longest_edge <= max_edge;
 }
 bool sdr(std::uint32_t f) {
@@ -1101,7 +1101,7 @@ bool ClipRecorder::start(ID3D11Device *device, const std::filesystem::path &path
     std::wstring error;
     if (!device || path.empty() || !valid_options(options))
         return r.preparation_failed(
-            L"Recording needs a source device and a 1-30 second, 30/60 FPS SDR proxy up to 2048 pixels.");
+            L"Recording needs a source device and a 1-60 second, 30/60 FPS SDR proxy up to 2048 pixels.");
     if (!source_valid(source, error, false))
         return r.preparation_failed(error);
     r.device = device;
