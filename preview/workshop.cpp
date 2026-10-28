@@ -84,7 +84,7 @@ struct Workshop::Impl {
         if (status)
             SetWindowTextW(status, s.c_str());
     }
-    bool recording() const {
+    bool recording() {
         auto s = recorder.status().state;
         return s == CaptureState::preparing || s == CaptureState::recording || s == CaptureState::finishing;
     }
@@ -136,6 +136,8 @@ struct Workshop::Impl {
         InvalidateRect(overlay, nullptr, FALSE);
         SetWindowTextW(controls[source_id], source_view ? L"Show processed output" : L"Edit source framing");
         SetWindowTextW(controls[play_id], playing ? L"Pause" : L"Play");
+        SendMessageW(controls[compare_id], BM_SETCHECK, draft.compare_original ? BST_CHECKED : BST_UNCHECKED,
+                     0);
         for (int id : {play_id, source_id, compare_id, center_id, reset_id, apply_id, forward_id, timeline_id,
                        crop_id, smooth_id, pitch_id, roll_id, x_id, y_id})
             EnableWindow(controls[id], editing);
@@ -232,9 +234,12 @@ struct Workshop::Impl {
             text(error);
             return;
         }
-        draft = initial = cb.options();
+        draft = cb.options();
         draft.spectator.natural_enabled = false;
         draft.workshop_source = false;
+        draft.compare_original = draft.compare_effects = false;
+        draft.compare_mode = 0;
+        initial = draft;
         const auto &info = reader.info();
         const auto *last = reader.metadata(reader.count() - 1);
         double seconds = last ? last->media_time / 1e7 : 0;
@@ -307,6 +312,7 @@ struct Workshop::Impl {
             source_view = false;
             draft.compare_original = SendMessageW(controls[compare_id], BM_GETCHECK, 0, 0) == BST_CHECKED;
             draft.compare_effects = false;
+            draft.compare_mode = 0;
             changed();
         } else if (id == center_id) {
             draft.horizontal_offset = draft.vertical_offset = 0;
@@ -711,6 +717,18 @@ void Workshop::Impl::configure_input() {
         auto p = get(w, m, b);
         if (!p)
             return DefWindowProcW(w, m, a, b);
+        if (m == WM_PAINT) {
+            PAINTSTRUCT ps{};
+            auto dc = BeginPaint(w, &ps);
+            auto brush = CreateSolidBrush(RGB(15, 15, 18));
+            FillRect(dc, &ps.rcPaint, brush);
+            DeleteObject(brush);
+            EndPaint(w, &ps);
+            return 0;
+        }
+        if (m == WM_NCDESTROY) {
+            p->input_status = p->bindings = nullptr;
+        }
         LRESULT result{};
         if (p->theme->message(w, m, a, b, result))
             return result;
@@ -804,11 +822,13 @@ void Workshop::on_frame() {
     ID3D11Texture2D *images[2]{};
     if (p.live->source_snapshot(frame, images)) {
         double speed = -1;
-        if (p.cb.options().director.speed_fov_enabled) {
-            auto reading = p.telemetry.sample();
+        const auto options = p.cb.options();
+        if (options.director.speed_fov_enabled) {
+            auto reading = p.telemetry.sample(static_cast<SpeedGame>(options.director.telemetry_game));
             if (reading.valid)
                 speed = reading.speed_kph;
-        }
+        } else
+            p.telemetry.reset();
         p.recorder.submit(frame, images, speed);
         p.last_frame = GetTickCount64();
     }

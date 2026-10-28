@@ -1,5 +1,7 @@
 # SteadyXR 0.11.0 spectator features
 
+Standalone 0.15.0: open **Camera → Gaze & effects**. Natural Head Movement and its Motion page have been removed from the standalone app; normal Smoothing is used. The Motion descriptions below apply only to older OBS binaries. See [Capture Workshop](workshop.md) for the new recorder and optional pitch steadiness.
+
 Version 0.12.0 adds the optional **Director** page: lookahead, automatic crop and iRacing/LMU speed framing. See [Viewer camera controls](viewer-director.md) for setup, video delay, memory budget and two-PC limits.
 
 Every new feature is optional and off by default, including when loading old settings. Existing stabilization stays available. The master bypass disables the new camera and image processing without erasing tuning. DLSS 5 remains a research item in TODO.md.

@@ -48,13 +48,17 @@ The earlier 0.13.0 package preserved the signed 0.12.0 DLL. It remains untouched
 
 ## Find your controls
 
-- **Capture:** game window or OpenXR mode, eye/profile, frame rate, connection setup and layer tools.
-- **Camera:** smoothing, horizon lock, reset and the Stream Comfort starting point.
-- **Framing:** crop reserve, four trims, mirrored edges and **Render & edge settings…**.
-- **Output:** aspect ratio, resolution, monitor and fullscreen startup.
-- **Spectator & effects:** gaze/chat learning, natural motion, exposure, bloom, color and Director camera controls. This button stays visible on every main page.
+- **Preview:** game window or OpenXR mode, selected eye, frame rate and capture status.
+- **Camera:** normal smoothing, roll leveling, optional pitch steadiness, forward calibration and **Gaze & effects…**.
+- **Camera → Advanced framing:** crop reserve, X placement, four trims, mirrored edges and **Render & edge settings…**.
+- **Workshop:** record a drive, replay it and adjust the crop with the mouse before applying the draft.
+- **Settings:** output aspect/resolution/monitor, fullscreen startup, connection setup, layer order and overlay selection.
 
-Open preview and pause stay at the top; comparison, presets and hotkeys stay at the bottom. Tab/Shift+Tab navigate native controls; Space activates the focused button or checkbox. Numeric effects settings apply when you leave the field. Switching pages preserves tuning and does not activate effects.
+Open preview and pause stay at the bottom. Tab/Shift+Tab navigate native controls; Space activates the focused button or checkbox. Numeric effects settings apply when you leave the field. Switching pages preserves tuning and does not activate effects.
+
+## Upgrade to 0.15.0
+
+Close the previous app and run **Gaming-PC/SteadyXR-0.15.0/SteadyXR.exe**. To retain your settings in a freshly extracted ZIP, copy your previous **SteadyXR.ini** into the new app folder before starting. Named presets use the **Presets** folder beside the version folders (for example, **Gaming-PC/Presets**); keep that folder when moving the app to a different location. This package reuses the exact signed 0.14.0 capture DLL; there is no new capture binary to sign. If the signed 0.14.0 connection is already installed, it can remain registered. The standalone ZIP contains no OBS plugin. Read **Workshop-Guide.md** for recording requirements and supported source formats.
 
 ## Upgrade to 0.14.0
 

@@ -26,6 +26,10 @@ Copy-Item -LiteralPath (Join-Path $root 'preview/layers') -Destination $target -
 foreach ($name in @('LICENSE','THIRD-PARTY-NOTICES.md')) { Copy-Item -LiteralPath (Join-Path $root $name) -Destination $target }
 Copy-Item -LiteralPath (Join-Path $root 'preview/README.md') -Destination $target
 Copy-Item -LiteralPath (Join-Path $root 'docs/workshop.md') -Destination (Join-Path $target 'Workshop-Guide.md')
+Copy-Item -LiteralPath (Join-Path $root 'docs/spectator-features.md') -Destination (Join-Path $target 'Spectator-Guide.md')
+Copy-Item -LiteralPath (Join-Path $root 'docs/viewer-director.md') -Destination (Join-Path $target 'Director-Guide.md')
+Copy-Item -LiteralPath (Join-Path $root 'docs/release-0.15.0-validation.md') -Destination (Join-Path $target 'Validation.md')
+Copy-Item -LiteralPath (Join-Path $Build '015-final-tests.log') -Destination (Join-Path $target 'automated-tests.log')
 Copy-Item -LiteralPath (Join-Path $root 'licenses') -Destination $target -Recurse
 @{ app_version='0.15.0'; capture_version='0.14.0'; capture_sha256=$expected; capture_signature='Valid'; capture_preserved=$true } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $target 'Components.json') -Encoding UTF8
 'App source: SteadyXR-0.15.0-Source.zip. The byte-identical signed capture component uses the original SteadyXR-0.14.0-Source.zip included there under prebuilt-capture.' | Set-Content -LiteralPath (Join-Path $target 'SOURCE.txt') -Encoding UTF8

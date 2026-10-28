@@ -3,6 +3,7 @@
 #include "advanced.hpp"
 #include "build_expiry.hpp"
 #include "connection.hpp"
+#include "crop_geometry.hpp"
 #include "director_settings_io.hpp"
 #include "overlays.hpp"
 #include "presets.hpp"
@@ -540,9 +541,9 @@ struct App {
             return std::clamp(int(GetPrivateProfileIntW(L"Preview", key, initial, ini.c_str())), lo, hi);
         };
         options.smoothing = value(L"Smoothing", 40, 0, 100);
-        options.crop = value(L"Crop", 10, 0, 35);
+        options.crop = value(L"Crop", 10, 0, 40);
         options.smoothing = value(L"SmoothingTenths", int(options.smoothing * 10), 0, 1000) / 10.;
-        options.crop = value(L"CropTenths", int(options.crop * 10), 0, 350) / 10.;
+        options.crop = value(L"CropTenths", int(options.crop * 10), 0, 400) / 10.;
         options.crop_left = value(L"CropLeftTenths", 0, 0, 450) / 10.;
         options.crop_right = value(L"CropRightTenths", 0, 0, 450) / 10.;
         options.crop_top = value(L"CropTopTenths", 0, 0, 450) / 10.;
@@ -809,6 +810,21 @@ struct App {
         SendMessageW(adaptive_horizon, BM_SETCHECK, options.adaptive_horizon ? BST_CHECKED : BST_UNCHECKED,
                      0);
         SendMessageW(bypass, BM_SETCHECK, options.stabilize ? BST_UNCHECKED : BST_CHECKED, 0);
+    }
+    void apply_workshop(const Options &draft) {
+        options.vertical_offset = draft.vertical_offset;
+        options.crop_left = draft.crop_left;
+        options.crop_right = draft.crop_right;
+        options.crop_top = draft.crop_top;
+        options.crop_bottom = draft.crop_bottom;
+        for (unsigned i = 0; i < 2; ++i)
+            options.edge_reserve[i] = draft.edge_reserve[i];
+        set_tuning(draft);
+        const double values[]{options.crop_left, options.crop_right, options.crop_top, options.crop_bottom};
+        for (unsigned i = 0; i < 4; ++i)
+            SendMessageW(trims[i], TBM_SETPOS, TRUE, LPARAM(std::lround(values[i] * 10)));
+        labels();
+        dirty = true;
     }
     std::string snapshot() {
         // Include valid output edits and the unsaved render draft visible in Advanced.
@@ -1657,7 +1673,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     add(1, L"BUTTON", L"Undo tuning", BS_PUSHBUTTON, 440, 520, 154, 36, undo_comfort_id);
     add(1, L"BUTTON", L"Gaze & effects…", BS_PUSHBUTTON, 610, 520, 190, 36, spectator_id);
     add(1, L"BUTTON", L"Advanced framing  ›", BS_PUSHBUTTON, 816, 520, 256, 36, camera_advanced_id);
-    state.crop = slider(4, crop_id, 240, 180, 392, state.options.crop, 350, state.crop_label);
+    state.crop = slider(4, crop_id, 240, 180, 392, state.options.crop, 400, state.crop_label);
     state.horizontal = slider(4, horizontal_id, 680, 180, 392, state.options.horizontal_offset, 1000,
                               state.horizontal_label);
     SendMessageW(state.horizontal, TBM_SETRANGEMIN, TRUE, -1000);
@@ -2754,6 +2770,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.theme.scale_window(state.controls);
         state.show_page(0);
         okay = save_controls(state.controls, state.directory + L"\\preview-controls-test.bmp") && okay;
+        // Applying a dragged crop must preserve the exact draft rectangle,
+        // including normalization of old trims and per-eye edge reserves.
+        state.options.aspect = 16. / 9.;
+        state.options.crop_left = 7;
+        state.options.crop_top = 12;
+        state.options.vertical_offset = -31;
+        state.options.edge_reserve[1] = {true, 3, 8, 4, 11};
+        auto workshop_draft = state.options;
+        crop_to_options({.2, .8, .2, .65}, 4. / 3., workshop_draft, 1);
+        const auto expected_crop = crop_from_options(4. / 3., workshop_draft, 1);
+        state.apply_workshop(workshop_draft);
+        const auto applied_crop = crop_from_options(4. / 3., state.options, 1);
+        bool workshop_apply_ok = std::abs(expected_crop.left - applied_crop.left) < 1e-9 &&
+                                 std::abs(expected_crop.right - applied_crop.right) < 1e-9 &&
+                                 std::abs(expected_crop.top - applied_crop.top) < 1e-9 &&
+                                 std::abs(expected_crop.bottom - applied_crop.bottom) < 1e-9 &&
+                                 SendMessageW(state.trims[0], TBM_GETPOS, 0, 0) == 0 &&
+                                 SendMessageW(state.trims[2], TBM_GETPOS, 0, 0) == 0 &&
+                                 SendMessageW(state.crop, TBM_GETPOS, 0, 0) == 400;
+        state.save();
+        App workshop_reloaded;
+        workshop_reloaded.ini = state.ini;
+        workshop_reloaded.render_ini = state.ini;
+        workshop_reloaded.read();
+        workshop_apply_ok =
+            workshop_apply_ok && workshop_reloaded.options.crop == 40 &&
+            std::abs(workshop_reloaded.options.vertical_offset - workshop_draft.vertical_offset) < .11;
+        trace << "workshop-apply-framing=" << workshop_apply_ok << '\n';
+        okay = workshop_apply_ok && okay;
         DestroyWindow(state.output);
         DestroyWindow(state.controls);
         DeleteFileW(state.ini.c_str());
@@ -2779,7 +2824,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                                    state.labels();
                                },
                                [&](const Options &draft) {
-                                   state.set_tuning(draft);
+                                   state.apply_workshop(draft);
                                    state.save();
                                },
                                [&] { return state.options; }});
