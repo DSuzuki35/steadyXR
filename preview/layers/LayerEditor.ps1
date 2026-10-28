@@ -1,4 +1,4 @@
-param([switch]$SelfTest, [switch]$Report, [string]$TestOutput)
+param([switch]$SelfTest, [switch]$Report, [string]$TestOutput, [string]$OriginUserSid)
 $ErrorActionPreference = 'Stop'
 trap {
     if (-not $SelfTest -and -not $Report) {
@@ -8,6 +8,14 @@ trap {
     throw $_
 }
 Add-Type -Path (Join-Path $PSScriptRoot 'RegistryStore.cs') -ReferencedAssemblies System.Runtime.Serialization,System.Xml
+
+function Resolve-OriginUserSid([string]$value) {
+    if ([string]::IsNullOrEmpty($value)) { return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+    $parsed = New-Object Security.Principal.SecurityIdentifier($value)
+    if ($parsed.Value -cne $value) { throw 'OriginUserSid must be a canonical Windows SID.' }
+    return $parsed.Value
+}
+$script:originUserSid = Resolve-OriginUserSid $OriginUserSid
 
 function Get-LayerDetails($value, $group) {
     $displayName = $value.Name
@@ -239,6 +247,11 @@ function Update-Actions {
     $valid = $null -ne $selection
     $editable = $valid -and ($selection.Group.Hive -eq 'CurrentUser' -or $script:isAdmin)
     $script:toggle.Enabled = $editable -and $selection.Details.IsDword
+    if (-not $SelfTest -and $valid -and $selection.Group.Hive -eq 'CurrentUser' -and
+        -not $selection.Details.Enabled -and
+        $selection.Details.Manifest -match '(?i)[\\/]XR_APILAYER_(STEADYXR|HORIZONLOCK)_preview\.json$') {
+        $script:toggle.Enabled = $false
+    }
     $script:remove.Enabled = $editable
     $script:up.Enabled = $editable -and $selection.Implicit -and $selection.ValueIndex -gt 0
     $script:down.Enabled = $editable -and $selection.Implicit -and ($selection.ValueIndex + 1) -lt $selection.Group.Values.Count
@@ -266,6 +279,12 @@ function Update-Actions {
         }
     } }
     $script:register.Enabled = $script:is64Bit -and -not $ownExists -and (Test-Path -LiteralPath $script:ownManifest -PathType Leaf)
+    if (-not $SelfTest) {
+        $script:register.Text = 'Install / repair SteadyXR'
+        $script:register.Enabled = $script:is64Bit -and -not $script:pending -and
+            (Test-Path -LiteralPath (Join-Path $versionDirectory 'SteadyXR.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath $script:ownManifest -PathType Leaf)
+    }
 }
 function Render-Layers([int]$selectedRow = 0) {
     $script:renderingGrid = $true
@@ -337,6 +356,15 @@ function Move-Layer([int]$delta) {
 }
 function Register-OwnLayer {
     if (-not $script:register.Enabled) { return }
+    if (-not $SelfTest) {
+        try {
+            $process = Start-Process -FilePath (Join-Path $versionDirectory 'SteadyXR.exe') -WindowStyle Hidden -PassThru -Wait -ArgumentList @('--install-connection', $script:originUserSid)
+            if ($process.ExitCode -ne 0) { throw ('Windows error ' + $process.ExitCode + '. No per-user registration was installed.') }
+            Read-Layers
+            Set-Status 'SteadyXR installed system-wide. Restart the OpenXR game to use this build.'
+        } catch { Set-Status ('System-wide installation failed: ' + $_.Exception.Message) }
+        return
+    }
     $group = @($script:draft | Where-Object { $_.Hive -eq 'CurrentUser' -and $_.SubKey.EndsWith('\Implicit') })[0]
     $value = New-Object SteadyXR.LayerValue
     $value.Name = $script:ownManifest; $value.Kind = 4; $value.Data = [BitConverter]::GetBytes([uint32]0)
@@ -392,7 +420,7 @@ function Open-AdminEditor {
     try {
         $powershell = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
         Start-Process -FilePath $powershell -Verb RunAs -WindowStyle Hidden -ArgumentList (
-            '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"') | Out-Null
+            '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -OriginUserSid ' + $script:originUserSid) | Out-Null
         $script:form.Close()
     } catch { Set-Status ('Administrator editor was not opened: ' + $_.Exception.Message) }
 }
@@ -409,6 +437,49 @@ Read-Layers
 if ($SelfTest) {
     $testPassed = $false
     try {
+        $identitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        if ((Resolve-OriginUserSid '') -ne $identitySid) { throw 'Default origin did not use the initiating identity.' }
+        if ((Resolve-OriginUserSid 'S-1-5-21-101-202-303-1001') -ne 'S-1-5-21-101-202-303-1001') {
+            throw 'Explicit origin changed to the active administrator identity.'
+        }
+        foreach ($invalidSid in @('not-a-sid', 'S-1-5-21-101-202-303-1001 -Report', 'BA')) {
+            $rejected = $false
+            try { $null = Resolve-OriginUserSid $invalidSid } catch { $rejected = $true }
+            if (-not $rejected) { throw 'Invalid origin SID was accepted.' }
+        }
+        # Exercise both real launch boundaries without starting a process or requesting UAC.
+        $originalForm = $script:form
+        $savedOrigin = $script:originUserSid
+        $script:originUserSid = 'S-1-5-21-101-202-303-1001'
+        $expectedOrigin = $script:originUserSid
+        $fakeForm = New-Object PSObject
+        $fakeForm | Add-Member ScriptMethod Close { }
+        function Start-Process {
+            param([string]$FilePath, [string]$Verb, [string]$WindowStyle, $ArgumentList, [switch]$PassThru, [switch]$Wait)
+            $script:testLaunchArguments = @($ArgumentList)
+            return [pscustomobject]@{ ExitCode = 0 }
+        }
+        try {
+            $script:form = $fakeForm
+            Open-AdminEditor
+            if (($script:testLaunchArguments -join ' ') -notmatch ('-OriginUserSid ' + [regex]::Escape($expectedOrigin))) {
+                throw 'Administrator editor launch did not preserve the initiating user SID.'
+            }
+            $script:form = $originalForm
+            $SelfTest = $false
+            $script:register.Enabled = $true
+            Register-OwnLayer
+            if ($script:testLaunchArguments.Count -ne 2 -or $script:testLaunchArguments[0] -ne '--install-connection' -or
+                $script:testLaunchArguments[1] -ne $expectedOrigin) {
+                throw 'Registration helper targeted the administrator account instead of the initiating user.'
+            }
+        } finally {
+            $SelfTest = $true
+            $script:form = $originalForm
+            $script:originUserSid = $savedOrigin
+            Remove-Item Function:Start-Process
+            Read-Layers
+        }
         if ($script:grid.Rows.Count -ne 3) { throw 'Fixture rows were not displayed.' }
         $original = $script:store.Clone($script:before)
         Move-Layer 1
@@ -460,7 +531,7 @@ if ($SelfTest) {
         try { $script:form.DrawToBitmap($image, (New-Object Drawing.Rectangle(0, 0, $image.Width, $image.Height))); $image.Save((Join-Path $TestOutput 'steadyxr-layer-editor.png')) }
         finally { $image.Dispose() }
         $testPassed = $true
-        'PASS: editor staging, ordering, apply, undo, toggle, discard, removal, own registration, backup restore and architecture/type boundaries.'
+        'PASS: editor staging, ordering, apply, undo, toggle, discard, removal, own registration, backup restore, architecture/type boundaries and original-user SID handoff.'
     } finally {
         $script:form.Dispose()
         if ($script:fixturePath.StartsWith('SOFTWARE\SteadyXR\Tests\Editor-')) { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($script:fixturePath, $false) }

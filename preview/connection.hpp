@@ -16,7 +16,7 @@ struct LayerRegistryRoots {
 bool layer_installed(const std::wstring &directory, bool any_version = false,
                      const wchar_t *registry = layer_registry_key);
 bool layer_installed(const std::wstring &directory, bool any_version, const LayerRegistryRoots &roots);
-// Enabled machine registrations require the editor even when their files are missing.
+// Includes enabled machine registrations whose files are missing (upgrade/repair still needed).
 bool machine_layer_installed(const std::wstring &directory, bool any_version = false);
 bool machine_layer_installed(const std::wstring &directory, bool any_version,
                              const LayerRegistryRoots &roots);
@@ -24,13 +24,16 @@ std::optional<std::wstring> compatible_layer_directory(const std::wstring &direc
                                                        const wchar_t *registry = layer_registry_key);
 std::optional<std::wstring> compatible_layer_directory(const std::wstring &directory,
                                                        const LayerRegistryRoots &roots);
-// Return settings only if the first enabled usable DLL is compatible: current builds use SteadyXR.ini,
-// while the exact trusted legacy capture build still reads its adjacent preview.ini.
+// Return settings only when the first enabled usable DLL matches the bundled capture DLL.
 std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &directory,
                                                           const wchar_t *registry = layer_registry_key);
 std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &directory,
                                                           const LayerRegistryRoots &roots);
+// Used only to retain the previous release's render settings during an explicit upgrade.
+std::optional<std::wstring> installed_layer_settings_path(const LayerRegistryRoots &roots = {});
 LONG set_layer_connection(const std::wstring &directory, bool enable,
                           const wchar_t *registry = layer_registry_key);
+// Installation always enables this bundle in the machine scope and disables every older
+// SteadyXR/Horizon Lock registration in both scopes. Failure rolls back owned changes.
 LONG set_layer_connection(const std::wstring &directory, bool enable, const LayerRegistryRoots &roots);
 } // namespace vrst::preview

@@ -1,8 +1,8 @@
 #include "build_expiry.hpp"
 #include <cstdio>
 #include <cstdlib>
-#include <ctime>
 #include <cwchar>
+#include <limits>
 
 #define CHECK(x)                                                                                             \
     do {                                                                                                     \
@@ -14,23 +14,23 @@
 
 int main() {
     using namespace vrst::preview;
-    // A deadline rounded to a calendar day or checked with > would violate these boundaries.
-    CHECK(!build_expired_at(build_unix_seconds));
-    CHECK(!build_expired_at(build_unix_seconds + 2591999));
-    CHECK(build_expired_at(build_unix_seconds + 2592000));
-    CHECK(build_expired_at(build_unix_seconds + 2592001));
-    CHECK(expires_unix_seconds - build_unix_seconds == 2592000);
-    CHECK(std::wcslen(build_expiry_text()) == 23);
-    CHECK(std::wcscmp(build_expiry_text() + 19, L" UTC") == 0);
-    const auto deadline = static_cast<std::time_t>(expires_unix_seconds);
-    const auto *utc = std::gmtime(&deadline);
-    CHECK(utc);
-    wchar_t expected[32]{};
-    CHECK(std::wcsftime(expected, 32, L"%Y-%m-%d %H:%M:%S UTC", utc));
-    CHECK(std::wcscmp(build_expiry_text(), expected) == 0);
-    test_clock::unix_seconds = expires_unix_seconds - 1;
-    CHECK(!build_expired());
-    test_clock::unix_seconds = expires_unix_seconds;
-    CHECK(build_expired());
-    std::puts("PASS: exact 30-day UTC boundary and current-clock expiry");
+    // Neither the former 30-day deadline nor any later clock value may disable a build.
+    const std::uint64_t timestamps[] = {
+        0,
+        build_unix_seconds,
+        build_unix_seconds + 2591999,
+        build_unix_seconds + 2592000,
+        build_unix_seconds + 2592001,
+        build_unix_seconds + 31536000,
+        build_unix_seconds + 3155760000,
+        std::numeric_limits<std::uint64_t>::max(),
+    };
+    for (const auto timestamp : timestamps) {
+        CHECK(!build_expired_at(timestamp));
+        test_clock::unix_seconds = timestamp;
+        CHECK(!build_expired());
+    }
+    CHECK(expires_unix_seconds == 0);
+    CHECK(std::wcscmp(build_expiry_text(), L"No expiry") == 0);
+    std::puts("PASS: no expiry at 30 days, one year, 100 years, or the maximum clock value");
 }

@@ -1,12 +1,14 @@
 // OpenXR implicit layer: optional render expansion and submitted projection capture.
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_D3D11
+#define XR_USE_GRAPHICS_API_D3D12
 #define XR_NO_PROTOTYPES
 #include "build_expiry.hpp"
 #include "render_settings.hpp"
 #include "settings_path.hpp"
 #include "transport.hpp"
 #include "gaze_capture.hpp"
+#include "d3d12_capture.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -111,6 +113,7 @@ struct Session {
     bool pending_reference{}, connected{};
     bool gaze_requested{}; // Refreshed by the existing capture eligibility check.
     std::uint32_t consumer{};
+    std::unique_ptr<D3D12Capture> d3d12;
     Com<ID3D11Device> device;
     Com<ID3D11DeviceContext> context;
     LUID adapter{};
@@ -137,14 +140,20 @@ struct Swapchain {
     Session *session{};
     XrSwapchainCreateInfo info{};
     std::vector<XrSwapchainImageD3D11KHR> images;
+    std::vector<XrSwapchainImageD3D12KHR> images12;
     std::deque<Acquisition> acquired;
     Com<ID3D11Texture2D> snapshot, scratch;
+    std::unique_ptr<D3D12Capture::Pool> capture_pool;
+    D3D12Capture::SnapshotPtr snapshot12, pending12;
     bool snapshot_valid{};
     bool overlay_seen{};
     bool released_once{};
     std::uint64_t identity{};
     std::uint64_t snapshot_revision{};
 };
+ID3D11Texture2D *snapshot_texture(const Swapchain &sc) {
+    return sc.session->d3d12 ? D3D12Capture::texture(sc.snapshot12) : sc.snapshot.p;
+}
 std::uint64_t monotonic_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
@@ -224,8 +233,12 @@ bool eligible(Session &s, Shared &shared, std::uint64_t now) {
         status(shared, s, 6, L"Preview build expired");
         return false;
     }
+    if (s.d3d12 && !s.d3d12->healthy()) {
+        status(shared, s, 2, s.d3d12->error());
+        return false;
+    }
     if (!s.device) {
-        status(shared, s, 2, L"Unsupported graphics backend: D3D11 required");
+        status(shared, s, 2, L"Unsupported graphics backend: D3D11 or D3D12 required");
         return false;
     }
     if (!owner) {
@@ -256,7 +269,8 @@ bool eligible(Session &s, Shared &shared, std::uint64_t now) {
         s.consumer = shared.consumer_pid;
         shared.ready = 0;
     }
-    status(shared, s, 0, L"Capturing submitted OpenXR views");
+    status(shared, s, 0, s.d3d12 ? L"Capturing submitted OpenXR views (D3D12)"
+                               : L"Capturing submitted OpenXR views (D3D11)");
     if (shared.ready) {
         ++shared.dropped_frames;
         return false;
@@ -309,6 +323,22 @@ bool snapshot_before_release(Swapchain &sc) {
     if (build_expired() || !capture)
         return false;
     const auto index = sc.acquired.front().index;
+    if (s.d3d12) {
+        if (index >= sc.images12.size() || !sc.images12[index].texture || sc.info.faceCount != 1)
+            return false;
+        const auto desc = sc.images12[index].texture->GetDesc();
+        if (desc.Width != sc.info.width || desc.Height != sc.info.height ||
+            desc.DepthOrArraySize != sc.info.arraySize)
+            return false;
+        if (!sc.capture_pool)
+            sc.capture_pool = std::make_unique<D3D12Capture::Pool>();
+        sc.pending12 = s.d3d12->capture(*sc.capture_pool, sc.images12[index].texture,
+                                      static_cast<DXGI_FORMAT>(sc.info.format));
+        if (sc.pending12)
+            for (UINT slice = 0; slice < desc.DepthOrArraySize; ++slice)
+                record_copy_queued();
+        return bool(sc.pending12);
+    }
     if (index >= sc.images.size() || !sc.images[index].texture)
         return false;
     auto *source = sc.images[index].texture;
@@ -429,7 +459,7 @@ bool subimage_view(Session &s, const XrSwapchainSubImage &sub, View &view, Swapc
     auto &sc = *found->second;
     if (sc.session == &s)
         sc.overlay_seen = true;
-    if (sc.session != &s || !sc.snapshot_valid || !sc.snapshot || sc.info.faceCount != 1 ||
+    if (sc.session != &s || !sc.snapshot_valid || !snapshot_texture(sc) || sc.info.faceCount != 1 ||
         sub.imageArrayIndex >= sc.info.arraySize ||
         (sc.info.createFlags & XR_SWAPCHAIN_CREATE_PROTECTED_CONTENT_BIT))
         return false;
@@ -668,7 +698,7 @@ void publish(Session &s, const XrFrameEndInfo &end) {
         if (found == swapchains.end())
             return;
         auto &sc = *found->second;
-        if (sc.session != &s || !sc.snapshot_valid || !sc.snapshot ||
+        if (sc.session != &s || !sc.snapshot_valid || !snapshot_texture(sc) ||
             xr.subImage.imageArrayIndex >= sc.info.arraySize)
             return;
         sources[i] = &sc;
@@ -702,7 +732,7 @@ void publish(Session &s, const XrFrameEndInfo &end) {
         status(shared, s, 0, L"Capturing OpenXR views; overlay limit (16 slots / 8 images)");
     for (unsigned i = 0; i < total; ++i) {
         D3D11_TEXTURE2D_DESC desc{};
-        sources[i]->snapshot->GetDesc(&desc);
+        snapshot_texture(*sources[i])->GetDesc(&desc);
         if (!prepare_output(s, *outputs[i], desc, i < count)) {
             status(shared, s, 5, L"Unable to create shared preview textures");
             return;
@@ -730,24 +760,59 @@ void publish(Session &s, const XrFrameEndInfo &end) {
         ++shared.dropped_frames;
         return;
     }
+    // Keep output ownership and queued interop reads balanced on every exit,
+    // including allocation failure in a backend operation.
+    struct OutputBatch {
+        Session &session;
+        Output **outputs;
+        unsigned count;
+        bool finished{};
+        bool release(std::uint64_t key) {
+            finished = true;
+            bool okay = true;
+            if (session.d3d12)
+                okay = session.d3d12->finish_reads();
+            else
+                session.context->Flush();
+            for (unsigned i = 0; i < count; ++i)
+                if (FAILED(outputs[i]->key->ReleaseSync(key)))
+                    okay = false;
+            return okay;
+        }
+        ~OutputBatch() { if (!finished) release(0); }
+    } batch{s, outputs, total};
+    bool copied[2 + max_overlay_images]{};
+    bool read_ready = true;
+    for (unsigned i = 0; i < total; ++i) {
+        const auto &o = *outputs[i];
+        const auto &source = *sources[i];
+        copied[i] = i < count || o.copied_swapchain != source.identity ||
+                    o.copied_revision != source.snapshot_revision || o.copied_slice != slices[i];
+        if (copied[i] && s.d3d12 && !s.d3d12->before_read(source.snapshot12)) {
+            read_ready = false;
+            break;
+        }
+    }
+    if (!read_ready) {
+        batch.release(0);
+        invalidate(s);
+        status(shared, s, 5, s.d3d12->error());
+        return;
+    }
     for (unsigned i = 0; i < total; ++i) {
         auto &o = *outputs[i];
         const auto &source = *sources[i];
         // The consumer reads shared images without modifying them. Reused overlay
         // snapshots only need ownership transfer; base-view copying is unchanged.
-        if (i < count || o.copied_swapchain != source.identity ||
-            o.copied_revision != source.snapshot_revision || o.copied_slice != slices[i]) {
+        if (copied[i]) {
             record_copy_queued();
-            s.context->CopySubresourceRegion(o.texture.p, 0, 0, 0, 0, source.snapshot.p, slices[i], nullptr);
+            s.context->CopySubresourceRegion(o.texture.p, 0, 0, 0, 0,
+                                             snapshot_texture(source), slices[i], nullptr);
         }
         auto &view = i < count ? frame.views[i] : frame.overlays[i - count].image;
         view.texture_handle = reinterpret_cast<std::uint64_t>(o.handle);
     }
-    s.context->Flush();
-    bool released = true;
-    for (unsigned i = 0; i < total; ++i)
-        if (FAILED(outputs[i]->key->ReleaseSync(1)))
-            released = false;
+    const bool released = batch.release(1);
     if (!released) {
         invalidate(s);
         return;
@@ -910,6 +975,17 @@ XrResult XRAPI_CALL layer_create_session(XrInstance handle, const XrSessionCreat
                             s->adapter = desc.AdapterLuid;
                     }
                     break;
+                } else if (next->type == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR) {
+                    const auto *binding = reinterpret_cast<const XrGraphicsBindingD3D12KHR *>(next);
+                    s->d3d12 = std::make_unique<D3D12Capture>();
+                    if (s->d3d12->initialize(binding->device, binding->queue)) {
+                        s->device.p = s->d3d12->device();
+                        s->device->AddRef();
+                        s->context.p = s->d3d12->context();
+                        s->context->AddRef();
+                        s->adapter = binding->device->GetAdapterLuid();
+                    }
+                    break;
                 }
             auto *ptr = s.get();
             sessions[*out] = std::move(s);
@@ -959,17 +1035,31 @@ XrResult XRAPI_CALL layer_create_swapchain(XrSession handle, const XrSwapchainCr
                 uint32_t n{};
                 if (XR_SUCCEEDED(s.instance->EnumerateSwapchainImages(*out, 0, &n, nullptr)) && n &&
                     n <= 256) {
-                    sc->images.resize(n);
-                    for (auto &image : sc->images)
-                        image.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR;
-                    uint32_t actual{};
-                    if (XR_FAILED(s.instance->EnumerateSwapchainImages(
-                            *out, n, &actual,
-                            reinterpret_cast<XrSwapchainImageBaseHeader *>(sc->images.data()))) ||
-                        actual > n)
-                        sc->images.clear();
-                    else
-                        sc->images.resize(actual);
+                    if (s.d3d12) {
+                        sc->images12.resize(n);
+                        for (auto &image : sc->images12)
+                            image.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR;
+                        uint32_t actual{};
+                        if (XR_FAILED(s.instance->EnumerateSwapchainImages(
+                                *out, n, &actual,
+                                reinterpret_cast<XrSwapchainImageBaseHeader *>(sc->images12.data()))) ||
+                            actual > n)
+                            sc->images12.clear();
+                        else
+                            sc->images12.resize(actual);
+                    } else {
+                        sc->images.resize(n);
+                        for (auto &image : sc->images)
+                            image.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR;
+                        uint32_t actual{};
+                        if (XR_FAILED(s.instance->EnumerateSwapchainImages(
+                                *out, n, &actual,
+                                reinterpret_cast<XrSwapchainImageBaseHeader *>(sc->images.data()))) ||
+                            actual > n)
+                            sc->images.clear();
+                        else
+                            sc->images.resize(actual);
+                    }
                 }
             }
             swapchains[*out] = std::move(sc);
@@ -1033,6 +1123,10 @@ XrResult XRAPI_CALL layer_release(XrSwapchain handle, const XrSwapchainImageRele
     if (it == swapchains.end())
         return XR_ERROR_HANDLE_INVALID;
     auto &sc = *it->second;
+    // The next legal release supersedes the previous snapshot. Dropping its token
+    // allows fence-complete slots to be reused; the backend retains pending GPU work.
+    sc.snapshot12.reset();
+    sc.pending12.reset();
     bool captured = false;
     try {
         captured = snapshot_before_release(sc);
@@ -1045,11 +1139,15 @@ XrResult XRAPI_CALL layer_release(XrSwapchain handle, const XrSwapchainImageRele
             sc.acquired.pop_front();
         sc.snapshot_valid = captured;
         if (captured) {
-            std::swap(sc.snapshot, sc.scratch);
+            if (sc.session->d3d12)
+                sc.snapshot12 = std::move(sc.pending12);
+            else
+                std::swap(sc.snapshot, sc.scratch);
             ++sc.snapshot_revision;
         }
     } else
         sc.snapshot_valid = false;
+    sc.pending12.reset();
     return result;
 }
 XrResult XRAPI_CALL layer_wait_frame(XrSession handle, const XrFrameWaitInfo *info, XrFrameState *out) {
@@ -1074,6 +1172,8 @@ XrResult XRAPI_CALL layer_end_frame(XrSession handle, const XrFrameEndInfo *info
     auto &s = *it->second;
     // Runtime sees the identical pointer and contents. Images here are layer-owned snapshots only.
     auto result = s.instance->EndFrame(handle, info);
+    if (s.d3d12)
+        s.d3d12->collect();
     if (XR_SUCCEEDED(result) && info) {
         try {
             publish(s, *info);
@@ -1175,13 +1275,25 @@ XrResult XRAPI_CALL layer_create_instance(const XrInstanceCreateInfo *info, cons
     auto *next = layer->nextInfo;
     XrApiLayerCreateInfo forwarded = *layer;
     forwarded.nextInfo = next->next;
+    // VectorXR 0.19.3 forwards global GIPA queries through an unset function
+    // pointer until its instance has been created. Do not probe optional gaze
+    // through it before CreateApiLayerInstance, even behind another layer.
+    // Extensions explicitly enabled by the application still pass unchanged.
+    bool probe_optional_gaze = true;
+    for (auto *downstream = next->next; downstream; downstream = downstream->next) {
+        if (!std::strcmp(downstream->layerName, "XR_APILAYER_DIENERTECH_VECTORXR")) {
+            probe_optional_gaze = false;
+            break;
+        }
+    }
     bool gaze_enabled=false, added=false;
     XrInstanceCreateInfo requested=*info;
     std::vector<const char*> extensions;
     try {
         for (uint32_t i=0; info->enabledExtensionNames && i<info->enabledExtensionCount; ++i)
             if (!std::strcmp(info->enabledExtensionNames[i],XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME)) gaze_enabled=true;
-        if (!gaze_enabled && !build_expired() && gaze_extension_available(next->nextGetInstanceProcAddr)) {
+        if (!gaze_enabled && probe_optional_gaze && !build_expired() &&
+            gaze_extension_available(next->nextGetInstanceProcAddr)) {
             if (info->enabledExtensionCount && info->enabledExtensionNames)
                 extensions.assign(info->enabledExtensionNames,info->enabledExtensionNames+info->enabledExtensionCount);
             extensions.push_back(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);

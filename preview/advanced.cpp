@@ -63,7 +63,7 @@ bool write_edge_settings(const std::wstring &ini, const Options &options) {
 
 struct AdvancedSettings::Impl {
     HWND parent{}, window{}, profile{}, separate{}, edges[4]{}, labels[4]{}, vertical{}, vertical_label{},
-        render{}, expansions[2]{}, expansion_labels[2]{}, explanation{}, stretch{}, stretch_label{};
+        render{}, symmetric{}, expansions[2]{}, expansion_labels[2]{}, explanation{}, stretch{}, stretch_label{};
     Theme *theme{};
     Options *options{};
     std::wstring ini;
@@ -117,9 +117,14 @@ struct AdvancedSettings::Impl {
             SendMessageW(edges[i], TBM_SETPOS, TRUE, tenths(values[i], 0, 35));
         SendMessageW(vertical, TBM_SETPOS, TRUE, tenths(options->vertical_offset, -100, 100));
         SendMessageW(render, BM_SETCHECK, pending.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessageW(symmetric, BM_SETCHECK, pending.symmetric ? BST_CHECKED : BST_UNCHECKED, 0);
         SendMessageW(expansions[0], TBM_SETPOS, TRUE, tenths(pending.eyes[editing].left, 0, 30));
         SendMessageW(expansions[1], TBM_SETPOS, TRUE, tenths(pending.eyes[editing].right, 0, 30));
         refresh_labels();
+    }
+    void synchronize_render() {
+        if (pending.symmetric)
+            pending.eyes[1 - editing] = {pending.eyes[editing].right, pending.eyes[editing].left};
     }
     void scroll() {
         options->mirror_stretch = SendMessageW(stretch, TBM_GETPOS, 0, 0) / 10.;
@@ -130,6 +135,7 @@ struct AdvancedSettings::Impl {
         options->vertical_offset = SendMessageW(vertical, TBM_GETPOS, 0, 0) / 10.;
         pending.eyes[editing].left = SendMessageW(expansions[0], TBM_GETPOS, 0, 0) / 10.;
         pending.eyes[editing].right = SendMessageW(expansions[1], TBM_GETPOS, 0, 0) / 10.;
+        synchronize_render();
         refresh_labels();
         changed();
     }
@@ -179,7 +185,9 @@ struct AdvancedSettings::Impl {
               0, 24, 439, 690, 44);
         child(L"STATIC", L"OPENXR RENDER EXTENSION", 0, 24, 508, 690, 26, 0, true);
         render = child(L"BUTTON", L"Enable extra rendered area (next game launch)", BS_AUTOCHECKBOX, 24, 540,
-                       690, 28, render_id);
+                       440, 28, render_id);
+        symmetric = child(L"BUTTON", L"Symmetric (both eyes)", BS_AUTOCHECKBOX, 475, 540,
+                          239, 28, symmetric_id);
         for (unsigned i = 0; i < 2; ++i) {
             const int y = 581 + int(i) * 31;
             expansion_labels[i] = child(L"STATIC", L"", 0, 24, y, 205, 25);
@@ -188,8 +196,8 @@ struct AdvancedSettings::Impl {
         child(L"BUTTON", L"Both eyes inward: 10%", BS_PUSHBUTTON, 24, 653, 325, 36, inward_id);
         child(L"BUTTON", L"Save for next game launch", BS_PUSHBUTTON, 365, 653, 349, 36, save_render_id);
         explanation = child(L"STATIC",
-                            L"Extra render area increases GPU cost. Save, then restart your OpenXR game.\r\n"
-                            L"Render settings apply after Save; edge, stretch and Y controls are live.",
+                            L"Symmetric links inner/outer expansion between eyes; recommended for LMU.\r\n"
+                            L"Extra render area increases GPU cost. Save, then restart your OpenXR game.",
                             0, 24, 702, 690, 44);
     }
     static LRESULT CALLBACK proc(HWND h, UINT message, WPARAM w, LPARAM l) {
@@ -243,17 +251,23 @@ struct AdvancedSettings::Impl {
                 self->pending.enabled = SendMessageW(self->render, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 self->refresh_labels();
                 return 0;
+            case symmetric_id:
+                self->pending.symmetric = SendMessageW(self->symmetric, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                self->synchronize_render();
+                self->load_controls();
+                return 0;
             case inward_id:
                 self->pending = {};
                 self->pending.enabled = true;
+                self->pending.symmetric = true;
                 self->pending.eyes[0].right = self->pending.eyes[1].left = 10;
                 self->load_controls();
                 return 0;
             case save_render_id: {
                 const bool saved = write_render_settings(self->ini, self->pending);
                 const std::wstring text =
-                    saved ? L"Render settings saved. Restart iRacing to apply them.\r\nUse Upgrade "
-                            L"connection in the main window if an older layer is installed."
+                    saved ? L"Render settings saved. Restart your OpenXR game to apply them.\r\n"
+                            L"For LMU, keep Symmetric enabled so both eyes have matching render widths."
                           : L"Could not save render settings. Check access to the preview folder.";
                 SetWindowTextW(self->explanation, text.c_str());
                 self->notice(text);

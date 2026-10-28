@@ -1,6 +1,6 @@
-# SteadyXR Preview 0.12.0
+# SteadyXR Preview 0.14.0
 
-This 30-day test build is free. The control window shows its fixed UTC expiry and notes that future releases are planned to be paid, through channel subscriber/supporter access or a one-time license purchase. The notice is static UI text and does not appear in the clean captured output. The 30 days run from the build timestamp, not first launch.
+This community test build is free and has **no expiry**. Future paid releases are planned separately. The notice stays in the controls and never appears in the clean captured output.
 
 Open **Spectator & effects** for gaze framing, chat exclusion, natural head movement and local exposure/bloom/color. All new features start **off**. The master bypass preserves tuning. Gaze & chat, Motion, Exposure, Bloom, Color and Director each have their own page. Camera and visual bypass switches preserve tuning; presets are explicit opt-ins.
 
@@ -20,7 +20,27 @@ When no new frame arrives for two seconds, the output becomes a plain black scre
 
 Standalone gaming-PC preview with OpenXR pose stabilization or existing-window capture. Preview stabilization affects only the stream output. Optional render extension asks the game to render a wider eye projection; the runtime receives that actual projection for correct headset composition. No OBS or video encoder is required on the gaming PC.
 
-## New in 0.12.0
+## New in 0.14.0
+
+D3D12 OpenXR sessions are detected automatically alongside D3D11. The native GPU capture preserves the submitted image and pose and uses the same framing, stabilization, overlay and OBS output. No extra setting is needed. Capture skips a frame if its bounded buffers are still busy. The game queue does not wait for the preview viewer. See [validation and signing](../docs/release-0.14.0-validation.md).
+
+## From 0.13.1
+
+The app, OBS source and newly compiled capture DLL have no expiry. **Install/Upgrade connection** registers SteadyXR system-wide (HKLM), requests Windows administrator approval when needed, and disables old per-user SteadyXR entries. Other layer enable states are preserved. With VectorXR present, SteadyXR is placed before it to capture the game's D3D11 images before Frame Generation creates a D3D12 session.
+
+A startup fix skips automatic eye-gaze extension probing before VectorXR has initialized. Application-requested eye-gaze extensions remain unchanged. Without an application request, automatic gaze features may be unavailable in this combination; normal head-pose stabilization remains available. Preview captures real game frames, not VectorXR-generated intermediate frames.
+
+The new DLL needs a fresh signature before the LMU/EAC test. Signing and hardware validation remain pending; see [release validation](../docs/release-0.14.0-validation.md). The old signed DLL is never patched in place.
+
+## From 0.13.0
+
+**Symmetric (both eyes)** in **Framing → Render & edge settings** mirrors render expansion between eyes: left-eye extra right follows right-eye extra left, and the two outer edges follow each other. Enabling it copies the currently selected eye to the other eye. Both eyes remain editable. Turning it off keeps the current values and restores independent editing. **Both eyes inward: 10%** also enables the lock. Click **Save for next game launch**, then restart the game. The lock is stored in settings and complete presets; old settings retain their independent values until you enable it.
+
+**LMU requires equal recommended image dimensions for both eyes.** Keep Symmetric enabled when using extra render area in LMU. Cropping and stabilization reserves remain independent.
+
+The earlier 0.13.0 package preserved the signed 0.12.0 DLL. It remains untouched as a fallback; its old embedded expiry is unaffected by the new version.
+
+## From 0.12.0
 
 **Director** adds optional lookahead stabilization, automatic crop and speed framing for iRacing and Le Mans Ultimate. Lookahead retains at most four delayed frames within a 256 MiB texture budget and displays actual video delay for audio sync. Automatic crop and speed framing also work with existing-window capture. All three default off. See [Viewer camera controls](../docs/viewer-director.md) for costs, limits and two-PC setup. Live driving validation is still pending.
 
@@ -34,13 +54,13 @@ Standalone gaming-PC preview with OpenXR pose stabilization or existing-window c
 
 Open preview and pause stay at the top; comparison, presets and hotkeys stay at the bottom. Tab/Shift+Tab navigate native controls; Space activates the focused button or checkbox. Numeric effects settings apply when you leave the field. Switching pages preserves tuning and does not activate effects.
 
-## Upgrade to 0.12.0
+## Upgrade to 0.14.0
 
-Close the previous app and start **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in **Gaming-PC/SteadyXR-0.12.0** and inherits your previous SteadyXR.ini unchanged when its own INI is missing.
+Close the previous app and start **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in **Gaming-PC/SteadyXR-0.14.0** and inherits your previous SteadyXR.ini unchanged when its own INI is missing.
 
-**0.12.0 uses the same IPC 4 capture format as 0.10.0.** An unexpired 0.10.0 connection remains compatible. For a pre-0.10 connection, or to use the new capture build and its validity period, use **Capture → Upgrade connection** (or **Install connection**), then restart the OpenXR game. Delivery itself never changes registrations or restarts anything. Existing-window capture needs neither connection setup nor a game restart. Keep older directories until their layer is unregistered.
+**0.14.0 uses IPC 4 but requires the new capture DLL for D3D12 support.** After signing, click **Capture → Upgrade connection**, accept the Windows administrator prompt, and restart the OpenXR game. The preview itself runs without elevation. Existing-window capture needs no connection or game restart. Keep older directories until their layer is disabled or unregistered. Packaging never changes live registrations.
 
-For OBS, close OBS and copy **obs-plugins** and **data** from the separate **SteadyXR-0.12.0-OBS-Windows-x64.zip** (or Stream-PC) directly into **C:\Program Files\obs-studio**. The standalone community ZIP excludes OBS binaries. OBS uses the upgraded OpenXR layer without a running standalone app. Keep one active consumer: close/hide the standalone output while using OBS.
+For OBS, close OBS and copy **obs-plugins** and **data** from the separate **SteadyXR-0.14.0-OBS-Windows-x64.zip** (or Stream-PC) directly into **C:\Program Files\obs-studio**. The standalone community ZIP excludes OBS binaries. OBS uses the upgraded OpenXR layer without a running standalone app. Keep one active consumer: close/hide the standalone output while using OBS.
 
 ## Additional OpenXR overlays
 
@@ -50,11 +70,7 @@ Selected overlays use their own submitted geometry, positions and transparency a
 
 ## Build validity
 
-Each newly compiled SteadyXR build is valid for **30 days from its UTC build timestamp**. The app, bundled capture DLL and direct OBS source share the release's build timestamp and deadline, shown in the control-window title and included in SteadyXR-build.json for reference. Editing the INI or JSON, copying the files or restarting the app does not extend that deadline. This uses the PC's system UTC clock.
-
-After expiry, the clean preview shows a black **Build expired** screen and stops capturing, including when the app was already running. Install a newer build to resume; settings remain available. The layer editor remains accessible so registrations can still be managed.
-
-An expired capture DLL stops exporting frames and starts new OpenXR instances without extra render expansion. Existing game instances retain their configured projection until closed, so expiry cannot change the headset's field of view mid-session. The game is still forwarded to the runtime normally. A previously registered older DLL keeps its original behavior; the new preview enforces its own deadline regardless of the capture source. The separate legacy OBS filter and tracking sender are unchanged.
+The app, new capture DLL and direct OBS source have **no expiry**. `SteadyXR-build.json` records the build timestamp and explicitly marks expiration disabled. Old signed DLLs retain their embedded deadlines until replaced by the newly signed capture DLL. No clock changes or settings edits are needed.
 
 ## OpenXR layer editor
 
@@ -65,7 +81,7 @@ The default **64-bit (iRacing)** view shows system-wide and current-user implici
 - **Enable / Disable** changes the selected registration's flag.
 - **Remove registration** unregisters the selected entry; its files stay on disk.
 - **Move up / Move down** changes implicit discovery order within the same system/user group. System registrations precede user registrations and cannot be interleaved. Order can affect how layers interact, for example when one changes poses and another captures them. Explicit layers are requested and ordered by the game or `XR_ENABLE_API_LAYERS`, so their move buttons are disabled.
-- **Register SteadyXR** stages the bundled layer for the current user if no SteadyXR/Horizon Lock registration is listed. Existing disabled entries can be enabled instead. The files are now XR_APILAYER_STEADYXR_preview.json and SteadyXR-OpenXR.dll. The internal `XR_APILAYER_HORIZONLOCK_preview` identifier is retained so old and new registrations are recognized as the same layer. Both filename generations are recognized by the editor and connection controls.
+- **Register SteadyXR** uses the app's system-wide installer and requests Windows administrator approval when required. Legacy per-user SteadyXR registrations must be migrated through this installer rather than enabled again. The files are now XR_APILAYER_STEADYXR_preview.json and SteadyXR-OpenXR.dll. The internal `XR_APILAYER_HORIZONLOCK_preview` identifier is retained so old and new registrations are recognized as the same layer. Both filename generations are recognized by the editor and connection controls.
 - **Apply changes** checks for external registry changes and write access, saves a verified backup, writes the requested data/order, and reads it back. On a write failure it attempts restoration and reports whether that restoration was verified. **Discard changes** leaves the registry alone.
 - **Undo last apply** restores the previous configuration if it has not changed externally. **Restore backup…** stages a saved configuration for review and a new Apply. Select the backup's matching 32-bit/64-bit view first.
 - **Administrator editor…** opens only the editor with Windows' elevation prompt for system-wide edits. The preview does not need administrator privileges. Apply or discard any pending edits before switching.

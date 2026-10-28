@@ -199,6 +199,24 @@ namespace SteadyXR
             before=Clone(before); after=Clone(after);
             Validate(before); Validate(after);
             if (before[0].Is64Bit != after[0].Is64Bit) throw new ArgumentException("Snapshot architecture changed.");
+            // Legacy HKCU entries may be inspected, disabled or removed, but neither
+            // toggling nor restoring a backup may install/enable SteadyXR per-user.
+            for (int i=0; i<after.Count; ++i)
+            {
+                if (after[i].Hive != "CurrentUser") continue;
+                foreach (LayerValue value in after[i].Values)
+                {
+                    // Registry value names may contain characters forbidden in filesystem
+                    // paths. Inspect the basename lexically; keep unrelated raw names valid.
+                    string name=value.Name.Replace('/','\\');
+                    string filename=name.Substring(name.LastIndexOf('\\')+1);
+                    bool own=String.Equals(filename,"XR_APILAYER_STEADYXR_preview.json",StringComparison.OrdinalIgnoreCase) ||
+                             String.Equals(filename,"XR_APILAYER_HORIZONLOCK_preview.json",StringComparison.OrdinalIgnoreCase);
+                    if (own && value.Kind==4 && value.Data.Length==4 && BitConverter.ToUInt32(value.Data,0)==0 &&
+                        !SameValue(FindValue(before[i],value.Name),value))
+                        throw new InvalidOperationException("SteadyXR must be installed system-wide. Use Install / repair SteadyXR and approve the administrator prompt.");
+                }
+            }
             using (System.Threading.Mutex mutex=new System.Threading.Mutex(false,@"Local\SteadyXR-LayerRegistryWrites"))
             {
                 bool acquired=false;

@@ -1,5 +1,6 @@
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_D3D11
+#define XR_USE_GRAPHICS_API_D3D12
 #define XR_NO_PROTOTYPES
 #include "build_expiry_test_clock.hpp"
 #include "render_settings.hpp"
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <d3d11.h>
+#include <d3d12.h>
 #include <dxgi.h>
 #include <limits>
 #include <openxr/openxr.h>
@@ -37,6 +39,16 @@ namespace {
 ID3D11Device *device{};
 ID3D11DeviceContext *context{};
 ID3D11Texture2D *runtime_texture{};
+bool use_d3d12{};
+ID3D12Device *device12{};
+ID3D12CommandQueue *queue12{};
+ID3D12CommandAllocator *allocator12{};
+ID3D12GraphicsCommandList *commands12{};
+ID3D12Fence *fence12{};
+ID3D12Resource *runtime_texture12{};
+ID3D12DescriptorHeap *rtv_heap12{};
+HANDLE fence_event12{};
+UINT64 submitted12{};
 ID3D11Device *reader_device{};
 ID3D11DeviceContext *reader_context{};
 XrInstance instance = reinterpret_cast<XrInstance>(1);
@@ -159,7 +171,41 @@ XrResult XRAPI_CALL fake_mask(XrSession, XrViewConfigurationType type, uint32_t 
     }
     return XR_SUCCESS;
 }
+void wait_for_runtime_commands() {
+    if (fence12->GetCompletedValue() >= submitted12)
+        return;
+    CHECK(SUCCEEDED(fence12->SetEventOnCompletion(submitted12, fence_event12)));
+    CHECK(WaitForSingleObject(fence_event12, 5000) == WAIT_OBJECT_0);
+}
+void drain_runtime_queue() {
+    CHECK(SUCCEEDED(queue12->Signal(fence12, ++submitted12)));
+    wait_for_runtime_commands();
+}
 void paint(float r, float g, float b) {
+    if (use_d3d12) {
+        // Only this test's allocator is CPU-waited. The capture layer must queue its
+        // snapshot before fake_release submits the blue overwrite on this same queue.
+        wait_for_runtime_commands();
+        CHECK(SUCCEEDED(allocator12->Reset()));
+        CHECK(SUCCEEDED(commands12->Reset(allocator12, nullptr)));
+        auto handle = rtv_heap12->GetCPUDescriptorHandleForHeapStart();
+        const auto stride = device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        const auto d = runtime_texture12->GetDesc();
+        for (UINT slice = 0; slice < d.DepthOrArraySize; ++slice) {
+            float color[]{r, g, b, 1};
+            if (slice == 1) {
+                color[0] = g;
+                color[1] = r;
+            }
+            commands12->ClearRenderTargetView(handle, color, 0, nullptr);
+            handle.ptr += stride;
+        }
+        CHECK(SUCCEEDED(commands12->Close()));
+        ID3D12CommandList *lists[]{commands12};
+        queue12->ExecuteCommandLists(1, lists);
+        CHECK(SUCCEEDED(queue12->Signal(fence12, ++submitted12)));
+        return;
+    }
     D3D11_TEXTURE2D_DESC d{};
     runtime_texture->GetDesc(&d);
     for (UINT slice = 0; slice < d.ArraySize; ++slice) {
@@ -217,8 +263,13 @@ XrResult XRAPI_CALL fake_enumerate(XrSwapchain, uint32_t cap, uint32_t *count,
                                    XrSwapchainImageBaseHeader *images) {
     *count = 1;
     if (cap) {
-        CHECK(images->type == XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR);
-        reinterpret_cast<XrSwapchainImageD3D11KHR *>(images)->texture = runtime_texture;
+        if (use_d3d12) {
+            CHECK(images->type == XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR);
+            reinterpret_cast<XrSwapchainImageD3D12KHR *>(images)->texture = runtime_texture12;
+        } else {
+            CHECK(images->type == XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR);
+            reinterpret_cast<XrSwapchainImageD3D11KHR *>(images)->texture = runtime_texture;
+        }
     }
     return XR_SUCCESS;
 }
@@ -312,6 +363,57 @@ template <class T> T fn(PFN_xrGetInstanceProcAddr g, const char *name) {
     CHECK(f);
     return reinterpret_cast<T>(f);
 }
+bool vector_initialized{};
+const XrApiLayerNextInfo *expected_vector_chain{};
+XrResult XRAPI_CALL vector_gipa(XrInstance value, const char *name, PFN_xrVoidFunction *out) {
+    // VectorXR 0.19.3 calls an unset next GIPA before its CreateApiLayerInstance.
+    // Fail deterministically instead of reproducing its null-call process crash.
+    CHECK(vector_initialized);
+    return fake_gipa(value, name, out);
+}
+XrResult XRAPI_CALL vector_create(const XrInstanceCreateInfo *info, const XrApiLayerCreateInfo *chain,
+                                  XrInstance *out) {
+    CHECK(chain->nextInfo == expected_vector_chain);
+    vector_initialized = true;
+    auto terminal = *chain;
+    terminal.nextInfo = nullptr;
+    return fake_create(info, &terminal, out);
+}
+void check_vector_startup(const XrNegotiateApiLayerRequest &request, const XrInstanceCreateInfo &ci,
+                          const XrApiLayerCreateInfo &chain) {
+    for (bool intervening_layer : {false, true}) {
+        for (bool application_gaze : {false, true}) {
+            auto own = *chain.nextInfo;
+            XrApiLayerNextInfo vector{XR_LOADER_INTERFACE_STRUCT_API_LAYER_NEXT_INFO, 1, sizeof(vector)};
+            std::strcpy(vector.layerName, "XR_APILAYER_DIENERTECH_VECTORXR");
+            XrApiLayerNextInfo other{XR_LOADER_INTERFACE_STRUCT_API_LAYER_NEXT_INFO, 1, sizeof(other)};
+            std::strcpy(other.layerName, "XR_APILAYER_TEST_passthrough");
+            other.next = &vector;
+            own.next = intervening_layer ? &other : &vector;
+            own.nextGetInstanceProcAddr = vector_gipa;
+            own.nextCreateApiLayerInstance = vector_create;
+            auto forwarded = chain;
+            forwarded.nextInfo = &own;
+            const auto saved_own = own;
+            expected_vector_chain = own.next;
+            vector_initialized = false;
+            gaze_extension = true;
+            const char *gaze_name = XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME;
+            auto requested = ci;
+            if (application_gaze) {
+                requested.enabledExtensionNames = &gaze_name;
+                requested.enabledExtensionCount = 1;
+            }
+            XrInstance actual{};
+            CHECK(request.createApiLayerInstance(&requested, &forwarded, &actual) == XR_SUCCESS);
+            CHECK(actual == instance && vector_initialized);
+            CHECK(saw_gaze_extension == application_gaze);
+            CHECK(!std::memcmp(&own, &saved_own, sizeof(own)));
+            CHECK(fn<PFN_xrDestroyInstance>(request.getInstanceProcAddr, "xrDestroyInstance")(actual) == XR_SUCCESS);
+        }
+    }
+    gaze_extension = false;
+}
 void check_gaze_hooks(const XrNegotiateApiLayerRequest &request, const XrInstanceCreateInfo &ci,
                       const XrApiLayerCreateInfo &chain) {
     for(bool reject : {false,true}) {
@@ -377,8 +479,11 @@ void check_render_hooks(const XrNegotiateApiLayerRequest &request, const XrInsta
             CHECK(!std::memcmp(&views[i].pose, &original.pose, sizeof(original.pose)));
             CHECK(views[i].fov.angleUp == original.fov.angleUp);
             CHECK(views[i].fov.angleDown == original.fov.angleDown);
-            if (i >= 2)
-                CHECK(!std::memcmp(&views[i], &original, sizeof(original)));
+            if (i >= 2) {
+                CHECK(views[i].type == original.type && views[i].next == original.next);
+                CHECK(!std::memcmp(&views[i].pose, &original.pose, sizeof(original.pose)));
+                CHECK(!std::memcmp(&views[i].fov, &original.fov, sizeof(original.fov)));
+            }
         }
         CHECK(!std::memcmp(&views[4], &sentinel, sizeof(sentinel)));
         XrView saved[5];
@@ -494,7 +599,10 @@ void check_render_hooks(const XrNegotiateApiLayerRequest &request, const XrInsta
         CHECK(locate(session, &info, &state, 5, &count, views) == XR_SUCCESS);
         for (unsigned i = 0; i < count; ++i) {
             auto original = runtime_view(i);
-            CHECK(!std::memcmp(&views[i], &original, sizeof(original)));
+            // Independently constructed XrViews can have different ABI padding.
+            CHECK(views[i].type == original.type && views[i].next == original.next);
+            CHECK(!std::memcmp(&views[i].pose, &original.pose, sizeof(original.pose)));
+            CHECK(!std::memcmp(&views[i].fov, &original.fov, sizeof(original.fov)));
         }
         CHECK(sizes(instance, 77, info.viewConfigurationType, 5, &count, recommendations) == XR_SUCCESS);
         CHECK(recommendations[0].recommendedImageRectWidth == 2000);
@@ -524,7 +632,9 @@ void check_render_hooks(const XrNegotiateApiLayerRequest &request, const XrInsta
     uint32_t count{};
     CHECK(fn<PFN_xrLocateViews>(g, "xrLocateViews")(session, &info, &state, 4, &count, views) == XR_SUCCESS);
     const auto original = runtime_view(0);
-    CHECK(!std::memcmp(&original, &views[0], sizeof(original)));
+    CHECK(views[0].type == original.type && views[0].next == original.next);
+    CHECK(!std::memcmp(&views[0].pose, &original.pose, sizeof(original.pose)));
+    CHECK(!std::memcmp(&views[0].fov, &original.fov, sizeof(original.fov)));
     CHECK(std::abs(std::tan(views[1].fov.angleRight) - 2.0f) < 1e-6f);
     XrViewConfigurationView recommendations[4]{};
     CHECK(fn<PFN_xrEnumerateViewConfigurationViews>(g, "xrEnumerateViewConfigurationViews")(
@@ -581,7 +691,7 @@ void check_render_hooks(const XrNegotiateApiLayerRequest &request, const XrInsta
     mask_available = true;
     asymmetric_runtime = false;
 }
-void check_expired_render(const XrNegotiateApiLayerRequest &request, const XrInstanceCreateInfo &ci,
+void check_permanent_render(const XrNegotiateApiLayerRequest &request, const XrInstanceCreateInfo &ci,
                           const XrApiLayerCreateInfo &chain, const std::wstring &ini) {
     CHECK(GetPrivateProfileIntW(L"Render", L"Enabled", 0, ini.c_str()) == 1);
     test_clock::unix_seconds = UINT64_MAX;
@@ -607,21 +717,26 @@ void check_expired_render(const XrNegotiateApiLayerRequest &request, const XrIns
             const auto expected = runtime_view(i);
             CHECK(views[i].type == expected.type && views[i].next == expected.next);
             CHECK(!std::memcmp(&views[i].pose, &expected.pose, sizeof(expected.pose)));
-            CHECK(!std::memcmp(&views[i].fov, &expected.fov, sizeof(expected.fov)));
+            CHECK(views[i].fov.angleUp == expected.fov.angleUp);
+            CHECK(views[i].fov.angleDown == expected.fov.angleDown);
+            if (i >= 2)
+                CHECK(!std::memcmp(&views[i].fov, &expected.fov, sizeof(expected.fov)));
         }
+        CHECK(std::abs(std::tan(views[0].fov.angleRight) - (canted ? 1.6f : 1.2f)) < 1e-6f);
+        CHECK(std::abs(std::tan(views[1].fov.angleLeft) - (canted ? -.8f : -1.2f)) < 1e-6f);
         view_result = XR_ERROR_RUNTIME_FAILURE;
         CHECK(locate(session, &info, &state, 4, &count, views) == XR_ERROR_RUNTIME_FAILURE);
         view_result = XR_SUCCESS;
         XrViewConfigurationView recommendations[4]{};
         CHECK(fn<PFN_xrEnumerateViewConfigurationViews>(g, "xrEnumerateViewConfigurationViews")(
                   instance, 77, info.viewConfigurationType, 4, &count, recommendations) == XR_SUCCESS);
-        CHECK(recommendations[0].recommendedImageRectWidth == 2000);
-        CHECK(recommendations[1].recommendedImageRectWidth == 2000);
+        CHECK(recommendations[0].recommendedImageRectWidth == 2200);
+        CHECK(recommendations[1].recommendedImageRectWidth == 2200);
         XrVisibilityMaskKHR mask{XR_TYPE_VISIBILITY_MASK_KHR};
         CHECK(fn<PFN_xrGetVisibilityMaskKHR>(g, "xrGetVisibilityMaskKHR")(
                   session, info.viewConfigurationType, 0, XR_VISIBILITY_MASK_TYPE_LINE_LOOP_KHR, &mask) ==
               XR_SUCCESS);
-        CHECK(mask.vertexCountOutput == 3 && mask.indexCountOutput == 3);
+        CHECK(mask.vertexCountOutput == 0 && mask.indexCountOutput == 0);
         XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};
         XrFrameState frame_state{XR_TYPE_FRAME_STATE};
         CHECK(fn<PFN_xrWaitFrame>(g, "xrWaitFrame")(session, &wait, &frame_state) == XR_SUCCESS);
@@ -666,6 +781,51 @@ void check_render_settings(const std::wstring &ini) {
     CHECK(!write_render_settings(ini + L"\\missing\\preview.ini", settings));
 }
 void make_texture(UINT samples = 1) {
+    if (use_d3d12) {
+        drain_runtime_queue();
+        if (runtime_texture12)
+            runtime_texture12->Release();
+        if (rtv_heap12)
+            rtv_heap12->Release();
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC d{};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        d.Width = d.Height = 8;
+        d.DepthOrArraySize = 2;
+        d.MipLevels = 1;
+        d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.SampleDesc.Count = samples;
+        d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        D3D12_CLEAR_VALUE clear{};
+        clear.Format = d.Format;
+        clear.Color[3] = 1;
+        CHECK(SUCCEEDED(device12->CreateCommittedResource(
+            &heap, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
+            IID_PPV_ARGS(&runtime_texture12))));
+        D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
+        heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        heap_desc.NumDescriptors = d.DepthOrArraySize;
+        CHECK(SUCCEEDED(device12->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&rtv_heap12))));
+        auto handle = rtv_heap12->GetCPUDescriptorHandleForHeapStart();
+        const auto stride = device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        for (UINT slice = 0; slice < d.DepthOrArraySize; ++slice) {
+            D3D12_RENDER_TARGET_VIEW_DESC vd{};
+            vd.Format = d.Format;
+            vd.ViewDimension = samples > 1 ? D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY
+                                          : D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+            if (samples > 1) {
+                vd.Texture2DMSArray.FirstArraySlice = slice;
+                vd.Texture2DMSArray.ArraySize = 1;
+            } else {
+                vd.Texture2DArray.FirstArraySlice = slice;
+                vd.Texture2DArray.ArraySize = 1;
+            }
+            device12->CreateRenderTargetView(runtime_texture12, &vd, handle);
+            handle.ptr += stride;
+        }
+        return;
+    }
     if (runtime_texture)
         runtime_texture->Release();
     D3D11_TEXTURE2D_DESC d{};
@@ -710,11 +870,13 @@ void check_pixels(const View &view, bool green) {
     shared->Release();
 }
 } // namespace
-int main(int argc, char **) {
-    if (argc > 1) {
+int main(int argc, char **argv) {
+    if (argc == 2 && !std::strcmp(argv[1], "--hold")) {
         Sleep(5000);
         return 0;
     }
+    CHECK(argc == 1 || (argc == 2 && !std::strcmp(argv[1], "--d3d12")));
+    use_d3d12 = argc == 2;
     for (unsigned game_hz : {90u, 120u}) {
         RateLimiter limiter;
         unsigned delivered = 0;
@@ -808,7 +970,8 @@ int main(int argc, char **) {
     CHECK(SetEnvironmentVariableW(L"HORIZONLOCK_PREVIEW_SETTINGS", temp_file));
     check_render_settings(temp_file);
     check_render_hooks(request, ci, chain, temp_file);
-    check_expired_render(request, ci, chain, temp_file);
+    check_permanent_render(request, ci, chain, temp_file);
+    check_vector_startup(request, ci, chain);
     check_gaze_hooks(request, ci, chain);
     XrInstance actual{};
     CHECK(request.createApiLayerInstance(&ci, &chain, &actual) == XR_SUCCESS);
@@ -818,12 +981,38 @@ int main(int argc, char **) {
     D3D_FEATURE_LEVEL level{};
     CHECK(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
                                       D3D11_SDK_VERSION, &device, &level, &context)));
+    IDXGIAdapter *adapter{};
+    if (use_d3d12) {
+        IDXGIDevice *dxgi_device{};
+        CHECK(SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dxgi_device))));
+        CHECK(SUCCEEDED(dxgi_device->GetAdapter(&adapter)));
+        dxgi_device->Release();
+        CHECK(SUCCEEDED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device12))));
+        D3D12_COMMAND_QUEUE_DESC queue_desc{};
+        queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        CHECK(SUCCEEDED(device12->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue12))));
+        CHECK(SUCCEEDED(device12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                        IID_PPV_ARGS(&allocator12))));
+        CHECK(SUCCEEDED(device12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator12,
+                                                   nullptr, IID_PPV_ARGS(&commands12))));
+        CHECK(SUCCEEDED(commands12->Close()));
+        CHECK(SUCCEEDED(device12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence12))));
+        fence_event12 = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        CHECK(fence_event12);
+    }
     make_texture();
-    CHECK(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
+    CHECK(SUCCEEDED(D3D11CreateDevice(adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+                                      nullptr, 0, nullptr, 0,
                                       D3D11_SDK_VERSION, &reader_device, &level, &reader_context)));
+    if (adapter)
+        adapter->Release();
     XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};
     binding.device = device;
-    XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO, &binding};
+    XrGraphicsBindingD3D12KHR binding12{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR};
+    binding12.device = device12;
+    binding12.queue = queue12;
+    const void *graphics_binding = use_d3d12 ? static_cast<const void *>(&binding12) : &binding;
+    XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO, graphics_binding};
     CHECK(fn<PFN_xrCreateSession>(g, "xrCreateSession")(instance, &si, &session) == XR_SUCCESS);
     XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
     sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
@@ -1260,7 +1449,7 @@ int main(int argc, char **) {
     check_pixels(viewer.data()->frame.views[0], true);
     viewer.data()->ready = 0;
     viewer.unlock();
-    // Stale heartbeat and absent consumer must suppress all D3D11 copies/resolves.
+    // Stale heartbeat and absent consumer must suppress all GPU copies/resolves.
     CHECK(viewer.lock());
     viewer.data()->heartbeat_ms = GetTickCount64() - 5000;
     viewer.unlock();
@@ -1357,15 +1546,16 @@ int main(int argc, char **) {
     check_pixels(viewer.data()->frame.views[0], true);
     viewer.data()->ready = 0;
     viewer.unlock();
-    // Expiry clears a pending preview and suppresses GPU work while all runtime calls still progress.
-    frame(true);
+    // A clock far beyond the former deadline must not stop capture or render expansion.
     test_clock::unix_seconds = UINT64_MAX;
     before = gpu_copies;
-    frame(false);
-    CHECK(gpu_copies == before);
+    frame(true);
+    CHECK(gpu_copies > before);
     CHECK(viewer.lock());
-    CHECK(viewer.data()->status_code == 6);
-    CHECK(viewer.data()->render_enabled == 1); // The running instance retains its render snapshot.
+    CHECK(viewer.data()->ready == 1 && viewer.data()->status_code != 6);
+    check_pixels(viewer.data()->frame.views[0], true);
+    CHECK(viewer.data()->render_enabled == 1);
+    viewer.data()->ready = 0;
     viewer.unlock();
     test_clock::unix_seconds = 1;
     CHECK(fn<PFN_xrDestroySession>(g, "xrDestroySession")(session) ==
@@ -1442,7 +1632,7 @@ int main(int argc, char **) {
     CHECK(viewer.lock());
     viewer.data()->overlay_selection = {};
     viewer.unlock();
-    si.next = &binding;
+    si.next = graphics_binding;
     CHECK(fn<PFN_xrCreateSession>(g, "xrCreateSession")(instance, &si, &session) == XR_SUCCESS);
     sc.format = DXGI_FORMAT_D32_FLOAT;
     CHECK(fn<PFN_xrCreateSwapchain>(g, "xrCreateSwapchain")(session, &sc, &swapchain) == XR_SUCCESS);
@@ -1468,17 +1658,30 @@ int main(int argc, char **) {
     CHECK(fn<PFN_xrDestroyInstance>(g, "xrDestroyInstance")(instance) == XR_SUCCESS);
     CHECK(release_calls + 1 + int(extra_reuses) == end_calls);
 
-    runtime_texture->Release();
+    if (use_d3d12) {
+        drain_runtime_queue();
+        rtv_heap12->Release();
+        runtime_texture12->Release();
+        commands12->Release();
+        allocator12->Release();
+        fence12->Release();
+        CloseHandle(fence_event12);
+        queue12->Release();
+        device12->Release();
+    } else {
+        runtime_texture->Release();
+    }
     reader_context->Release();
     reader_device->Release();
     context->Release();
     device->Release();
     CHECK(DeleteFileW(temp_file));
     SetEnvironmentVariableW(L"HORIZONLOCK_PREVIEW_SETTINGS", nullptr);
+    std::printf("Graphics binding: %s\n", use_d3d12 ? "D3D12" : "D3D11");
     std::puts(
         "PASS: render settings round-trip/clamping; stereo/canted quad render expansion; resolution caps; "
         "count-only/failed calls; masks/types/runtime validation; startup snapshot; active settings/eye IPC; "
-        "expired instance forwarding/native FOV; active FOV retention; zero-copy expiry; "
+        "permanent capture/render expansion; active FOV retention; safe VectorXR startup; "
         "transport validation; before-release pixels; quad/array/rect; unchanged calls/results; "
         "pause; backpressure; failed release; invalid bounds; reference epoch; MSAA stereo; producer "
         "exclusivity; zero-copy inactive/paused/backpressure/rate-limit; stale reconnect; "

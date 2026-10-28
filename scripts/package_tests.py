@@ -30,7 +30,7 @@ class PackageTests(unittest.TestCase):
             'Start-Delay-Check.cmd', 'Start-Preview.cmd', 'Start-Layer-Editor.cmd',
             'scripts/install-obs.ps1', 'scripts/uninstall-obs.ps1',
             'docs/obs-openxr-source.md', 'docs/openxr-overlays.md', 'docs/local-delivery-de.txt',
-            'docs/spectator-features.md',
+            'docs/spectator-features.md', 'docs/release-0.14.0-validation.md',
             'docs/viewer-director.md', 'docs/telemetry.md',
             'preview/README.md', 'preview/assets/SteadyXR.ico',
             'preview/assets/SteadyXR.png', 'preview/layers/LayerEditor.ps1',
@@ -58,14 +58,47 @@ class PackageTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
 
-    def package(self):
+    def package(self, extra=(), success=True):
         result = subprocess.run([
             sys.executable, str(self.root / 'scripts/package.py'),
             '--build', str(self.root / 'build'), '--version', '0.9.0',
             '--openvr', str(self.root / 'openvr'), '--openxr', str(self.root / 'openxr'),
             '--delivery-dir', str(self.delivery),
+            *extra,
         ], capture_output=True, text=True, check=False)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def test_preserved_capture_layer_is_identical_in_delivery_and_zip(self):
+        signed = self.root / 'signed.dll'
+        payload = b'signed capture DLL including certificate bytes'
+        signed.write_bytes(payload)
+        metadata = self.root / 'capture-build.json'
+        metadata.write_text('{"version":"0.12.0","expires_at_utc":"2026-11-19T06:53:09Z"}')
+        original_source = self.root / 'capture-source.zip'
+        original_source.write_bytes(b'original corresponding capture source')
+        digest = hashlib.sha256(payload).hexdigest()
+        args = ['--openxr-layer', str(signed), '--openxr-layer-build', str(metadata),
+                '--openxr-layer-source', str(original_source), '--openxr-layer-sha256', digest]
+        self.package(args)
+        self.assertEqual((self.viewer / 'SteadyXR-OpenXR.dll').read_bytes(), payload)
+        with zipfile.ZipFile(self.delivery / 'SteadyXR-0.9.0-Windows-x64.zip') as archive:
+            self.assertEqual(archive.read('SteadyXR-0.9.0-Windows-x64/preview/SteadyXR-OpenXR.dll'), payload)
+        with zipfile.ZipFile(self.delivery / 'SteadyXR-0.9.0-Source.zip') as archive:
+            self.assertEqual(archive.read('SteadyXR-0.9.0-Source/prebuilt-capture/capture-source.zip'),
+                             original_source.read_bytes())
+        import json
+        info = json.loads((self.viewer / 'SteadyXR-OpenXR-build.json').read_text())
+        self.assertEqual(info['sha256'], digest)
+        self.assertEqual(info['expires_at_utc'], '2026-11-19T06:53:09Z')
+        # A changed input must abort before replacing the existing release.
+        signed.write_bytes(b'different binary')
+        result = self.package(args, success=False)
+        self.assertIn('SHA-256 mismatch', result.stdout + result.stderr)
+        self.assertEqual((self.viewer / 'SteadyXR-OpenXR.dll').read_bytes(), payload)
 
     def test_consolidated_obs_dropins_ship_beside_app_and_in_complete_archive(self):
         # Missing consolidation would leave the user unable to copy OBS folders from the app.

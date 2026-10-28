@@ -4,6 +4,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <utility>
 #include <vector>
 
@@ -92,10 +93,10 @@ LONG read_scope(HKEY hive, const wchar_t *registry, std::vector<Entry> &out) {
     return result;
 }
 LayerRegistryRoots registry_roots(const wchar_t *registry) {
-    // Legacy private-subkey callers never inspect or modify the real machine registry.
+    // Private-subkey callers model the machine scope under HKCU without touching OpenXR.
     if (registry && _wcsicmp(registry, layer_registry_key) == 0)
         return {};
-    return {nullptr, nullptr, HKEY_CURRENT_USER, registry};
+    return {HKEY_CURRENT_USER, registry, nullptr, nullptr};
 }
 bool usable(const Entry &entry) {
     return entry.value == 0 && file_present(entry.name) && file_present(registered_dll(entry));
@@ -155,48 +156,299 @@ std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &d
     // IPC v4 requires an explicit upgrade from every older capture DLL.
     return std::nullopt;
 }
+std::optional<std::wstring> installed_layer_settings_path(const LayerRegistryRoots &roots) {
+    const auto entry = effective_entry(roots);
+    return entry ? std::optional<std::wstring>{capture_settings_path(
+                       std::filesystem::path(entry->name).parent_path().wstring())}
+                 : std::nullopt;
+}
+namespace {
+struct RawValue {
+    std::wstring name;
+    DWORD type{};
+    std::vector<BYTE> bytes;
+};
+bool own_value(const RawValue &value) {
+    const auto filename = std::filesystem::path(value.name).filename();
+    return _wcsicmp(filename.c_str(), manifest) == 0 || _wcsicmp(filename.c_str(), legacy_manifest) == 0;
+}
+DWORD number(const RawValue &value) {
+    DWORD result = 1;
+    if (value.type == REG_DWORD && value.bytes.size() == sizeof(result))
+        memcpy(&result, value.bytes.data(), sizeof(result));
+    return result;
+}
+RawValue dword(std::wstring name, DWORD value) {
+    RawValue result{std::move(name), REG_DWORD, std::vector<BYTE>(sizeof(value))};
+    memcpy(result.bytes.data(), &value, sizeof(value));
+    return result;
+}
+bool vector_layer(const RawValue &value) {
+    if (number(value) != 0)
+        return false;
+    // Registry names are manifest paths; VectorXR can use any JSON filename.
+    std::error_code error;
+    if (std::filesystem::file_size(value.name, error) > 1024 * 1024 || error)
+        return false;
+    std::ifstream input(std::filesystem::path(value.name), std::ios::binary);
+    const std::string json{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    static const std::regex name(R"("name"\s*:\s*"XR_APILAYER_DIENERTECH_VECTORXR")");
+    return std::regex_search(json, name);
+}
+LONG raw_values(HKEY key, std::vector<RawValue> &values) {
+    DWORD count{}, max_name{}, max_bytes{};
+    auto result = RegQueryInfoKeyW(key, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &count,
+                                  &max_name, &max_bytes, nullptr, nullptr);
+    if (result != ERROR_SUCCESS)
+        return result;
+    std::vector<wchar_t> name(max_name + 1);
+    for (DWORD i = 0; i < count; ++i) {
+        RawValue value;
+        DWORD length = static_cast<DWORD>(name.size()), size = max_bytes;
+        value.bytes.resize(size);
+        result = RegEnumValueW(key, i, name.data(), &length, nullptr, &value.type, value.bytes.data(), &size);
+        if (result != ERROR_SUCCESS)
+            return result;
+        value.name.assign(name.data(), length);
+        value.bytes.resize(size);
+        values.push_back(std::move(value));
+    }
+    return ERROR_SUCCESS;
+}
+bool same_values(const std::vector<RawValue> &a, const std::vector<RawValue> &b) {
+    if (a.size() != b.size())
+        return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].name != b[i].name || a[i].type != b[i].type || a[i].bytes != b[i].bytes)
+            return false;
+    return true;
+}
+struct RegistryKey {
+    HKEY handle{};
+    ~RegistryKey() { if (handle) RegCloseKey(handle); }
+    void close() { if (handle) RegCloseKey(handle); handle = nullptr; }
+};
+struct Scope {
+    HKEY hive{};
+    const wchar_t *path{};
+    RegistryKey key;
+    bool existed{};
+    std::vector<RawValue> before, desired, expected;
+};
+LONG open_scope(Scope &scope, bool create) {
+    if (!scope.hive || !scope.path)
+        return ERROR_SUCCESS;
+    auto result = RegOpenKeyExW(scope.hive, scope.path, 0,
+                                KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &scope.key.handle);
+    scope.existed = result == ERROR_SUCCESS;
+    if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) {
+        if (!create)
+            return ERROR_SUCCESS;
+        result = RegCreateKeyExW(scope.hive, scope.path, 0, nullptr, 0,
+                                 KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY,
+                                 nullptr, &scope.key.handle, nullptr);
+    }
+    if (result == ERROR_SUCCESS)
+        result = raw_values(scope.key.handle, scope.before);
+    scope.expected = scope.desired = scope.before;
+    return result;
+}
+LONG set_raw(HKEY key, const RawValue &value) {
+    return RegSetValueExW(key, value.name.c_str(), 0, value.type, value.bytes.data(),
+                          static_cast<DWORD>(value.bytes.size()));
+}
+LONG read_path(HKEY hive, const wchar_t *path, std::vector<RawValue> &values) {
+    RegistryKey key;
+    auto result = RegOpenKeyExW(hive, path, 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key.handle);
+    return result == ERROR_SUCCESS ? raw_values(key.handle, values) : result;
+}
+LONG replace_order(Scope &scope, const std::vector<RawValue> &desired) {
+    const std::wstring path(scope.path);
+    const auto slash = path.find_last_of(L'\\');
+    if (slash == std::wstring::npos)
+        return ERROR_INVALID_PARAMETER;
+    const auto parent_path = path.substr(0, slash), leaf = path.substr(slash + 1);
+    const auto suffix = std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+    const auto staging = L"SteadyXR-staging-" + suffix, recovery = L"SteadyXR-recovery-" + suffix;
+    RegistryKey parent, source, target;
+    auto result = RegOpenKeyExW(scope.hive, parent_path.c_str(), 0, KEY_ALL_ACCESS | KEY_WOW64_64KEY,
+                                &parent.handle);
+    if (result != ERROR_SUCCESS)
+        return result;
+    result = RegOpenKeyExW(parent.handle, leaf.c_str(), 0, KEY_READ | DELETE | KEY_WOW64_64KEY, &source.handle);
+    if (result != ERROR_SUCCESS)
+        return result;
+    DWORD subkeys{};
+    result = RegQueryInfoKeyW(source.handle, nullptr, nullptr, nullptr, &subkeys, nullptr, nullptr,
+                              nullptr, nullptr, nullptr, nullptr, nullptr);
+    if (result != ERROR_SUCCESS || subkeys)
+        return result == ERROR_SUCCESS ? ERROR_NOT_SUPPORTED : result;
+    DWORD disposition{};
+    result = RegCreateKeyExW(parent.handle, staging.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS | KEY_WOW64_64KEY,
+                             nullptr, &target.handle, &disposition);
+    if (result != ERROR_SUCCESS)
+        return result;
+    if (disposition != REG_CREATED_NEW_KEY)
+        return ERROR_ALREADY_EXISTS;
+    for (const auto &value : desired) {
+        result = set_raw(target.handle, value);
+        if (result != ERROR_SUCCESS)
+            break;
+    }
+    // Source already has desired contents. Copy security without disturbing staged value order.
+    if (result == ERROR_SUCCESS)
+        result = RegCopyTreeW(source.handle, nullptr, target.handle);
+    std::vector<RawValue> staged, original;
+    if (result == ERROR_SUCCESS)
+        result = raw_values(target.handle, staged);
+    if (result == ERROR_SUCCESS && !same_values(staged, desired))
+        result = ERROR_INVALID_DATA;
+    if (result == ERROR_SUCCESS)
+        result = raw_values(source.handle, original);
+    if (result == ERROR_SUCCESS && !same_values(original, scope.expected))
+        result = ERROR_TRANSACTIONAL_CONFLICT;
+    target.close(); source.close(); scope.key.close();
+    bool retained = false, activated = false;
+    if (result == ERROR_SUCCESS) {
+        result = RegRenameKey(parent.handle, leaf.c_str(), recovery.c_str());
+        retained = result == ERROR_SUCCESS;
+    }
+    if (result == ERROR_SUCCESS) {
+        result = RegRenameKey(parent.handle, staging.c_str(), leaf.c_str());
+        activated = result == ERROR_SUCCESS;
+    }
+    if (result == ERROR_SUCCESS) {
+        std::vector<RawValue> written;
+        result = read_path(scope.hive, scope.path, written);
+        if (result == ERROR_SUCCESS && !same_values(written, desired))
+            result = ERROR_INVALID_DATA;
+    }
+    if (result != ERROR_SUCCESS && retained) {
+        if (activated && RegRenameKey(parent.handle, leaf.c_str(), staging.c_str()) != ERROR_SUCCESS)
+            return ERROR_TRANSACTIONAL_CONFLICT;
+        if (RegRenameKey(parent.handle, recovery.c_str(), leaf.c_str()) != ERROR_SUCCESS)
+            return ERROR_TRANSACTIONAL_CONFLICT;
+    }
+    if (result == ERROR_SUCCESS) {
+        scope.expected = desired;
+        // Refuse to delete a retained key if an external installer changed it through an old handle.
+        std::vector<RawValue> retained_values;
+        const auto retained_path = parent_path + L"\\" + recovery;
+        const auto read = read_path(scope.hive, retained_path.c_str(), retained_values);
+        if (read != ERROR_SUCCESS || !same_values(retained_values, original))
+            return ERROR_TRANSACTIONAL_CONFLICT;
+        result = RegDeleteKeyExW(parent.handle, recovery.c_str(), KEY_WOW64_64KEY, 0);
+    } else if (!activated) {
+        RegDeleteKeyExW(parent.handle, staging.c_str(), KEY_WOW64_64KEY, 0);
+    }
+    const auto opened = RegOpenKeyExW(scope.hive, scope.path, 0,
+                                      KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &scope.key.handle);
+    return result == ERROR_SUCCESS ? opened : result;
+}
+LONG write_scope(Scope &scope, const std::vector<RawValue> &desired) {
+    if (same_values(scope.expected, desired))
+        return ERROR_SUCCESS;
+    if (!scope.key.handle) {
+        const auto opened = RegOpenKeyExW(scope.hive, scope.path, 0,
+                                         KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &scope.key.handle);
+        if (opened != ERROR_SUCCESS)
+            return opened;
+    }
+    std::vector<RawValue> latest;
+    auto result = raw_values(scope.key.handle, latest);
+    if (result != ERROR_SUCCESS || !same_values(latest, scope.expected))
+        return result == ERROR_SUCCESS ? ERROR_TRANSACTIONAL_CONFLICT : result;
+    for (size_t i = 0; i < scope.expected.size();) {
+        const auto &name = scope.expected[i].name;
+        if (std::any_of(desired.begin(), desired.end(), [&](const RawValue &value) { return value.name == name; })) {
+            ++i;
+            continue;
+        }
+        result = RegDeleteValueW(scope.key.handle, name.c_str());
+        if (result != ERROR_SUCCESS)
+            return result;
+        scope.expected.erase(scope.expected.begin() + i);
+    }
+    for (const auto &value : desired) {
+        const auto prior = std::find_if(scope.expected.begin(), scope.expected.end(), [&](const RawValue &v) {
+            return v.name == value.name;
+        });
+        if (prior != scope.expected.end() && prior->type == value.type && prior->bytes == value.bytes)
+            continue;
+        result = set_raw(scope.key.handle, value);
+        if (result != ERROR_SUCCESS)
+            return result;
+        if (prior == scope.expected.end())
+            scope.expected.push_back(value);
+        else
+            *prior = value;
+    }
+    if (!same_values(scope.expected, desired))
+        return replace_order(scope, desired);
+    latest.clear();
+    result = raw_values(scope.key.handle, latest);
+    return result != ERROR_SUCCESS ? result : same_values(latest, desired) ? ERROR_SUCCESS : ERROR_TRANSACTIONAL_CONFLICT;
+}
+void plan_scope(Scope &scope, const std::wstring &path, bool enable, bool machine) {
+    bool had_current = false;
+    for (auto &value : scope.desired) {
+        if (!own_value(value))
+            continue;
+        const bool current = same_path(value.name, path);
+        had_current |= current;
+        value = dword(value.name, machine && enable && current ? 0 : 1);
+    }
+    if (!machine || !enable)
+        return;
+    if (!had_current)
+        scope.desired.push_back(dword(path, 0));
+    auto vector = std::find_if(scope.desired.begin(), scope.desired.end(), vector_layer);
+    if (vector != scope.desired.end()) {
+        auto current = std::find_if(scope.desired.begin(), scope.desired.end(), [&](const RawValue &value) {
+            return same_path(value.name, path);
+        });
+        auto value = *current;
+        scope.desired.erase(current);
+        vector = std::find_if(scope.desired.begin(), scope.desired.end(), vector_layer);
+        scope.desired.insert(vector, std::move(value));
+    }
+}
+} // namespace
 LONG set_layer_connection(const std::wstring &directory, bool enable, const LayerRegistryRoots &roots) {
     const auto path = (std::filesystem::path(directory) / manifest).wstring();
     if (enable && (!file_present(path) || !file_present(std::filesystem::path(directory) / capture_dll)))
         return ERROR_FILE_NOT_FOUND;
-    std::vector<Entry> machine_entries;
-    auto result = read_scope(roots.machine_hive, roots.machine_key, machine_entries);
-    if (result != ERROR_SUCCESS)
-        return result;
-    if (std::any_of(machine_entries.begin(), machine_entries.end(),
-                    [](const Entry &entry) { return entry.value == 0; }))
-        return ERROR_ACCESS_DENIED;
-    if (!roots.user_hive || !roots.user_key)
+    if (!roots.machine_hive || !roots.machine_key)
         return ERROR_INVALID_PARAMETER;
-    HKEY key{};
-    result = RegCreateKeyExW(roots.user_hive, roots.user_key, 0, nullptr, 0,
-                             KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &key, nullptr);
-    if (result != ERROR_SUCCESS)
-        return result;
-    std::vector<Entry> before;
-    result = entries(key, before);
-    bool had_current = false;
+    const auto mutex = CreateMutexW(nullptr, FALSE, L"Local\\SteadyXR-LayerRegistryWrites");
+    if (!mutex)
+        return GetLastError();
+    const auto wait = WaitForSingleObject(mutex, 10000);
+    if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+        CloseHandle(mutex);
+        return ERROR_BUSY;
+    }
+    Scope machine{roots.machine_hive, roots.machine_key}, user{roots.user_hive, roots.user_key};
+    auto result = open_scope(machine, enable);
+    if (result == ERROR_SUCCESS)
+        result = open_scope(user, false);
     if (result == ERROR_SUCCESS) {
-        for (const auto &entry : before) {
-            const bool current = same_path(entry.name, path);
-            had_current |= current;
-            // Keep old files and registrations available for rollback; only enable one version.
-            result = write(key, entry.name, enable && current ? 0 : 1);
-            if (result != ERROR_SUCCESS)
-                break;
-        }
-        if (result == ERROR_SUCCESS && enable && !had_current)
-            result = write(key, path, 0);
+        plan_scope(machine, path, enable, true);
+        plan_scope(user, path, enable, false);
+        result = write_scope(machine, machine.desired);
+        if (result == ERROR_SUCCESS)
+            result = write_scope(user, user.desired);
         if (result != ERROR_SUCCESS) {
-            for (const auto &entry : before)
-                write(key, entry.name, entry.value);
-            if (!had_current)
-                RegDeleteValueW(key, path.c_str());
+            const auto user_rollback = write_scope(user, user.before);
+            const auto machine_rollback = write_scope(machine, machine.before);
+            if (user_rollback != ERROR_SUCCESS || machine_rollback != ERROR_SUCCESS)
+                result = ERROR_TRANSACTIONAL_CONFLICT;
         }
     }
-    RegCloseKey(key);
+    ReleaseMutex(mutex); CloseHandle(mutex);
     return result;
 }
+
 bool layer_installed(const std::wstring &directory, bool any_version, const wchar_t *registry) {
     return layer_installed(directory, any_version, registry_roots(registry));
 }

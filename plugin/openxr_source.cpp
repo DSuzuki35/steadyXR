@@ -812,14 +812,7 @@ obs_properties_t *properties(void *data) {
         "headset approximately upright. Comparison returns after 20 seconds, or press again "
         "to return sooner.",
         OBS_TEXT_INFO);
-    const auto *deadline = build_expiry_text();
-    const int count = WideCharToMultiByte(CP_UTF8, 0, deadline, -1, nullptr, 0, nullptr, nullptr);
-    std::string expiry(count > 0 ? count : 1, '\0');
-    if (count > 0)
-        WideCharToMultiByte(CP_UTF8, 0, deadline, -1, expiry.data(), count, nullptr, nullptr);
-    expiry.pop_back();
-    const auto expiry_label = std::string("SteadyXR 0.12.0 build expires: ") + expiry;
-    obs_properties_add_text(p, "build_expiry", expiry_label.c_str(), OBS_TEXT_INFO);
+    obs_properties_add_text(p, "build_expiry", "SteadyXR 0.14.0 | No expiry", OBS_TEXT_INFO);
     vrst_plugin::openxr_add_properties(p);
     overlay_properties(p, static_cast<Source *>(data));
     for (const auto &action : actions)

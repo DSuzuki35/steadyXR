@@ -24,6 +24,7 @@
 #include <iterator>
 #include <mmsystem.h>
 #include <shellapi.h>
+#include <sddl.h>
 #include <string>
 
 namespace {
@@ -68,6 +69,52 @@ std::wstring decimal(double value) {
     std::swprintf(text, 32, L"%.1f", value);
     return text;
 }
+std::wstring current_user_sid() {
+    HANDLE token{};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return {};
+    DWORD size{};
+    GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+    std::vector<BYTE> bytes(size);
+    LPWSTR text{};
+    const bool okay = GetTokenInformation(token, TokenUser, bytes.data(), size, &size) &&
+                      ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER *>(bytes.data())->User.Sid, &text);
+    const std::wstring sid = okay ? text : L"";
+    if (text)
+        LocalFree(text);
+    CloseHandle(token);
+    return sid;
+}
+bool process_elevated() {
+    HANDLE token{};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD size{};
+    const bool elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) &&
+                          elevation.TokenIsElevated;
+    CloseHandle(token);
+    return elevated;
+}
+LONG launch_connection_helper(HWND owner, bool enable, const std::wstring &sid, HANDLE &process) {
+    if (sid.empty())
+        return ERROR_INVALID_SID;
+    wchar_t executable[32768]{};
+    if (!GetModuleFileNameW(nullptr, executable, 32768))
+        return GetLastError();
+    const auto arguments = std::wstring(enable ? L"--install-connection " : L"--remove-connection ") + sid;
+    SHELLEXECUTEINFOW execute{sizeof(execute)};
+    execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    execute.hwnd = owner;
+    execute.lpVerb = L"runas";
+    execute.lpFile = executable;
+    execute.lpParameters = arguments.c_str();
+    execute.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&execute))
+        return GetLastError();
+    process = execute.hProcess;
+    return process ? ERROR_SUCCESS : ERROR_INVALID_HANDLE;
+}
 struct App {
     HWND controls{}, output{}, status{}, smooth_label{}, crop_label{}, smooth{}, crop{}, mirror{}, bypass{},
         eye{}, eye_label{}, fps{}, pause{}, mode{}, source{}, trims[4]{}, trim_labels[4]{}, horizon{},
@@ -96,6 +143,8 @@ struct App {
     OverlayPanel overlays;
     SpectatorControls spectator_controls;
     HANDLE layer_editor_process{};
+    HANDLE connection_process{};
+    bool connection_enable{};
     Channel channel;
     Renderer renderer;
     WindowCapture capture;
@@ -128,6 +177,8 @@ struct App {
         unregister_hotkeys();
         if (layer_editor_process)
             CloseHandle(layer_editor_process);
+        if (connection_process)
+            CloseHandle(connection_process);
     }
     void unregister_hotkeys() {
         for (unsigned i = 0; i < std::size(hotkey_actions); ++i) {
@@ -353,24 +404,42 @@ struct App {
             setup_message = L"This build expired. Install a newer SteadyXR build to enable capture.";
             return;
         }
-        if (enable && compatible_connection) {
-            setup_message = L"Compatible OpenXR connection already installed.";
+        if (diagnostic || connection_process)
+            return;
+        // Preserve the active capture settings when migrating an identical DLL from
+        // another release directory; the viewer's own preferences remain in this INI.
+        const auto previous_settings = installed_layer_settings_path();
+        if (enable && previous_settings && *previous_settings != ini &&
+            GetFileAttributesW(previous_settings->c_str()) != INVALID_FILE_ATTRIBUTES &&
+            !write_render_settings(ini, read_render_settings(*previous_settings))) {
+            setup_message = L"Could not preserve existing render settings. The connection was not changed.";
             return;
         }
-        if (!diagnostic && machine_layer_installed(directory, true)) {
-            setup_message = L"System-wide connection: use the layer editor to change its registration.";
-            open_layer_editor();
-            return;
+        auto result = set_layer_connection(directory, enable);
+        if ((result == ERROR_ACCESS_DENIED || result == ERROR_PRIVILEGE_NOT_HELD) && !process_elevated()) {
+            result = launch_connection_helper(controls, enable, current_user_sid(), connection_process);
+            if (result == ERROR_SUCCESS) {
+                connection_enable = enable;
+                setup_message = L"Applying the system-wide OpenXR connection...";
+                labels();
+                return;
+            }
         }
-        const auto result = set_layer_connection(directory, enable);
+        connection_finished(enable, result);
+    }
+    void connection_finished(bool enable, LONG result) {
         if (result == ERROR_SUCCESS) {
             resolve_connection();
             advanced.reload(render_ini);
         }
         setup_message = result == ERROR_SUCCESS
-                            ? (enable ? L"OpenXR connection installed. Restart iRacing to use it."
-                                      : L"Connection removed. This takes effect after restarting the game.")
-                            : L"Could not change the connection. Windows error " + std::to_wstring(result);
+                            ? (enable ? L"System-wide OpenXR connection installed. Restart the game to use it."
+                                      : L"System-wide connection disabled. Restart the game to apply it.")
+                        : result == ERROR_CANCELLED
+                            ? L"Administrator approval was cancelled. The connection was not changed."
+                            : L"Could not change the system-wide connection. Windows error " + std::to_wstring(result);
+        labels();
+        update_status();
     }
     void queue_save() {
         // Keep disk I/O out of mouse tracking, especially inside synced folders.
@@ -507,7 +576,7 @@ struct App {
         sources = WindowCapture::windows();
         SendMessageW(source, CB_RESETCONTENT, 0, 0);
         SendMessageW(source, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(L"Choose the iRacing preview window ..."));
+                     reinterpret_cast<LPARAM>(L"Choose a game preview window ..."));
         int selected = 0;
         for (unsigned i = 0; i < sources.size(); ++i) {
             SendMessageW(source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(sources[i].title.c_str()));
@@ -833,9 +902,10 @@ struct App {
         EnableWindow(GetDlgItem(controls, refresh_id), window_mode);
         EnableWindow(eye, TRUE);
         SetWindowTextW(eye_label, window_mode ? L"Profile" : L"Eye");
-        EnableWindow(GetDlgItem(controls, setup_id), !window_mode && !expired);
+        EnableWindow(GetDlgItem(controls, setup_id), !window_mode && !expired && !connection_process);
+        EnableWindow(GetDlgItem(controls, remove_id), !connection_process);
         SetWindowTextW(GetDlgItem(controls, setup_id),
-                       registered(true) && !registered() ? L"Upgrade connection" : L"Install connection");
+                       registered(true) ? L"Upgrade / repair globally" : L"Install for all users");
         const double values[] = {options.crop_left, options.crop_right, options.crop_top,
                                  options.crop_bottom};
         const wchar_t *names[] = {L"Crop left", L"Crop right", L"Crop top", L"Crop bottom"};
@@ -912,8 +982,8 @@ struct App {
         } else {
             text = registered() ? L"Compatible OpenXR connection installed.\r\n"
                    : registered(true)
-                       ? L"Older layer installed: click Upgrade connection, then restart iRacing.\r\n"
-                       : L"Install the connection, then restart iRacing.\r\n";
+                       ? L"Older layer installed: click Upgrade connection, then restart the OpenXR game.\r\n"
+                       : L"Install the connection, then restart the OpenXR game.\r\n";
             if (channel.lock()) {
                 const auto &s = *channel.data();
                 const auto now = GetTickCount64();
@@ -938,7 +1008,7 @@ struct App {
                                 L" %, R " + decimal(s.render_right[eye]) + L" %.\r\n";
                     }
                 } else
-                    text += L"Waiting for an OpenXR game using D3D11.\r\n";
+                    text += L"Waiting for an OpenXR game using D3D11 or D3D12.\r\n";
                 channel.unlock();
             }
         }
@@ -1292,6 +1362,60 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
+    int argument_count{};
+    auto arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
+    const bool install = arguments && argument_count > 1 && wcscmp(arguments[1], L"--install-connection") == 0;
+    const bool remove = arguments && argument_count > 1 && wcscmp(arguments[1], L"--remove-connection") == 0;
+    if (install || remove) {
+        // Handle elevated registration before the viewer singleton and any graphics/UI initialization.
+        if (argument_count != 3) {
+            LocalFree(arguments);
+            return ERROR_INVALID_PARAMETER;
+        }
+        const std::wstring sid(arguments[2]);
+        LocalFree(arguments);
+        PSID binary_sid{};
+        LPWSTR canonical_sid{};
+        const bool valid_sid = ConvertStringSidToSidW(sid.c_str(), &binary_sid) &&
+                               ConvertSidToStringSidW(binary_sid, &canonical_sid) && sid == canonical_sid;
+        if (binary_sid) LocalFree(binary_sid);
+        if (canonical_sid) LocalFree(canonical_sid);
+        if (!valid_sid)
+            return ERROR_INVALID_SID;
+        HKEY original_user{};
+        auto result = RegOpenKeyExW(HKEY_USERS, sid.c_str(), 0, KEY_READ | KEY_WOW64_64KEY, &original_user);
+        if (result != ERROR_SUCCESS)
+            return result;
+        RegCloseKey(original_user);
+        const auto user_key = sid + L"\\" + layer_registry_key;
+        const LayerRegistryRoots roots{HKEY_LOCAL_MACHINE, layer_registry_key, HKEY_USERS, user_key.c_str()};
+        wchar_t executable[32768]{};
+        GetModuleFileNameW(nullptr, executable, 32768);
+        const auto directory = std::filesystem::path(executable).parent_path().wstring();
+        const auto previous_settings = installed_layer_settings_path(roots);
+        const auto settings = directory + L"\\SteadyXR.ini";
+        if (install && previous_settings && *previous_settings != settings &&
+            GetFileAttributesW(previous_settings->c_str()) != INVALID_FILE_ATTRIBUTES &&
+            !write_render_settings(settings, read_render_settings(*previous_settings)))
+            result = ERROR_ACCESS_DENIED;
+        else
+            result = set_layer_connection(directory, install, roots);
+        if ((result == ERROR_ACCESS_DENIED || result == ERROR_PRIVILEGE_NOT_HELD) && !process_elevated()) {
+            HANDLE process{};
+            result = launch_connection_helper(nullptr, install, sid, process);
+            if (result == ERROR_SUCCESS) {
+                const auto wait = WaitForSingleObject(process, INFINITE);
+                DWORD exit_code = ERROR_PROCESS_ABORTED;
+                if (wait == WAIT_OBJECT_0)
+                    GetExitCodeProcess(process, &exit_code);
+                result = static_cast<LONG>(exit_code);
+                CloseHandle(process);
+            }
+        }
+        return result;
+    }
+    if (arguments)
+        LocalFree(arguments);
     const bool verify_window = std::wstring(command).find(L"--verify-window") != std::wstring::npos;
     const bool self_test = verify_window || std::wstring(command).find(L"--self-test") != std::wstring::npos;
     auto dpi = reinterpret_cast<BOOL(WINAPI *)(DPI_AWARENESS_CONTEXT)>(
@@ -1352,7 +1476,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    const auto control_title = std::wstring(L"SteadyXR – Preview 0.12.0 | Expires ") + build_expiry_text();
+    const auto control_title = std::wstring(L"SteadyXR – Preview 0.14.0 | No expiry");
     RECT controls_rect{0, 0, 1024, 800};
     const DWORD controls_style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     AdjustWindowRectEx(&controls_rect, controls_style, FALSE, 0);
@@ -1515,7 +1639,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     add(-1, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 468, 612, 168, 36, presets_id);
     add(-1, L"BUTTON", L"Hotkeys / A/B…", BS_PUSHBUTTON, 652, 612, 180, 36, hotkeys_id);
     state.shortcut_hint = note(-1, L"", 24, 666, 976, 40);
-    const auto beta_text = std::wstring(L"Free 30-day test version · Expires ") + build_expiry_text();
+    const auto beta_text = std::wstring(L"Free community test version · No expiry");
     const auto beta_notice = add(-1, L"STATIC", beta_text.c_str(), 0, 24, 716, 976, 26);
     state.theme.control(beta_notice, L"STATIC", true);
     note(-1,
@@ -2500,6 +2624,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 CloseHandle(state.layer_editor_process);
                 state.layer_editor_process = nullptr;
                 state.refresh_editor_connection();
+            }
+            if (state.connection_process && WaitForSingleObject(state.connection_process, 0) == WAIT_OBJECT_0) {
+                DWORD result = ERROR_PROCESS_ABORTED;
+                GetExitCodeProcess(state.connection_process, &result);
+                CloseHandle(state.connection_process);
+                state.connection_process = nullptr;
+                state.connection_finished(state.connection_enable, static_cast<LONG>(result));
             }
             if (now - state.fps_start >= 1000) {
                 state.measured_fps = state.fps_frames * 1000. / double(now - state.fps_start);

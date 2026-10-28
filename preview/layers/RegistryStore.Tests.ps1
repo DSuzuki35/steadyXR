@@ -14,6 +14,26 @@ try {
     $key.Close()
     $store = New-Object SteadyXR.RegistryStore($fixture,$true)
     $before = $store.Read($true)
+    foreach ($ownName in @('XR_APILAYER_STEADYXR_preview.json', 'XR_APILAYER_HORIZONLOCK_preview.json')) {
+        $perUser = $store.Clone($before)
+        $perUser[0].Values.Add((Value ('C:\fixture\' + $ownName) 4 ([BitConverter]::GetBytes([uint32]0))))
+        MustFail { $null=$store.Apply($before,$perUser,$backupDir) } 'New per-user SteadyXR or legacy registration is rejected'
+        Assert ($store.Same($before,$store.Read($true))) 'Rejected per-user registration leaves registry unchanged'
+        $perUser[0].Values[$perUser[0].Values.Count-1].Data=[BitConverter]::GetBytes([uint32]1)
+        $null=$store.Apply($before,$perUser,$backupDir)
+        $enabled=$store.Clone($perUser)
+        $enabled[0].Values[$enabled[0].Values.Count-1].Data=[BitConverter]::GetBytes([uint32]0)
+        MustFail { $null=$store.Apply($perUser,$enabled,$backupDir) } 'Existing disabled per-user registration cannot be re-enabled by restore or toggle'
+        $null=$store.Apply($perUser,$before,$backupDir)
+    }
+    $rawName=$store.Clone($before)
+    $rawName[0].Values.Add((Value 'unrelated|malformed' 3 ([byte[]](1,3,5))))
+    $null=$store.Apply($before,$rawName,$backupDir)
+    $editedRaw=$store.Clone($rawName)
+    $editedRaw[0].Values[0].Data=[BitConverter]::GetBytes([uint32]0)
+    $null=$store.Apply($rawName,$editedRaw,$backupDir)
+    Assert ($store.Same($editedRaw,$store.Read($true))) 'Malformed unrelated value names do not prevent valid edits'
+    $null=$store.Apply($editedRaw,$before,$backupDir)
     Assert ($before.Count -eq 2) 'Read returns both ordered HKCU groups, including missing Explicit'
     Assert ($before[0].Values[0].Name -eq 'z-first.json') 'Raw enumeration order preserved'
     Assert ($before[0].Values[1].Kind -eq 3) 'Binary kind preserved'

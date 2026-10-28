@@ -1,6 +1,10 @@
 # SteadyXR
 
-**0.12.0:** Optional viewer Director controls add lookahead stabilization, automatic crop and iRacing/Le Mans Ultimate speed framing to standalone and the direct OBS OpenXR source. All default off. See [Viewer camera controls](docs/viewer-director.md).
+**0.14.0:** Native D3D12 OpenXR capture now feeds the same standalone preview and OBS source. The GPU path preserves submitted image/pose pairing and skips capture when its bounded buffers are busy. See [validation and signing](docs/release-0.14.0-validation.md).
+
+**From 0.13.1:** Permanent builds, system-wide OpenXR registration, and a startup compatibility fix for VectorXR Frame Generation. The new capture DLL needs signing before an anti-cheat game test; see [validation and signing](docs/release-0.14.0-validation.md).
+
+**From 0.13.0:** **Symmetric (both eyes)** links the render-extension sliders across eyes, keeping inward and outward margins matched for Le Mans Ultimate. Find it under **Framing → Render & edge settings**. Settings and complete presets remember the checkbox. The previous 0.13.0 package remains available with its unchanged signed DLL.
 
 SteadyXR creates a stabilized VR view, either in its standalone preview or directly as an OBS source for single-PC streaming. Capture submitted OpenXR eye images with their poses, or stabilize an existing game window in the standalone app. Horizon leveling, extra rendered scenery, asymmetric framing, soft mirrored borders and complete presets help tune the output for viewers.
 
@@ -10,7 +14,7 @@ The filter appears as **VR Stabilizer** and the direct source as **SteadyXR Open
 
 Downloads: [Windows releases](https://github.com/DSuzuki35/horizonlock-vr/releases). The repository and its releases are private; sign in to GitHub with an account that has access.
 
-Version **0.12.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
+Version **0.14.0 — experimental**, targeting **Windows 11 x64 and OBS 32.2.2**. Pose mode is designed for Dream Air + SBoys3/SteamVR, including games using either SteamVR's OpenXR path or OpenVR. The sender never changes the active runtime, recenters the headset, or alters the headset image. Image mode requires no headset connection, FOV calibration or tracking sender for stabilization; the optional photo timing display can connect a sender for diagnostics.
 
 For the OBS filter's pose mode, SteamVR must be supplying headset tracking. The standalone preview's OpenXR capture does not require this sender and can use native OpenXR runtimes. Image mode works independently of the runtime because it analyzes the captured video.
 
@@ -18,13 +22,13 @@ The local v0.3.4 Windows test package uses LLVM-MinGW with static runtime librar
 
 ## SteadyXR 0.11.0 — free community test notice
 
-The preview controls show that this 30-day test build is free, its fixed UTC expiry, and the plan for future paid releases through channel subscriber/supporter access or a one-time license purchase. The notice remains visible across all main tabs and uses static native text; it adds no capture or GPU processing. It does not appear in the clean output. The existing license and build-expiry behavior remain unchanged.
+The preview controls show the free community test notice and planned future paid access. Since 0.13.1 the app, newly built capture DLL and direct OBS source have **no expiry**. Older binaries retain their own deadlines; the updated capture DLL must be installed to remove its old limit too.
 
 ## SteadyXR 0.10.1 — clearer preview controls
 
 The native preview now has **Capture**, **Camera**, **Framing** and **Output** tabs. **Open preview**, pause, presets and A/B remain easy to reach. **Spectator & effects** opens focused **Gaze & chat**, **Motion**, **Exposure**, **Bloom** and **Color** pages with explanations, ranges and optional switches. Settings and shortcuts are preserved. The UI uses event-driven native Windows painting with no animated UI or added continuous GPU pass.
 
-This is a UI update using the same IPC 4 capture format as 0.10.0. A compatible unexpired 0.10.0 connection can stay registered; use the new connection when you want this build's validity period. Delivery preserves previous packages and tuning without registering a layer or restarting applications.
+The 0.13.0 UI update preserved the signed 0.12.0 capture DLL. The 0.13.1 capture changes require a new DLL and signature, followed by **Upgrade connection** and a game restart. Delivery itself preserves previous packages and tuning without registering a layer or restarting applications.
 
 ## SteadyXR 0.10.0
 
@@ -38,7 +42,7 @@ This release requires the new OpenXR capture layer: use **Upgrade connection** i
 
 The standalone app and direct OBS source now offer **Reset horizon**, a temporary **20-second A/B comparison**, and hotkeys for common controls and presets. Hold the headset approximately upright when resetting the horizon. Comparison keeps the same framing and saved tuning, returns automatically and is never stored in settings or presets. Choose Original, 50/50 split (left stabilized/right original), or complete views side by side. The comparison view is saved; active comparison is temporary. Capture/FPS feedback stays in the controls, leaving the live stream image clear. The standalone status is live; OBS provides a snapshot with an explicit Refresh status button so slider adjustments are not interrupted.
 
-The ready-to-use `Gaming-PC/SteadyXR-0.12.0` folder contains the standalone app, layer and settings. The separate `SteadyXR-0.12.0-OBS-Windows-x64.zip` and `Stream-PC` provide **obs-plugins** and **data**. Close OBS and copy those two folders directly into `C:\Program Files\obs-studio` to install the OBS module. Existing 0.7 settings migrate unchanged when the new app has no INI yet, and previous versioned packages are kept. The 30-day build validity remains in effect.
+The ready-to-use `Gaming-PC/SteadyXR-0.14.0` folder contains the standalone app, layer and settings. The separate `SteadyXR-0.14.0-OBS-Windows-x64.zip` and `Stream-PC` provide **obs-plugins** and **data**. Close OBS and copy those two folders directly into `C:\Program Files\obs-studio` to install the OBS module. Existing 0.7 settings migrate unchanged when the new app has no INI yet, and previous versioned packages are kept. New 0.13.1 builds have no expiry.
 
 Standalone shortcuts default to **Ctrl+Alt+R** (Reset horizon), **Ctrl+Alt+P** (pause/resume), **Ctrl+Alt+N** (next preset) and **Ctrl+Alt+B** (A/B comparison). Use **Hotkeys / A/B…** to select the alternative modifier combination or turn them off. For the OBS source, assign shortcuts in **Settings → Hotkeys**. See [the preview guide](preview/README.md) and [OBS guide](docs/obs-openxr-source.md) for details.
 
@@ -52,7 +56,7 @@ The completed 0.7.0 rename introduced SteadyXR.exe, SteadyXR.ini and SteadyXR-Op
 
 Install the updated OBS module and add **Sources → + → SteadyXR OpenXR Capture**. Close the standalone preview; OBS receives and stabilizes the OpenXR eye images directly, with no preview window to capture. Use **Import settings** to bring your existing `SteadyXR.ini` or saved INI preset into this source. OBS then keeps its own settings in the scene collection.
 
-The source uses the same crop, horizon leveling, adaptive leveling, mirror softness, edge stretch, per-eye reserves and Y offset as the preview. Default output is 3840×2160 at 60 FPS. It requires the working SteadyXR OpenXR layer, a D3D11 game and OBS on the same GPU. Existing layer render-extension settings continue to apply. Hidden sources stop requesting game copies; missing frames show a black waiting screen. Reuse the same source across scenes because one consumer owns the capture connection at a time. The 30-day build expiration also applies to this source.
+The source uses the same crop, horizon leveling, adaptive leveling, mirror softness, edge stretch, per-eye reserves and Y offset as the preview. Default output is 3840×2160 at 60 FPS. It requires the working SteadyXR OpenXR layer, a D3D11 or D3D12 OpenXR game and OBS on the same GPU. Existing layer render-extension settings continue to apply. Hidden sources stop requesting game copies; missing frames show a black waiting screen. Reuse the same source across scenes because one consumer owns the capture connection at a time. The 0.13.1 source has no build expiration.
 
 The source transfers video through GPU shared textures and uses the existing stabilization pass; it performs no CPU video readback or encoding of its own. Actual streaming overhead still depends on game, resolution and OBS encoding settings. [Installation and settings guide](docs/obs-openxr-source.md).
 
@@ -253,7 +257,9 @@ Demo mode emits synthetic tracking for connection tests; it does not follow a he
 
 For an opt-in hardware check with SteamVR running, use `python sender/steamvr_smoke_test.py build-windows/vrst-sender.exe --require-tracking`. It tests both eyes, frame/live modes, actual UDP poses and photo-window visibility, without changing SteamVR settings. It is separate from CTest because it requires a live tracked headset.
 
-Local delivery can be created with `python scripts/package.py --build <build-directory> --openvr <OpenVR-SDK> --openxr <OpenXR-SDK> --version 0.12.0 --delivery-dir <folder>`. It preserves versioned binary/source ZIPs and checksums, migrates the selected previous viewer's settings without modifying them, and updates the `Gaming-PC` launchers. Both `Gaming-PC/SteadyXR-0.12.0` and `Stream-PC` directly contain `obs-plugins` and `data` ready to copy into OBS. Run `python scripts/package_tests.py` and `python scripts/preview_delivery_tests.py` to check delivery using temporary fixtures; these do not change OBS or OpenXR configuration.
+Local delivery can be created with `python scripts/package.py --build <build-directory> --openvr <OpenVR-SDK> --openxr <OpenXR-SDK> --version 0.14.0 --delivery-dir <folder>`. It preserves versioned binary/source ZIPs and checksums, migrates the selected previous viewer's settings without modifying them, and updates the `Gaming-PC` launchers. Both `Gaming-PC/SteadyXR-0.14.0` and `Stream-PC` directly contain `obs-plugins` and `data` ready to copy into OBS. Run `python scripts/package_tests.py` and `python scripts/preview_delivery_tests.py` to check delivery using temporary fixtures; these do not change OBS or OpenXR configuration.
+
+To preserve a signed capture DLL, also pass `--openxr-layer <signed.dll> --openxr-layer-sha256 <expected-hash> --openxr-layer-build <original-build.json> --openxr-layer-source <original-source.zip>`. All four are required together. A mismatched input hash aborts before replacing any package. Packaging copies the complete DLL, including its signature, and records its original expiry separately. Rebuilding the capture target does not recreate its signature; do not substitute that build output for the preserved binary.
 
 ## Build and test from source
 

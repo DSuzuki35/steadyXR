@@ -1,6 +1,32 @@
-SteadyXR - Version 0.12.0
+SteadyXR - Version 0.14.0
 
-NEW IN 0.12.0 - OPTIONAL VIEWER DIRECTOR
+NEW IN 0.14.0 - D3D12 OPENXR CAPTURE
+D3D11 and D3D12 sessions are detected automatically. The GPU capture preserves
+submitted image/pose pairing and feeds the existing preview and OBS source.
+Busy buffers skip capture instead of making the game wait for the viewer.
+The new DLL needs signing and live runtime validation.
+
+FROM 0.13.0 - SYMMETRIC RENDER EXTENSION
+Framing > Render & edge settings > Symmetric (both eyes) links the inner and
+outer render margins across eyes. Enabling it copies the selected eye to the
+other eye. Both eyes inward: 10% enables the lock too. Save, then restart the
+game. Settings and complete presets retain the checkbox. Use it for LMU:
+LMU requires matching recommended render dimensions for both eyes.
+
+FROM 0.13.1 - PERMANENT BUILDS AND VECTORXR COMPATIBILITY
+The app, OBS source and newly compiled capture DLL have no expiry.
+Install/Upgrade connection now registers SteadyXR system-wide, asks for
+Windows administrator approval, and disables older per-user registrations.
+With VectorXR present, SteadyXR captures before its D3D11-to-D3D12 bridge.
+A startup fix avoids an unsafe pre-initialization eye-gaze query in VectorXR.
+Only original game frames are captured, not generated intermediate frames.
+
+The new capture DLL MUST be signed again before testing LMU/EAC.
+The previous signed 0.13.0/0.12.0 DLL and packages are untouched.
+Hardware compatibility is pending validation after signing.
+See docs/release-0.14.0-validation.md in the complete package/source.
+
+FROM 0.12.0 - OPTIONAL VIEWER DIRECTOR
 Spectator & effects > Director adds lookahead, automatic crop and speed framing.
 Speed telemetry supports iRacing and Le Mans Ultimate on the local game PC.
 All three start off. Lookahead uses up to four delayed frames and 256 MiB of
@@ -10,19 +36,17 @@ Lookahead needs OpenXR; window capture supports auto crop and speed framing.
 See Viewer-Director-Guide.md and Telemetry-Guide.md. Live driving validation is pending.
 
 
-NEW IN 0.11.0 - FREE TEST AND FUTURE PAID RELEASE NOTICE
-The controls show that this 30-day test build is free, its fixed UTC expiry,
-and planned paid access through channel subscribers/supporters or a one-time
-license purchase. The notice is static and stays out of the clean preview.
-The build expires 30 days after compilation, not 30 days after first launch.
+COMMUNITY TEST
+The controls show the free community test and future paid release notice.
+There is no build expiry in 0.13.1. The notice stays out of the clean preview.
 
 NEW IN 0.10.1 - CLEARER NATIVE UI
 Capture / Camera / Framing / Output tabs organize the main controls.
 Spectator & effects stays visible and opens Gaze & chat / Motion / Exposure /
 Bloom / Color pages. Every enhancement remains optional. Values apply when
 leaving a field. No new continuous UI rendering or GPU effect is added.
-0.10.1 uses the same IPC 4 format as 0.10.0; a compatible unexpired 0.10.0
-connection can remain active. Upgrade for this capture build's validity period.
+The IPC 4 format remains compatible. Upgrade the capture connection for the
+new startup fix and permanent capture build.
 
 
 NEW IN 0.10.0 - OPTIONAL SPECTATOR CAMERA AND VISUAL EFFECTS
@@ -39,26 +63,26 @@ Pre-0.10 connections: Install/Upgrade connection and restart the game for IPC 4.
 Delivery does not change the current connection or launch/restart applications.
 
 SINGLE-PC OBS - DIRECT OPENXR SOURCE
-Close OBS, then extract SteadyXR-0.12.0-OBS-Windows-x64.zip. Copy obs-plugins
+Close OBS, then extract SteadyXR-0.14.0-OBS-Windows-x64.zip. Copy obs-plugins
 and data directly into C:\Program Files\obs-studio on the gaming PC.
 The same drop-in folders are under Stream-PC. The standalone community ZIP
 contains no OBS binaries.
 Restart OBS and add the source
 "SteadyXR OpenXR Capture". Close the standalone SteadyXR preview; the source
 captures and stabilizes directly and does not need a visible preview window.
-Use the source's settings import to select Gaming-PC\SteadyXR-0.12.0\SteadyXR.ini.
+Use the source's settings import to select Gaming-PC\SteadyXR-0.14.0\SteadyXR.ini.
 OBS stores its own settings in the scene collection; the INI stays unchanged.
 Reuse this existing source in other scenes instead of creating another capture.
 The working SteadyXR OpenXR connection must remain enabled. Existing render
 extension settings still apply. OBS and the OpenXR game must use the same GPU.
 Updating from pre-0.10 requires Upgrade connection and a game restart.
 If no frames arrive, the source shows a black waiting screen. It pauses capture
-when hidden, and follows the same 30-day build validity as the standalone app.
+when hidden. The new build has no expiry.
 Game audio remains a separate OBS audio source, as before.
 
 GAMING PC - STANDALONE PREVIEW
 Run Gaming-PC\Start-Preview.cmd after closing the previous preview app.
-The app is in Gaming-PC\SteadyXR-0.12.0: SteadyXR.exe and SteadyXR.ini.
+The app is in Gaming-PC\SteadyXR-0.14.0: SteadyXR.exe and SteadyXR.ini.
 Your current settings are copied unchanged if SteadyXR.ini is missing.
 For a pre-0.10 connection, click Capture > Upgrade connection in the new app,
 then restart iRacing. 0.10.x and 0.11.0 share the same capture format.
@@ -144,8 +168,6 @@ If a same-version package is corrected, its earlier binary/source ZIPs and
 checksums are retained together in Previous-packages.
 
 BUILD VALIDITY
-The app, bundled capture DLL and direct OBS source share one release build
-time and expire 30 days later, shown in the window title and SteadyXR-build.json.
-After expiry the preview stops capture and shows a
-black Build expired screen. Install a newer build to resume; settings are kept.
-The layer editor remains available. Existing VR sessions keep their projection.
+The new 0.13.1 app, capture DLL and OBS source have no expiry.
+An older signed DLL retains its embedded deadline until replaced with the
+newly signed 0.14.0 DLL. Never modify a signed DLL in place.

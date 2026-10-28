@@ -14,6 +14,8 @@ struct EyeExpansion {
 struct RenderSettings {
     bool enabled{};
     EyeExpansion eyes[2]{};
+    // Viewer-only editing preference. Older capture DLLs use the four existing amounts.
+    bool symmetric{};
 };
 namespace render_settings_detail {
 inline double percent(double value) {
@@ -38,6 +40,7 @@ inline RenderSettings read_render_settings(const std::wstring &ini) {
     if (ini.empty())
         return settings;
     settings.enabled = GetPrivateProfileIntW(L"Render", L"Enabled", 0, ini.c_str()) != 0;
+    settings.symmetric = GetPrivateProfileIntW(L"Render", L"Symmetric", 0, ini.c_str()) != 0;
     for (unsigned eye = 0; eye < 2; ++eye) {
         settings.eyes[eye].left =
             render_settings_detail::read_percent(ini, render_settings_detail::keys[eye][0]);
@@ -61,6 +64,8 @@ inline bool write_render_settings(const std::wstring &ini, const RenderSettings 
         }
     }
     if (!WritePrivateProfileStringW(L"Render", L"Enabled", settings.enabled ? L"1" : L"0", ini.c_str()))
+        ok = false;
+    if (!WritePrivateProfileStringW(L"Render", L"Symmetric", settings.symmetric ? L"1" : L"0", ini.c_str()))
         ok = false;
     return ok;
 }

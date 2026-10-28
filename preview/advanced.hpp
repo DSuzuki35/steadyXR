@@ -24,7 +24,8 @@ class AdvancedSettings {
         inward_id,
         save_render_id,
         center_id,
-        stretch_id
+        stretch_id,
+        symmetric_id
     };
     AdvancedSettings();
     ~AdvancedSettings();

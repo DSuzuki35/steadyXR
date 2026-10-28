@@ -3,6 +3,7 @@
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import zipfile
@@ -13,9 +14,26 @@ p = argparse.ArgumentParser()
 p.add_argument('--build', type=Path, default=root / 'build-windows')
 p.add_argument('--openvr', type=Path, required=True)
 p.add_argument('--openxr', type=Path, help='Include the standalone preview and its pinned OpenXR source headers')
-p.add_argument('--version', default='0.12.0')
+p.add_argument('--version', default='0.14.0')
+p.add_argument('--openxr-layer', type=Path, help='Preserve an existing capture DLL byte for byte')
+p.add_argument('--openxr-layer-sha256', help='Required expected SHA-256 for the preserved DLL')
+p.add_argument('--openxr-layer-build', type=Path, help='Original build metadata, including capture expiry')
+p.add_argument('--openxr-layer-source', type=Path, help='Original corresponding source ZIP for the preserved DLL')
 p.add_argument('--delivery-dir', type=Path, help='Also deliver a ZIP and ready-to-copy Gaming-PC/Stream-PC folders here')
 a = p.parse_args()
+preserved = (a.openxr_layer, a.openxr_layer_sha256, a.openxr_layer_build, a.openxr_layer_source)
+capture_metadata = None
+if any(preserved):
+    if not all(preserved) or not a.openxr:
+        p.error('Preserving a capture DLL requires --openxr and all four --openxr-layer options')
+    for path in (a.openxr_layer, a.openxr_layer_build, a.openxr_layer_source):
+        if not path.is_file():
+            raise SystemExit(f'Missing preserved capture input: {path}')
+    digest = hashlib.sha256(a.openxr_layer.read_bytes()).hexdigest()
+    if digest != a.openxr_layer_sha256.lower():
+        raise SystemExit('Preserved capture DLL SHA-256 mismatch; no package was changed')
+    capture_metadata = json.loads(a.openxr_layer_build.read_text(encoding='utf-8-sig'))
+    capture_metadata.update(sha256=digest, preserved_binary=True)
 stage = root / 'dist' / f'SteadyXR-{a.version}-Windows-x64'
 if stage.resolve().parent != (root / 'dist').resolve():
     raise SystemExit('Invalid package version/path')
@@ -51,11 +69,23 @@ for name in ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'Install-OBS.cmd'
     copy(root / name, name)
 copy(a.openvr / 'LICENSE', 'licenses/OpenVR-LICENSE.txt')
 copy(root / 'docs/spectator-features.md', 'docs/spectator-features.md')
+copy(root / 'docs/release-0.14.0-validation.md', 'docs/release-0.14.0-validation.md')
 for guide in ['viewer-director.md', 'telemetry.md']:
     copy(root / 'docs' / guide, Path('docs') / guide)
 if a.openxr:
     for name in ['SteadyXR.exe', 'SteadyXR-OpenXR.dll']:
-        copy(output(Path('preview') / name), Path('preview') / name)
+        src = a.openxr_layer if name == 'SteadyXR-OpenXR.dll' and a.openxr_layer else output(Path('preview') / name)
+        copy(src, Path('preview') / name)
+    if capture_metadata:
+        (stage / 'preview/SteadyXR-OpenXR-build.json').write_text(
+            json.dumps(capture_metadata, indent=2) + '\n', encoding='utf-8')
+        copy(a.openxr_layer_source, Path('source/prebuilt-capture') / a.openxr_layer_source.name)
+        (stage / 'source/prebuilt-capture/README.txt').write_text(
+            'This release preserves the capture DLL from the accompanying source archive.\n'
+            f'Original capture version: {capture_metadata.get("version", "unknown")}\n'
+            f'SHA-256: {capture_metadata["sha256"]}\n'
+            f'Capture expiry (UTC): {capture_metadata.get("expires_at_utc", "unknown")}\n'
+            'Rebuilding that DLL changes its bytes and requires a new signature.\n', encoding='utf-8')
     copy(a.build / 'preview/XR_APILAYER_STEADYXR_preview.json', 'preview/XR_APILAYER_STEADYXR_preview.json')
     copy(a.build / 'preview/steadyxr-build.json', 'preview/SteadyXR-build.json')
     copy(root / 'preview/README.md', 'preview/README.md')
