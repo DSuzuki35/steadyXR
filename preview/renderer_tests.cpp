@@ -588,8 +588,86 @@ void visual_host_tests() {
             "all-off frees effects resources and stops GPU work");
     std::cout << "Native GPU: preview exposure, transfer, A/B and bypass passed\n";
 }
+void quad_source_tests() {
+    Renderer renderer;
+    require(renderer.attach_offscreen(), "quad source renderer");
+    Frame frame{};
+    frame.generation = frame.session = frame.sequence = 1;
+    frame.producer_pid = 1;
+    frame.display_time = 1000000000;
+    frame.view_count = 2;
+    ComPtr<ID3D11Texture2D> textures[2];
+    for (unsigned i = 0; i < 2; ++i) {
+        const unsigned size = i ? 256 : 64;
+        auto &v = frame.views[i];
+        v.width = v.height = v.rect_width = v.rect_height = size;
+        v.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (i) {
+            v.fov[0] = v.fov[3] = -.5f;
+            v.fov[1] = v.fov[2] = .5f;
+        }
+        std::vector<std::uint32_t> input(size * size, 0xff0000ffu);
+        if (i)
+            for (unsigned y = 0; y < size; ++y)
+                for (unsigned x = 0; x < size; ++x)
+                    input[y * size + x] = (x / 8) % 2 ? 0xffff0000u : 0xff00ff00u;
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = desc.Height = size;
+        desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA data{input.data(), size * 4, 0};
+        require(SUCCEEDED(renderer.device()->CreateTexture2D(&desc, &data, &textures[i])), "quad source image");
+    }
+    ID3D11Texture2D *raw[]{textures[0].Get(), textures[1].Get()};
+    Options options;
+    options.output_width = options.output_height = 512;
+    options.aspect = 1;
+    options.crop = options.smoothing = options.horizon_lock = 0;
+    options.mirror = false;
+    std::vector<std::uint32_t> pixels;
+    unsigned width{}, height{};
+    auto draw = [&] {
+        require(renderer.consume_replay(frame, raw) && renderer.draw(options, false) &&
+                    renderer.readback(pixels, width, height), "quad source draw/readback");
+        require(width == 512 && height == 512, "compose at output size rather than peripheral size");
+    };
+    for (unsigned eye : {0u, 1u}) {
+        frame.eye = eye;
+        for (bool source_mode : {false, true}) {
+            options.workshop_source = source_mode;
+            for (bool original : {false, true}) {
+                options.compare_original = original;
+                draw();
+                require(pixels[256 * width + 32] == 0xff0000ffu, "outside focus retains peripheral image");
+                require(pixels[256 * width + 208] == 0xff00ff00u &&
+                            pixels[256 * width + 216] == 0xffff0000u,
+                        source_mode ? "Workshop source preserves high-resolution focus detail"
+                                    : "processed preview preserves high-resolution focus detail");
+            }
+        }
+    }
+    options.compare_original = false;
+    frame.views[1].fov[0] = 0;
+    frame.views[1].fov[1] = 1;
+    draw();
+    require(pixels[256 * width + 128] == 0xff0000ffu && pixels[256 * width + 384] == 0xff00ff00u,
+            "Workshop source uses displaced focus FOV");
+    frame.views[1].fov[0] = -.1f;
+    frame.views[1].fov[1] = .1f;
+    const auto yaw = std::atan(.5);
+    frame.views[1].orientation[1] = float(std::sin(yaw / 2));
+    frame.views[1].orientation[3] = float(std::cos(yaw / 2));
+    draw();
+    require(pixels[256 * width + 128] != 0xff0000ffu && pixels[256 * width + 256] == 0xff0000ffu,
+            "Workshop source maps the submitted focus orientation");
+    frame.view_count = 1;
+    draw();
+    require(pixels[256 * width + 128] == 0xff0000ffu, "single-view transition never retains stale focus");
+}
 int main(int argc, char **argv) {
     try {
+        quad_source_tests();
         {
             Renderer replay;
             require(replay.attach_offscreen(), "replay device");

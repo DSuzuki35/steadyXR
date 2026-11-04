@@ -1411,8 +1411,16 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
                 put(p.input, full);
                 put(p.output, full);
                 put(p.correction, Quat{});
+                // Source framing bypasses stabilization, but still combines
+                // the two submitted cameras at the final output resolution.
+                const Quat context_pose{view.orientation[0], view.orientation[1], view.orientation[2],
+                                        view.orientation[3]};
+                const Quat focus_pose{focus.orientation[0], focus.orientation[1], focus.orientation[2],
+                                      focus.orientation[3]};
+                const auto source_focus = multiply(conjugate(focus_pose), context_pose);
+                put(p.focus_correction, source_focus);
+                put(p.original_focus, source_focus);
                 p.flags[0] = 0;
-                p.flags[1] = 0;
                 p.comparison[0] = 0;
             }
         }
