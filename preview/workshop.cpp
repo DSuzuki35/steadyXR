@@ -1,6 +1,7 @@
 #include "workshop.hpp"
 #include "crop_geometry.hpp"
 #include "speed_telemetry.hpp"
+#include "source_status.hpp"
 #include "workshop_clip.hpp"
 #include "workshop_input.hpp"
 #include "workshop_playback.hpp"
@@ -364,9 +365,9 @@ struct Workshop::Impl {
         auto px = [](int n) { return n; };
         const int m = px(20), side = px(280), gap = px(20), left = r.right - side - 3 * m;
         auto place = [&](HWND h, int x, int y, int w, int hgt) { MoveWindow(h, x, y, w, hgt, TRUE); };
-        place(status, m, m, r.right - 2 * m, px(46));
-        place(canvas, m, px(82), left, r.bottom - px(300));
-        MoveWindow(overlay, 0, 0, left, r.bottom - px(300), TRUE);
+        place(status, m, m, r.right - 2 * m, px(68));
+        place(canvas, m, px(104), left, r.bottom - px(322));
+        MoveWindow(overlay, 0, 0, left, r.bottom - px(322), TRUE);
         place(controls[timeline_id], m, r.bottom - px(136), left, px(28));
         place(time_label, m, r.bottom - px(106), left, px(22));
         int x = m;
@@ -376,7 +377,7 @@ struct Workshop::Impl {
             x += width + px(8);
         }
         const int sx = r.right - side - m;
-        int y = px(82);
+        int y = px(104);
         for (int id : {crop_id, x_id, y_id, smooth_id, pitch_id, roll_id}) {
             place(controls[id + 100], sx, y, side - px(58), px(20));
             place(labels[id], sx + side - px(58), y, px(58), px(20));
@@ -933,17 +934,16 @@ void Workshop::tick() {
             SendMessageW(p.controls[timeline_id], TBM_SETPOS, TRUE, p.current);
             const auto *f = p.reader.metadata(p.current);
             wchar_t t[160]{};
-            swprintf(t, 160, L"%.1f s / %.1f s  |  %s  |  Source %u x %u", f ? f->media_time / 1e7 : 0,
+            swprintf(t, 160, L"%.1f s / %.1f s  |  %s", f ? f->media_time / 1e7 : 0,
                      p.reader.metadata(p.reader.count() - 1)->media_time / 1e7,
-                     p.source_view ? L"Full source + crop guide" : L"Processed output",
-                     p.shown.views[0].width, p.shown.views[0].height);
+                     p.source_view ? L"Full source + crop guide" : L"Processed output");
             SetWindowTextW(p.time_label, t);
             p.sync();
             p.text(std::wstring(p.replay.correction_fraction() < .999
                                     ? L"Live paused - source margins limit correction. Add crop or reduce "
                                       L"stabilization.\r\n"
                                     : L"Live paused - draft changes apply only when you choose Apply.\r\n") +
-                   p.clip_summary);
+                   (f ? source_view_summary(f->frame, true) + L"\r\n" : L"") + p.clip_summary);
             p.dirty = false;
         }
     } else if (p.dirty) {

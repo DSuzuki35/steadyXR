@@ -1,4 +1,5 @@
 #include "renderer.hpp"
+#include "source_status.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -620,6 +621,10 @@ void quad_source_tests() {
         require(SUCCEEDED(renderer.device()->CreateTexture2D(&desc, &data, &textures[i])), "quad source image");
     }
     ID3D11Texture2D *raw[]{textures[0].Get(), textures[1].Get()};
+    require(source_view_summary(frame, true).find(L"Peripheral 64 x 64") != std::wstring::npos &&
+                source_view_summary(frame, true).find(L"Focus 256 x 256") != std::wstring::npos,
+            "source status describes independent source resolutions");
+    require(source_view_summary(Frame{}) == L"No source image", "empty metadata is not a single-view feed");
     Options options;
     options.output_width = options.output_height = 512;
     options.aspect = 1;

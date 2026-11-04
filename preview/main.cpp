@@ -10,6 +10,7 @@
 #include "render_settings.hpp"
 #include "renderer.hpp"
 #include "settings_path.hpp"
+#include "source_status.hpp"
 #include "spectator_controls.hpp"
 #include "spectator_settings.hpp"
 #include "theme.hpp"
@@ -995,8 +996,14 @@ struct App {
                           : expired           ? std::wstring(L"Preview stopped")
                           : options.stabilize ? std::wstring(L"Stabilized")
                                               : std::wstring(L"Stabilization off");
-        const auto summary =
+        Frame captured_source{};
+        ID3D11Texture2D *source_images[2]{};
+        const bool has_source = !demo && !window_mode && renderer.source_snapshot(captured_source, source_images);
+        const bool fresh_source = has_source && active() && last_received_ms && !stale && !capture_conflict;
+        auto summary =
             std::to_wstring(fps_value) + L" FPS | " + feed + L" " + connection + L" | " + view;
+        if (fresh_source)
+            summary += L" | " + source_view_summary(captured_source);
         SetWindowTextW(compact_status, summary.c_str());
         const wchar_t *comparison_button = options.compare_effects     ? L"Compare effects (20s)"
                                            : options.compare_mode == 1 ? L"Compare 50/50 (20s)"
@@ -1074,11 +1081,14 @@ struct App {
             text += L"Preview hidden – no new frame copies requested.\r\n";
         else if (last_received_ms && GetTickCount64() - last_received_ms > 2000)
             text += L"No new frame for more than 2 seconds.\r\n";
-        if (renderer.has_frame())
-            text += std::wstring(window_mode && !demo    ? L"Image analysis"
-                                 : renderer.views() == 2 ? L"Context + foveal inset"
-                                                         : L"Stereo eye") +
-                    L"\r\n";
+        if (has_source) {
+            text += std::wstring(fresh_source ? L"Received source: " : L"Last received source: ") +
+                    source_view_summary(captured_source, true) + L"\r\n";
+            if (captured_source.view_count == 1)
+                text += L"One image may be ordinary stereo or already combined upstream. If focus detail is "
+                        L"missing, check the game's quad-view mode and active OpenXR layer chain.\r\n";
+        } else if (window_mode && !demo && renderer.has_frame())
+            text += L"Image analysis\r\n";
         if (!renderer.error().empty())
             text += renderer.error() + L"\r\n";
         text += L"Render: " + std::to_wstring(options.output_width) + L" x " +
@@ -2244,6 +2254,45 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                           std::wstring(interaction_text).find(L"Original") == std::wstring::npos;
         // The selected layout persists, while changing it during A/B preserves
         // the same deadline and never persists the temporary comparison itself.
+        {
+            const bool saved_demo = state.demo, saved_window = state.window_mode;
+            const bool saved_paused = state.paused, visible = IsWindowVisible(state.output);
+            const auto received = state.last_received_ms;
+            state.demo = state.window_mode = state.paused = false;
+            ShowWindow(state.output, SW_SHOWNOACTIVATE);
+            bool source_status_ok = state.renderer.demo(0, true);
+            state.last_received_ms = GetTickCount64();
+            auto contains = [&](const wchar_t *label) {
+                state.update_status();
+                GetWindowTextW(state.compact_status, interaction_text, 512);
+                return std::wstring(interaction_text).find(label) != std::wstring::npos;
+            };
+            source_status_ok &= contains(L"Peripheral + focus");
+            wchar_t details[4096]{};
+            GetWindowTextW(state.status, details, 4096);
+            source_status_ok &= std::wstring(details).find(L"512 x 512") != std::wstring::npos;
+            state.paused = true;
+            source_status_ok &= !contains(L"Peripheral + focus");
+            state.paused = false;
+            state.last_received_ms = GetTickCount64() - 3000;
+            source_status_ok &= !contains(L"Peripheral + focus") && contains(L"waiting");
+            state.last_received_ms = GetTickCount64();
+            state.demo = true;
+            source_status_ok &= !contains(L"Peripheral + focus") && contains(L"Demo");
+            state.demo = false;
+            state.window_mode = true;
+            source_status_ok &= !contains(L"Peripheral + focus") && contains(L"Window");
+            state.window_mode = false;
+            source_status_ok &= state.renderer.demo(0, false) && contains(L"Single view received");
+            state.renderer.demo(0, true);
+            state.demo = saved_demo;
+            state.window_mode = saved_window;
+            state.paused = saved_paused;
+            state.last_received_ms = received;
+            if (!visible)
+                ShowWindow(state.output, SW_HIDE);
+            interactions_ok &= source_status_ok;
+        }
         SendMessageW(state.controls, WM_COMMAND, comparison_split_id, 0);
         state.paused = false;
         state.last_received_ms = GetTickCount64();
