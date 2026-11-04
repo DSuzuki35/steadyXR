@@ -297,7 +297,7 @@ void hardware_edge_cases(ID3D11Device *device, ID3D11Texture2D *const textures[2
     for (const auto &path : {pressure, recenter, cancel, mono})
         std::filesystem::remove_all(path, ec);
 }
-void hardware_test(bool large, bool keep) {
+void hardware_test(bool large, bool keep, bool padded = false) {
     Microsoft::WRL::ComPtr<ID3D11Device> device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
     auto hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
@@ -317,7 +317,8 @@ void hardware_test(bool large, bool keep) {
     auto path = std::filesystem::path(executable).parent_path() /
                 (L"steadyxr-hardware-clip-" + std::to_wstring(GetCurrentProcessId()) + L".sxclip");
     auto f = source();
-    const unsigned source_width = large ? 2560 : 320, source_height = large ? 1920 : 240;
+    const unsigned source_width = padded ? 2048 : (large ? 2560 : 320);
+    const unsigned source_height = padded ? 964 : (large ? 1920 : 240);
     for (auto &view : f.views) {
         view.width = view.rect_width = source_width;
         view.height = view.rect_height = source_height;
@@ -333,7 +334,9 @@ void hardware_test(bool large, bool keep) {
     for (auto &texture : textures)
         check(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &texture)), "test source texture");
     ClipRecorder recorder;
-    check(recorder.start(device.Get(), path, f), "hardware recorder starts");
+    CaptureOptions capture;
+    capture.fps = padded ? 60 : 30;
+    check(recorder.start(device.Get(), path, f, capture), "hardware recorder starts");
     for (int n = 0; n < 500 && recorder.status().state == CaptureState::preparing; ++n)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     auto status = recorder.status();
@@ -343,7 +346,10 @@ void hardware_test(bool large, bool keep) {
         return;
     for (int n = 0; n < 18; ++n) {
         f.sequence = n + 1;
-        f.display_time = 1000000000LL + n * 40000000LL + (n >= 9 ? 200000000LL : 0);
+        // Real OpenXR times are not aligned to the MP4 track clock. Keep the
+        // original pose times while exercising rounding in both video views.
+        f.display_time = 1000000000LL + n * 40000000LL + (n >= 9 ? 200000000LL : 0) +
+                         (n % 3) * 7913LL;
         f.views[0].orientation[1] = float(n * .001);
         f.gaze.flags = vrst::GazeValid;
         f.gaze.sample_time_ns = f.display_time;
@@ -379,9 +385,9 @@ void hardware_test(bool large, bool keep) {
     check(reader.open(device.Get(), path), "hardware encoded clip opens");
     std::wcout << L"Reader: " << reader.error() << L'\n';
     check(reader.count() == status.recorded_frames, "video metadata count");
-    check(reader.info().width[0] == (large ? 2048u : 320u) &&
-              reader.info().height[0] == (large ? 1536u : 240u),
-          "full FOV scaled with 4:3 source aspect");
+    check(reader.info().width[0] == (large || padded ? 2048u : 320u) &&
+              reader.info().height[0] == (padded ? 964u : (large ? 1536u : 240u)),
+          "full FOV proxy preserves source aspect without decoder padding");
     DecodedFrame decoded;
     for (std::size_t i = 0; i < reader.count(); ++i) {
         if (!reader.next(decoded)) {
@@ -426,7 +432,19 @@ void hardware_test(bool large, bool keep) {
         }
     }
     check(reader.seek(2) && reader.next(decoded) && decoded.index == 2, "indexed deterministic seek");
+    auto original_info = reader.info();
     reader.close();
+    if (original_info.frames.size() > 2) {
+        auto mismatched = original_info;
+        mismatched.frames[1].media_time += 100000; // 10 ms, not container rounding.
+        mismatched.frames[1].frame.display_time += 10000000;
+        std::wstring error;
+        check(write_clip_metadata(path / L"metadata.bin", mismatched, error),
+              "write structurally valid but mispaired pose time");
+        check(!reader.open(device.Get(), path), "wrong image/pose pairing rejected despite timestamp rounding");
+        reader.close();
+        check(write_clip_metadata(path / L"metadata.bin", original_info, error), "restore fixture metadata");
+    }
     // A modified video cannot be paired with the retained poses.
     const auto video = path / L"context.mp4";
     {
@@ -435,7 +453,7 @@ void hardware_test(bool large, bool keep) {
     }
     check(!reader.open(device.Get(), path), "video checksum mismatch rejected");
     std::filesystem::resize_file(video, std::filesystem::file_size(video) - 1);
-    if (!large) {
+    if (!large && !padded) {
         hardware_lifetime_cases(device.Get(), path);
         ID3D11Texture2D *raw[2]{textures[0].Get(), textures[1].Get()};
         hardware_edge_cases(device.Get(), raw, source(), path);
@@ -535,9 +553,10 @@ int main(int argc, char **argv) {
     }
     check(!read_clip_metadata(path, loaded, error), "truncated/corrupt metadata rejected");
     std::filesystem::remove(path);
-    if (argc > 1 && (std::string(argv[1]) == "--hardware" || std::string(argv[1]) == "--hardware-large"))
+    if (argc > 1 && (std::string(argv[1]) == "--hardware" || std::string(argv[1]) == "--hardware-large" ||
+                    std::string(argv[1]) == "--hardware-padded"))
         hardware_test(std::string(argv[1]) == "--hardware-large",
-                      argc > 2 && std::string(argv[2]) == "--keep");
+                      argc > 2 && std::string(argv[2]) == "--keep", std::string(argv[1]) == "--hardware-padded");
     std::cout << "Workshop metadata tests: " << (failures ? "FAILED" : "passed") << '\n';
     return failures ? 1 : 0;
 }

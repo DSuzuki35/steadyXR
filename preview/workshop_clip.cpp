@@ -336,6 +336,21 @@ bool check_h264(const unsigned char *data, std::size_t size, unsigned width, uns
     }
     return true;
 }
+bool matching_media_time(const ClipInfo &info, std::size_t index, std::int64_t time) {
+    // The MF MP4 writer quantizes 30/60 fps clips to a 30/60 kHz track
+    // clock. A round trip can differ by one tick (up to 33.4 us), even
+    // though the original OpenXR pose time must remain unchanged.
+    constexpr std::int64_t rounding = 334; // 100 ns units, one 30 kHz tick rounded up.
+    if (index >= info.frames.size() || time < 0 ||
+        time > std::int64_t(info.options.duration_seconds) * 10000000 + rounding)
+        return false;
+    const auto delta = std::abs(time - info.frames[index].media_time);
+    // Preserve a unique image/pose association even for unusually close
+    // metadata times. Rounding must never permit a neighboring frame to match.
+    return delta <= rounding &&
+           (!index || delta < std::abs(time - info.frames[index - 1].media_time)) &&
+           (index + 1 == info.frames.size() || delta < std::abs(time - info.frames[index + 1].media_time));
+}
 bool audit_compressed_video(IMFSourceReader *reader, IMFMediaType *native, const ClipInfo &info,
                             unsigned view, std::wstring &error) {
     bool saw_sps = false;
@@ -368,7 +383,7 @@ bool audit_compressed_video(IMFSourceReader *reader, IMFMediaType *native, const
             continue;
         }
         empty = 0;
-        if (count == info.frames.size() || std::abs(time - info.frames[count].media_time) > 1)
+        if (!matching_media_time(info, count, time))
             return fail(error,
                         L"The encoded image timestamps or frame count do not match the pose metadata.");
         ComPtr<IMFMediaBuffer> buffer;
@@ -1317,6 +1332,8 @@ struct ClipReader::Impl {
     std::unique_ptr<MediaRuntime> runtime;
     ComPtr<ID3D11Device> device;
     ComPtr<IMFSourceReader> readers[2];
+    UINT32 decoded_width[2]{}, decoded_height[2]{};
+    LONG decoded_left[2]{}, decoded_top[2]{};
     std::vector<unsigned char> pixels;
     std::size_t cursor{};
     bool valid{};
@@ -1324,6 +1341,47 @@ struct ClipReader::Impl {
         for (auto &r : readers)
             r.Reset();
         runtime.reset();
+    }
+    HRESULT update_format(unsigned i) {
+        ComPtr<IMFMediaType> current, native;
+        UINT32 w{}, h{};
+        GUID subtype{};
+        auto hr = readers[i]->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &current);
+        if (SUCCEEDED(hr))
+            hr = MFGetAttributeSize(current.Get(), MF_MT_FRAME_SIZE, &w, &h);
+        if (SUCCEEDED(hr))
+            hr = current->GetGUID(MF_MT_SUBTYPE, &subtype);
+        if (FAILED(hr))
+            return hr;
+        // H.264 output surfaces may include macroblock padding. Only accept
+        // bounded padding with an explicit, exact display aperture; do not
+        // scale the padded surface into the recorded source FOV.
+        if (subtype != MFVideoFormat_RGB32 || w < info.width[i] || h < info.height[i] ||
+            w > ((info.width[i] + 15u) & ~15u) || h > ((info.height[i] + 15u) & ~15u))
+            return MF_E_INVALIDMEDIATYPE;
+        LONG left = 0, top = 0;
+        if (w != info.width[i] || h != info.height[i]) {
+            MFVideoArea area{};
+            UINT32 size{};
+            hr = current->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, reinterpret_cast<UINT8 *>(&area),
+                                  sizeof area, &size);
+            if (FAILED(hr) || size != sizeof area || area.OffsetX.fract || area.OffsetY.fract ||
+                area.OffsetX.value < 0 || area.OffsetY.value < 0 || area.Area.cx != LONG(info.width[i]) ||
+                area.Area.cy != LONG(info.height[i]))
+                return MF_E_INVALIDMEDIATYPE;
+            left = area.OffsetX.value;
+            top = area.OffsetY.value;
+            if (UINT32(left) + info.width[i] > w || UINT32(top) + info.height[i] > h)
+                return MF_E_INVALIDMEDIATYPE;
+        }
+        decoded_width[i] = w;
+        decoded_height[i] = h;
+        decoded_left[i] = left;
+        decoded_top[i] = top;
+        hr = readers[i]->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &native);
+        if (SUCCEEDED(hr))
+            hr = MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h);
+        return SUCCEEDED(hr) && (w != info.width[i] || h != info.height[i]) ? MF_E_INVALIDMEDIATYPE : hr;
     }
     bool decode(DecodedFrame *decoded) {
         if (!valid || cursor >= info.frames.size())
@@ -1342,26 +1400,10 @@ struct ClipReader::Impl {
             do {
                 hr = readers[i]->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &stream, &flags, &time,
                                             &sample);
-                if (SUCCEEDED(hr) && flags & (MF_SOURCE_READERF_NATIVEMEDIATYPECHANGED |
-                                              MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED)) {
-                    ComPtr<IMFMediaType> current, native;
-                    UINT32 w{}, h{};
-                    GUID subtype{};
-                    hr = readers[i]->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &current);
-                    if (SUCCEEDED(hr))
-                        hr = MFGetAttributeSize(current.Get(), MF_MT_FRAME_SIZE, &w, &h);
-                    if (SUCCEEDED(hr))
-                        hr = current->GetGUID(MF_MT_SUBTYPE, &subtype);
-                    if (SUCCEEDED(hr) &&
-                        (w != info.width[i] || h != info.height[i] || subtype != MFVideoFormat_RGB32))
-                        hr = MF_E_INVALIDMEDIATYPE;
-                    if (SUCCEEDED(hr))
-                        hr = readers[i]->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &native);
-                    if (SUCCEEDED(hr))
-                        hr = MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h);
-                    if (SUCCEEDED(hr) && (w != info.width[i] || h != info.height[i]))
-                        hr = MF_E_INVALIDMEDIATYPE;
-                }
+                if (SUCCEEDED(hr) &&
+                    (!decoded_width[i] || flags & (MF_SOURCE_READERF_NATIVEMEDIATYPECHANGED |
+                                                   MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED)))
+                    hr = update_format(i);
                 if (FAILED(hr) || flags & (MF_SOURCE_READERF_ERROR | MF_SOURCE_READERF_ENDOFSTREAM))
                     break;
             } while (!sample && ++ticks < 8);
@@ -1370,7 +1412,7 @@ struct ClipReader::Impl {
                 error = hr_text(L"The clip video is truncated or its format changed", hr);
                 return false;
             }
-            if (std::abs(time - metadata.media_time) > 1) {
+            if (!matching_media_time(info, cursor, time)) {
                 valid = false;
                 return fail(error, L"The decoded image timestamp does not match its pose metadata.");
             }
@@ -1398,18 +1440,18 @@ struct ClipReader::Impl {
                 if (SUCCEEDED(hr))
                     hr = current->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride);
                 pitch = LONG(stride);
-                if (SUCCEEDED(hr) && (std::abs(std::int64_t(pitch)) < width * 4 ||
-                                      std::uint64_t(std::abs(std::int64_t(pitch))) * height > length))
+                if (SUCCEEDED(hr) && (std::abs(std::int64_t(pitch)) < decoded_width[i] * 4 ||
+                                      std::uint64_t(std::abs(std::int64_t(pitch))) * decoded_height[i] > length))
                     hr = MF_E_INVALIDMEDIATYPE;
                 if (SUCCEEDED(hr) && pitch < 0)
-                    row += std::size_t(-pitch) * (height - 1);
+                    row += std::size_t(-pitch) * (decoded_height[i] - 1);
             }
-            if (SUCCEEDED(hr) && std::abs(std::int64_t(pitch)) < width * 4)
+            if (SUCCEEDED(hr) && std::abs(std::int64_t(pitch)) < decoded_width[i] * 4)
                 hr = MF_E_INVALIDMEDIATYPE;
             if (SUCCEEDED(hr)) {
                 pixels.resize(std::size_t(width) * height * 4);
                 for (unsigned y = 0; y < height; ++y)
-                    std::copy_n(row + std::ptrdiff_t(y) * pitch, width * 4,
+                    std::copy_n(row + (std::ptrdiff_t(y) + decoded_top[i]) * pitch + decoded_left[i] * 4, width * 4,
                                 pixels.data() + std::size_t(y) * width * 4);
             }
             if (locked) {
