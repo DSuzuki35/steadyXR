@@ -541,7 +541,7 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
             SelectObject(dc, body);
             SetTextColor(dc, muted);
             RECT version{22, 66, 174, 92};
-            DrawTextW(dc, L"0.15.0", -1, &version, DT_SINGLELINE);
+            DrawTextW(dc, L"0.16.0", -1, &version, DT_SINGLELINE);
             RECT footer{22, r.bottom - 66, 174, r.bottom - 16};
             DrawTextW(dc, L"Your view.\nSteady by design.", -1, &footer, DT_WORDBREAK);
             SelectObject(dc, old);

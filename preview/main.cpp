@@ -1567,7 +1567,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    const auto control_title = std::wstring(L"SteadyXR – 0.15.0");
+    const auto control_title = std::wstring(L"SteadyXR – 0.16.0");
     RECT controls_rect{0, 0, 1120, 760};
     const DWORD controls_style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     AdjustWindowRectEx(&controls_rect, controls_style, FALSE, 0);
@@ -1745,7 +1745,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     add(3, L"BUTTON", L"Overlay layers…", BS_PUSHBUTTON, 240, 484, 256, 36, overlays_id);
     note(3, L"Connection changes require a game restart. See Preview for troubleshooting details.", 512, 482,
          560, 44);
-    note(3, L"App 0.15.0 · Signed capture component 0.14.0 · Free community test version · No expiry", 240,
+    note(3, L"App 0.16.0 · Signed capture component 0.14.0 · Free community test version · No expiry", 240,
          544, 832, 26);
     state.compact_status = add(-1, L"STATIC", L"", SS_LEFTNOWORDWRAP, 216, 606, 880, 28, compact_status_id);
     state.comparison =

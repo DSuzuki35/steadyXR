@@ -1,5 +1,7 @@
 # SteadyXR
 
+**0.16.0 standalone:** Combined peripheral/focus rendering in Workshop source framing, clear source status, and fixes for recorded-clip playback. The signed capture DLL remains 0.14.0. See [0.16 validation](docs/release-0.16.0-validation.md). This local version has not been published to GitHub Releases.
+
 **0.14.0:** Native D3D12 OpenXR capture now feeds the same standalone preview and OBS source. The GPU path preserves submitted image/pose pairing and skips capture when its bounded buffers are busy. See [validation and signing](docs/release-0.14.0-validation.md).
 
 **From 0.13.1:** Permanent builds, system-wide OpenXR registration, and a startup compatibility fix for VectorXR Frame Generation. The new capture DLL needs signing before an anti-cheat game test; see [validation and signing](docs/release-0.14.0-validation.md).

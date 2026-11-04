@@ -1,4 +1,4 @@
-# Capture Workshop - SteadyXR 0.15.0
+# Capture Workshop - SteadyXR 0.16.0
 
 The Workshop records the **entire submitted OpenXR source rectangle of the selected eye**, before spectator crop, stabilization or visual effects. If OpenXR supplies a separate focus view, that view is recorded too. Source FOV, orientation, gaze, timestamps and available speed telemetry stay paired with their images. It never records the 16:9 spectator output as its source.
 
@@ -10,6 +10,10 @@ The Workshop records the **entire submitted OpenXR source rectangle of the selec
 6. **Apply to active profile** saves the draft. **Reset draft** returns to the last applied settings. **Return to live** resumes the prior live pause state and resets stale motion history. Closing without Apply leaves your profile unchanged.
 
 Clips are local `.sxclip` folders under the viewer settings directory's `Clips` folder. Keep their metadata and MP4 files together. **Open clip...** selects that folder. The command line also accepts `--clip "C:\path\Drive.sxclip"`. The metadata validates matching video hashes and timestamps before replay.
+
+Version 0.16 fixes playback of existing clips affected by MP4 timestamp rounding or padded decoder surfaces. It retains the original image/pose association and source FOV. **Open clip...** can open recordings in your previous 0.15 package; there is no need to re-record or move them.
+
+When a clip includes peripheral and focus views, both **Edit source framing** and **Show processed output** combine them directly at preview resolution. The high-resolution focus image follows its recorded FOV and orientation. Source status lists **Peripheral + focus** or **Single view received** and the original dimensions; the proxy size is listed separately. A single received view may already have been combined upstream. SteadyXR cannot recover a separate focus image that never reached capture.
 
 ## Camera changes
 
@@ -27,4 +31,4 @@ Pitch steadiness is optional and defaults to off. It softly anchors up/down view
 - The crop outline is the nominal source framing, before pose correction. A margin warning indicates correction that had to be limited. The recorded sample cannot prove safe framing for future head movements.
 - Manual edits normalize framing to the supported uniform crop range (0-40%), clear separate trims and disable the selected eye's asymmetric reserve. Other-eye reserves and unrelated camera settings remain intact.
 
-The application is 0.15.0; its capture component remains the byte-identical signed 0.14.0 DLL. No capture DLL rebuild or new signing is required.
+The application is 0.16.0; its capture component remains the byte-identical signed 0.14.0 DLL. No capture DLL rebuild or new signing is required.

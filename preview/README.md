@@ -1,8 +1,10 @@
-# SteadyXR Preview 0.15.0
+# SteadyXR Preview 0.16.0
 
 This community test build is free and has **no expiry**. Future paid releases are planned separately. The notice stays in the controls and never appears in the clean captured output.
 
-Version 0.15 adds the native Capture Workshop, optional pitch steadiness and draggable framing. Normal smoothing remains; Natural Head Movement is removed. See **Workshop-Guide.md** (source: docs/workshop.md). The capture DLL stays the signed 0.14.0 component, byte-identical.
+Version 0.16 combines peripheral and high-resolution focus images in both the stream preview and Workshop source framing. Capture status identifies **Peripheral + focus** or **Single view received**, with each source's dimensions in the details. Recorded clips now tolerate MP4 timestamp rounding and correctly remove decoder padding; existing 0.15 clips remain compatible. See **Workshop-Guide.md**. The capture DLL stays the signed 0.14.0 component, byte-identical.
+
+Quad views use the selected eye's submitted FOV and orientation, including a moving focus region. A single received image may be stereo or already combined upstream; it does not prove quad views are disabled. If focus detail is missing, check the game's quad-view setting and active OpenXR layer chain. The initial target is mbucchia Quad-Views-Foveated with Sboys3/SteamVR and Dream Air or Dream Air SE; live headset/game compatibility still needs validation. No provider installation or layer reordering happens automatically.
 
 Open **Gaze & effects** for gaze framing, chat exclusion and local exposure/bloom/color. All new features start **off**. The master bypass preserves tuning. Gaze & chat, Exposure, Bloom, Color and Director each have their own page. Camera and visual bypass switches preserve tuning; presets are explicit opt-ins.
 
@@ -56,9 +58,9 @@ The earlier 0.13.0 package preserved the signed 0.12.0 DLL. It remains untouched
 
 Open preview and pause stay at the bottom. Tab/Shift+Tab navigate native controls; Space activates the focused button or checkbox. Numeric effects settings apply when you leave the field. Switching pages preserves tuning and does not activate effects.
 
-## Upgrade to 0.15.0
+## Upgrade to 0.16.0
 
-Close the previous app and run **Gaming-PC/SteadyXR-0.15.0/SteadyXR.exe**. To retain your settings in a freshly extracted ZIP, copy your previous **SteadyXR.ini** into the new app folder before starting. Named presets use the **Presets** folder beside the version folders (for example, **Gaming-PC/Presets**); keep that folder when moving the app to a different location. This package reuses the exact signed 0.14.0 capture DLL; there is no new capture binary to sign. If the signed 0.14.0 connection is already installed, it can remain registered. The standalone ZIP contains no OBS plugin. Read **Workshop-Guide.md** for recording requirements and supported source formats.
+Close the previous app and run **Gaming-PC/SteadyXR-0.16.0/SteadyXR.exe**. To retain your settings in a freshly extracted ZIP, copy your previous **SteadyXR.ini** into the new app folder before starting. Named presets use the **Presets** folder beside the version folders (for example, **Gaming-PC/Presets**); keep that folder when moving the app to a different location. This package reuses the exact signed 0.14.0 capture DLL; there is no new capture binary to sign. If the signed 0.14.0 connection is already installed, it can remain registered. The standalone ZIP contains no OBS plugin. Read **Workshop-Guide.md** for recording requirements and supported source formats.
 
 ## Upgrade to 0.14.0
 
