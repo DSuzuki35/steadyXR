@@ -1,6 +1,6 @@
 # SteadyXR
 
-**SteadyXR 1.0.0 for Windows** opens a clean Stream Output for OBS. Camera offers smoothing, adaptive horizon lock, vertical steadiness and one Center camera action. Framing lets you capture the entire selected eye and set crop reserve and horizontal or vertical position against that still. The Dan Suzuki preset includes the saved 4K setup. Keyboard and joystick actions are available from Shortcuts. The standalone app checks GitHub Releases for signed updates. [Standalone guide](preview/README.md)
+**SteadyXR 1.0.1 for Windows** opens a clean Stream Output for OBS. Camera offers smoothing, adaptive horizon lock, vertical steadiness and one Center camera action. Framing lets you capture the entire selected eye and set crop reserve and horizontal or vertical position against that still. The Dan Suzuki preset includes the saved 4K setup. Keyboard and joystick actions are available from Shortcuts. The standalone app checks GitHub Releases for signed updates. [Standalone guide](preview/README.md)
 
 **0.14.0:** Native D3D12 OpenXR capture now feeds the same standalone preview and OBS source. The GPU path preserves submitted image/pose pairing and skips capture when its bounded buffers are busy. See [validation and signing](docs/release-0.14.0-validation.md).
 

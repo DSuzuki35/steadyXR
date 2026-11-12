@@ -21,6 +21,20 @@ constexpr COLORREF chrome = RGB(21, 21, 23), canvas = RGB(28, 28, 31), card = RG
                    active_nav = RGB(34, 49, 71);
 enum class ShellZone : unsigned { none, chrome, canvas, card, rail };
 constexpr COLORREF zone_colors[]{chrome, canvas, card, rail};
+bool high_contrast_enabled() {
+    HIGHCONTRASTW contrast{sizeof(contrast)};
+    return SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0) &&
+           (contrast.dwFlags & HCF_HIGHCONTRASTON);
+}
+void apply_scrollbar_theme(HWND window, bool high_contrast) {
+    const auto state = reinterpret_cast<HANDLE>(UINT_PTR(high_contrast ? 2 : 1));
+    if (GetPropW(window, L"SteadyXRNativeScrollbar") == state)
+        return;
+    // SetWindowTheme sends WM_THEMECHANGED. Record the choice first so that
+    // the broadcast handler can safely refresh children without recursive changes.
+    SetPropW(window, L"SteadyXRNativeScrollbar", state);
+    SetWindowTheme(window, high_contrast ? nullptr : L"DarkMode_Explorer", nullptr);
+}
 ShellZone zone_at(RECT child) {
     if (child.top < 64)
         return ShellZone::chrome;
@@ -266,8 +280,16 @@ LRESULT CALLBACK combo_proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_
 }
 LRESULT CALLBACK focus_proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR) {
     const auto result = DefSubclassProc(window, message, w, l);
-    if (message == WM_SETFOCUS)
-        SendMessageW(GetParent(window), reveal_control_message, reinterpret_cast<WPARAM>(window), 0);
+    if (message == WM_SETFOCUS) {
+        auto recipient = GetParent(window);
+        for (auto ancestor = recipient; ancestor; ancestor = GetAncestor(ancestor, GA_PARENT)) {
+            if (GetPropW(ancestor, L"SteadyXRScrollable")) {
+                recipient = ancestor;
+                break;
+            }
+        }
+        SendMessageW(recipient, reveal_control_message, reinterpret_cast<WPARAM>(window), 0);
+    }
     if (message == WM_NCDESTROY)
         RemoveWindowSubclass(window, focus_proc, 1);
     return result;
@@ -328,6 +350,8 @@ void Theme::control(HWND window, const wchar_t *kind, bool heading) {
     if (heading)
         SetPropW(window, L"HorizonHeading", reinterpret_cast<HANDLE>(1));
     SetWindowSubclass(window, focus_proc, 1, 0);
+    if (!_wcsicmp(kind, L"EDIT") && (GetWindowLongPtrW(window, GWL_STYLE) & WS_VSCROLL))
+        apply_scrollbar_theme(window, high_contrast_enabled());
     if (!std::wcscmp(kind, L"COMBOBOX")) {
         SetWindowTheme(window, L"", L"");
         SetWindowSubclass(window, combo_proc, 1, 0);
@@ -429,6 +453,7 @@ void Theme::fit_window(HWND window, const RECT &work_area) {
     if (layout == layouts_.end() || work_area.right <= work_area.left || work_area.bottom <= work_area.top)
         return;
     SetPropW(window, L"SteadyXRScrollable", reinterpret_cast<HANDLE>(1));
+    apply_scrollbar_theme(window, high_contrast_enabled());
     const auto dpi = UINT(reinterpret_cast<UINT_PTR>(GetPropW(window, L"SteadyXRDpi")));
     const int width = MulDiv(layout->width, dpi ? dpi : 96, 96);
     const int height = MulDiv(layout->height, dpi ? dpi : 96, 96);
@@ -539,6 +564,19 @@ void Theme::surface(HWND window, HDC dc, RECT card) {
 }
 bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &result) {
     result = 0;
+    if (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED) {
+        const bool high_contrast = high_contrast_enabled();
+        if (GetPropW(window, L"SteadyXRNativeScrollbar"))
+            apply_scrollbar_theme(window, high_contrast);
+        EnumChildWindows(
+            window,
+            [](HWND child, LPARAM contrast) -> BOOL {
+                if (GetPropW(child, L"SteadyXRNativeScrollbar"))
+                    apply_scrollbar_theme(child, contrast != 0);
+                return TRUE;
+            },
+            high_contrast);
+    }
     if (GetPropW(window, L"SteadyXRScrollable")) {
         if (message == WM_SIZE && w != SIZE_MINIMIZED) {
             if (!GetPropW(window, L"SteadyXRLayoutBusy")) {
@@ -667,7 +705,6 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
             fill(dc, {208, 628, r.right, 629}, hairline);
 
             rounded(dc, {240, 196, 820, 590}, card, hairline, 20);
-            rounded(dc, {844, 104, 1208, 404}, card, hairline, 20);
             rounded(dc, {844, 422, 1208, 590}, card, hairline, 20);
 
             DrawIconEx(dc, 23, 16, icon, 32, 32, 0, nullptr, DI_NORMAL);

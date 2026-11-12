@@ -1,8 +1,8 @@
-# SteadyXR 1.0.0
+# SteadyXR 1.0.1
 
-Open **SteadyXR.exe** to start the standalone Windows app. The 1.0.0 package contains a signed viewer and signed OpenXR capture DLL, both with **no expiry**.
+Open **SteadyXR.exe** to start the standalone Windows app. The 1.0.1 package contains a signed viewer and signed OpenXR capture DLL, both with **no expiry**.
 
-With OpenXR capture, SteadyXR can combine peripheral and high-resolution focus images in the stream. **Framing → Capture full eye** takes a still of the incoming image. The framing monitor shows your crop guide on every page and switches to the captured eye when the still is ready. Open **Edit captured frame…** to drag the rectangle or adjust crop reserve and horizontal or vertical framing while the stream keeps running.
+With OpenXR capture, SteadyXR can combine peripheral and high-resolution focus images in the stream. **Framing → Capture full eye** takes a still of the incoming image. The framing monitor shows your crop guide on every page and switches to the captured eye when the still is ready. Drag the monitor by its header to reposition the card. Drag either lower corner to resize it. **Reset** or a double-click on the header restores the original layout. Open **Edit captured frame…** to drag the rectangle or adjust crop reserve and horizontal or vertical framing while the stream keeps running.
 
 Quad views use the selected eye's submitted FOV and orientation, including a moving focus region. A single received image may be stereo or already combined upstream; it does not prove quad views are disabled. If focus detail is missing, check the game's quad-view setting and active OpenXR layer chain. The initial target is mbucchia Quad-Views-Foveated with Sboys3/SteamVR and Dream Air or Dream Air SE; live headset/game compatibility still needs validation. No provider installation or layer reordering happens automatically.
 
@@ -57,9 +57,9 @@ The earlier 0.13.0 package preserved the signed 0.12.0 DLL. It remains untouched
 
 Open **Presets…** for the Dan Suzuki factory preset and your saved configurations. Use **Shortcuts…** to see the global keyboard actions.
 
-## Upgrading to 1.0.0
+## Upgrading to 1.0.1
 
-Close the previous app, extract the package next to its version folder and run **SteadyXR-1.0.0/SteadyXR.exe**. For a manual upgrade, copy **SteadyXR.ini** and **SteadyXR-shortcuts.ini** from the previous folder if present. Keep the shared **Presets** folder beside the version folders. Use **Upgrade connection** in the app when you want the new DLL active in the next game session.
+Close the previous app, extract the package next to its version folder and run **SteadyXR-1.0.1/SteadyXR.exe**. For a manual upgrade, copy **SteadyXR.ini** (camera and output), **SteadyXR-shortcuts.ini** (joystick bindings) and **SteadyXR-ui.ini** (window layout) from the previous folder if present. Keep the shared **Presets** folder beside the version folders. Use **Upgrade connection** in the app when you want the new DLL active in the next game session.
 
 Starting with 1.0.0, the app checks GitHub for signed stable updates at startup. Confirm an offered update to prepare the new version and switch after closing the app. The previous version stays in its own folder for rollback. Read **Updates.md** for repository access and package verification details.
 

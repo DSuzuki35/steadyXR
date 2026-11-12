@@ -17,6 +17,8 @@
 #include "visual_settings_io.hpp"
 #include "window_capture.hpp"
 #include "framing_editor.hpp"
+#include "monitor_widget.hpp"
+#include "steadyxr_version.h"
 #include "shortcuts.hpp"
 #include "release_update.hpp"
 #include <algorithm>
@@ -44,7 +46,7 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               compact_status_id = 137, overlays_id = 138, spectator_id = 139, learn_chat_id = 140,
               capture_still_id = 141, pitch_id = 144,
               vertical_id = 145, horizontal_id = 146, edit_still_id = 147, coffee_id = 148,
-              affiliate_id = 149, joystick_id = 150, framing_card_id = 151;
+              affiliate_id = 149, joystick_id = 150, framing_card_id = 151, status_light_id = 152;
 constexpr int hotkeys_default_id = 2100, hotkeys_alternate_id = 2101, hotkeys_off_id = 2102;
 constexpr int navigation_id = 1500;
 constexpr int comparison_original_id = 2110, comparison_split_id = 2111, comparison_side_by_side_id = 2112;
@@ -128,8 +130,8 @@ struct App {
         eye{}, eye_label{}, fps{}, pause{}, mode{}, source{}, vertical{}, vertical_label{}, framing_status{}, horizon{},
         horizon_label{}, mirror_limit{}, mirror_limit_label{}, aspect{}, output_width{}, output_height{},
         auto_fullscreen{}, monitor{}, adaptive_horizon{}, mirror_softness{}, mirror_softness_label{},
-        compact_status{}, comparison{}, shortcut_hint{}, pitch{}, pitch_label{}, horizontal{},
-        horizontal_label{}, framing_card{}, card_caption{}, card_resolution{}, card_aspect{}, card_rate{};
+        compact_status{}, comparison{}, status_detail{}, status_light{}, pitch{}, pitch_label{}, horizontal{},
+        horizontal_label{}, card_resolution{}, card_aspect{}, card_rate{};
     std::uint64_t card_revision{};
     double card_source_aspect{};
     HFONT font{};
@@ -137,6 +139,9 @@ struct App {
     std::vector<HWND> control_pages[4];
     unsigned selected_page{};
     FramingEditor framing;
+    MonitorWidget monitor_widget;
+    std::wstring footer_state, footer_detail;
+    COLORREF light_color{RGB(155, 162, 173)};
     ShortcutController shortcuts;
     void show_page(unsigned selected) {
         if (selected >= std::size(control_pages))
@@ -225,12 +230,6 @@ struct App {
             hotkey_error =
                 L"Hotkeys unavailable: " + hotkey_error + L". In Hotkeys, choose the alternate keys or Off.";
     }
-    std::wstring hotkey_hint() const {
-        if (!hotkey_profile)
-            return L"Global hotkeys are off. F11: fullscreen.";
-        return std::wstring(hotkey_profile == 2 ? L"Ctrl+Alt+Shift: " : L"Ctrl+Alt: ") +
-               L"R center | P pause | N next preset | B compare | C learn chat";
-    }
     void configure_hotkeys(unsigned profile) {
         hotkey_profile = profile;
         register_hotkeys();
@@ -250,6 +249,20 @@ struct App {
         AppendMenuW(menu, MF_STRING | (!hotkey_profile ? MF_CHECKED : 0), hotkeys_off_id,
                     L"Off — disable global hotkeys");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        const auto keys = CreatePopupMenu();
+        if (keys) {
+            const auto modifiers = hotkey_profile == 2 ? L"Ctrl+Alt+Shift+" : L"Ctrl+Alt+";
+            const wchar_t *actions[]{L"Center camera", L"Pause / resume", L"Next preset", L"Compare", L"Learn chat"};
+            if (hotkey_profile) {
+                for (unsigned i = 0; i < std::size(actions); ++i) {
+                    const auto entry = std::wstring(actions[i]) + L"\t" + modifiers + hotkey_letters[i];
+                    AppendMenuW(keys, MF_STRING | MF_DISABLED, 0, entry.c_str());
+                }
+            }
+            AppendMenuW(keys, MF_STRING | MF_DISABLED, 0, L"Fullscreen\tF11");
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(keys), L"Keyboard reference");
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        }
         const wchar_t *comparison_labels[]{
             options.compare_effects ? L"A/B: Visual effects bypass (20s)" : L"A/B: Original (20s)",
             options.compare_effects ? L"A/B: 50/50 split - effects / bypass"
@@ -949,11 +962,11 @@ struct App {
         update_status();
     }
     void refresh_card() {
-        if (!framing_card)
+        if (!monitor_widget.window())
             return;
         const auto still = framing.has_still() ? framing.still_description()
             : std::wstring(window_mode ? L"Window" : selected_eye ? L"Right eye" : L"Left eye") + L"  ·  Crop guide";
-        SetWindowTextW(card_caption, still.c_str());
+        monitor_widget.set_caption(still);
         SetWindowTextW(card_resolution, (std::to_wstring(options.output_width) + L" × " +
                                         std::to_wstring(options.output_height)).c_str());
         SetWindowTextW(card_aspect, (std::to_wstring(aspect_numerator) + L":" +
@@ -961,7 +974,7 @@ struct App {
         SetWindowTextW(card_rate, (std::to_wstring(rate) + L" FPS").c_str());
         card_revision = framing.still_revision();
         card_source_aspect = renderer.source_aspect();
-        InvalidateRect(framing_card, nullptr, FALSE);
+        monitor_widget.invalidate();
     }
     void labels() {
         refresh_card();
@@ -1004,12 +1017,13 @@ struct App {
         const bool stale = last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000;
         const auto fps_value = !active() || stale || capture_conflict ? 0 : int(measured_fps + .5);
         const wchar_t *feed = demo ? L"Demo" : window_mode ? L"Window" : L"OpenXR";
-        const wchar_t *connection = expired                                        ? L"expired"
-                                    : capture_conflict                             ? L"in use elsewhere"
-                                    : paused                                       ? L"paused"
-                                    : !IsWindowVisible(output) || IsIconic(output) ? L"hidden"
-                                    : !renderer.has_frame() || stale               ? L"waiting"
-                                                                                   : L"connected";
+        const bool hidden = !IsWindowVisible(output) || IsIconic(output);
+        const bool live = !expired && !capture_conflict && !paused && !hidden && renderer.has_frame() && !stale;
+        const auto headline = expired ? std::wstring(L"Build expired")
+            : capture_conflict ? std::wstring(feed) + L" in use"
+            : paused ? std::wstring(L"Output paused")
+            : hidden ? std::wstring(L"Output hidden")
+            : live ? std::wstring(feed) + L" connected" : std::wstring(L"Waiting for ") + feed;
         const wchar_t *comparison_name = options.compare_effects     ? L"Effects A/B"
                                          : options.compare_mode == 1 ? L"50/50 comparison"
                                          : options.compare_mode == 2 ? L"Side-by-side comparison"
@@ -1023,18 +1037,25 @@ struct App {
         ID3D11Texture2D *source_images[2]{};
         const bool has_source = !demo && !window_mode && renderer.source_snapshot(captured_source, source_images);
         const bool fresh_source = has_source && active() && last_received_ms && !stale && !capture_conflict;
-        auto summary =
-            std::to_wstring(fps_value) + L" FPS | " + feed + L" " + connection + L" | " + view;
+        auto detail = view;
+        if (live && fps_value > 0)
+            detail += L"  ·  " + std::to_wstring(fps_value) + L" FPS";
         if (fresh_source)
-            summary += L" | " + source_view_summary(captured_source);
-        SetWindowTextW(compact_status, summary.c_str());
-        const wchar_t *comparison_button = options.compare_effects     ? L"Compare effects (20s)"
-                                           : options.compare_mode == 1 ? L"Compare 50/50 (20s)"
-                                           : options.compare_mode == 2 ? L"Compare side by side (20s)"
-                                                                       : L"Compare original (20s)";
-        SetWindowTextW(comparison, comparison_active ? L"End A/B comparison" : comparison_button);
+            detail += L"  ·  " + source_view_summary(captured_source);
+        if (detail != footer_detail) {
+            footer_detail = detail;
+            SetWindowTextW(status_detail, detail.c_str());
+        }
+        if (headline != footer_state) {
+            footer_state = headline;
+            SetWindowTextW(compact_status, headline.c_str());
+            light_color = expired || capture_conflict ? RGB(241, 133, 116) : live ? RGB(75, 203, 139)
+                        : paused || hidden ? RGB(156, 165, 178) : RGB(230, 179, 91);
+            if (status_light)
+                InvalidateRect(status_light, nullptr, FALSE);
+        }
+        SetWindowTextW(comparison, comparison_active ? L"End A/B" : options.compare_effects ? L"Effects A/B" : L"Compare");
         EnableWindow(comparison, comparison_active || (!paused && !expired && !waiting(now)));
-        SetWindowTextW(shortcut_hint, hotkey_hint().c_str());
         if (expired) {
             const auto message = std::wstring(L"This SteadyXR build has expired.\r\nValid until: ") +
                                  build_expiry_text() +
@@ -1180,7 +1201,7 @@ HWND child(HWND parent, const wchar_t *kind, const wchar_t *label, DWORD style, 
     if (std::wcscmp(kind, L"STATIC") != 0)
         style |= WS_TABSTOP;
     style = app->theme.style(kind, style);
-    auto result = CreateWindowExW(0, kind, label, WS_CHILD | WS_VISIBLE | style, x, y, w, h, parent,
+    auto result = CreateWindowExW(0, kind, label, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style, x, y, w, h, parent,
                                   reinterpret_cast<HMENU>(INT_PTR(id)), GetModuleHandleW(nullptr), nullptr);
     app->theme.control(result, kind);
     return result;
@@ -1231,9 +1252,19 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
 LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (!app)
         return DefWindowProcW(window, message, w, l);
-    if (message == WM_DRAWITEM && w == framing_card_id) {
-        const auto &item = *reinterpret_cast<const DRAWITEMSTRUCT *>(l);
-        app->framing.paint_card(item.hDC, item.rcItem, app->options, app->renderer.source_aspect(), app->selected_eye);
+    if (message == WM_DRAWITEM && w == status_light_id) {
+        const auto &item = *reinterpret_cast<DRAWITEMSTRUCT *>(l);
+        const auto dc = item.hDC;
+        SetDCBrushColor(dc, RGB(21, 21, 23));
+        FillRect(dc, &item.rcItem, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        const int saved = SaveDC(dc);
+        SelectObject(dc, GetStockObject(NULL_PEN));
+        SelectObject(dc, GetStockObject(DC_BRUSH));
+        SetDCBrushColor(dc, app->light_color);
+        const int diameter = (item.rcItem.right - item.rcItem.left) * 2 / 3;
+        const int x = (item.rcItem.right - diameter) / 2, y = (item.rcItem.bottom - diameter) / 2;
+        Ellipse(dc, x, y, x + diameter, y + diameter);
+        RestoreDC(dc, saved);
         return TRUE;
     }
     LRESULT themed{};
@@ -1599,8 +1630,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     wc.style = CS_DBLCLKS;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    const auto control_title = std::wstring(L"SteadyXR – 1.0.0");
-    RECT controls_rect{0, 0, 1232, 750};
+    const auto control_title = std::wstring(L"SteadyXR – " STEADYXR_VERSION_STRING);
+    RECT controls_rect{0, 0, 1232, 720};
     const DWORD controls_style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     AdjustWindowRectEx(&controls_rect, controls_style, FALSE, 0);
     state.controls =
@@ -1663,10 +1694,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     };
     support(L"Buy me a coffee", 534, coffee_id);
     support(L"Affiliate links", 580, affiliate_id);
-    auto disclosure = note(-1, L"Optional support. Affiliate purchases may earn Dan a commission.", 24, 642, 166, 82);
+    auto disclosure = note(-1, L"Optional support. Affiliate purchases may earn Dan a commission.", 24, 628, 176, 84);
     SetPropW(disclosure, L"SteadyXRSidebar", reinterpret_cast<HANDLE>(1));
-    add(-1, L"BUTTON", L"Open stream output", BS_PUSHBUTTON | WS_GROUP, 1032, 663, 176, 46, show_id);
-    state.pause = add(-1, L"BUTTON", L"Pause output", BS_PUSHBUTTON, 874, 663, 144, 46, pause_id);
+    add(-1, L"BUTTON", L"Open stream output", BS_PUSHBUTTON | WS_GROUP, 1048, 650, 160, 44, show_id);
+    state.pause = add(-1, L"BUTTON", L"Pause output", BS_PUSHBUTTON, 910, 650, 126, 44, pause_id);
     const wchar_t *sections[]{L"Capture source", L"Stabilization", L"Crop & positioning", L"Output settings"};
     for (int page = 0; page < 4; ++page) {
         auto section = add(page, L"STATIC", sections[page], 0, 260, 212, 532, 32);
@@ -1765,21 +1796,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     add(3, L"BUTTON", L"Joystick buttons…", BS_PUSHBUTTON, 624, 497, 176, 36, joystick_id);
     note(3, L"Restart the game after changing the OpenXR connection or render extension.", 260,
          548, 540, 42);
-    state.compact_status = add(-1, L"STATIC", L"", SS_LEFTNOWORDWRAP, 226, 638, 976, 24, compact_status_id);
-    state.comparison =
-        add(-1, L"BUTTON", L"Compare original (20s)", BS_PUSHBUTTON, 300, 663, 218, 46, compare_id);
-    add(-1, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 532, 663, 154, 46, presets_id);
-    add(-1, L"BUTTON", L"Shortcuts…", BS_PUSHBUTTON, 700, 663, 160, 46, hotkeys_id);
-    state.shortcut_hint = note(-1, L"", 226, 719, 982, 24);
+    state.status_light = add(-1, L"STATIC", L"", SS_OWNERDRAW, 235, 648, 17, 27, status_light_id);
+    state.compact_status = add(-1, L"STATIC", L"", SS_ENDELLIPSIS, 260, 647, 300, 27, compact_status_id);
+    state.status_detail = add(-1, L"STATIC", L"", SS_ENDELLIPSIS, 260, 678, 319, 27);
+    SetPropW(state.status_detail, L"SteadyXRMuted", reinterpret_cast<HANDLE>(1));
+    state.comparison = add(-1, L"BUTTON", L"Compare", BS_PUSHBUTTON, 592, 650, 96, 44, compare_id);
+    add(-1, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 700, 650, 90, 44, presets_id);
+    add(-1, L"BUTTON", L"Shortcuts…", BS_PUSHBUTTON, 802, 650, 96, 44, hotkeys_id);
     // These controls are common to all four pages, and sit on the rail's card surfaces.
     auto rail = [&](const wchar_t *caption, DWORD style, int x, int y, int w, int h, int id = 0) {
         return child(state.controls, L"STATIC", caption, style, x, y, w, h, id);
     };
-    auto card_title = rail(L"Framing monitor", 0, 864, 122, 324, 30);
-    state.theme.control(card_title, L"STATIC", true);
-    state.framing_card = rail(L"Current stream framing", SS_OWNERDRAW, 864, 162, 324, 188, framing_card_id);
-    state.card_caption = rail(L"Crop guide", 0, 864, 368, 324, 26);
-    SetPropW(state.card_caption, L"SteadyXRMuted", reinterpret_cast<HANDLE>(1));
     auto details_title = rail(L"Output details", 0, 864, 439, 324, 31);
     state.theme.control(details_title, L"STATIC", true);
     auto metric = [&](const wchar_t *caption, int y) {
@@ -1790,6 +1817,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.card_resolution = metric(L"Resolution", 482);
     state.card_aspect = metric(L"Aspect ratio", 514);
     state.card_rate = metric(L"Frame rate", 546);
+    const auto layout_file = self_test ? std::filesystem::path(state.ini + L".layout.ini")
+        : std::filesystem::path(state.directory) / L"SteadyXR-ui.ini";
+    if (!state.monitor_widget.create(state.controls, state.theme, layout_file, [&](HDC dc, RECT rect) {
+            state.framing.paint_card(dc, rect, state.options, state.renderer.source_aspect(), state.selected_eye);
+        }, framing_card_id)) {
+        MessageBoxW(state.controls, L"Could not create the framing monitor.", L"SteadyXR", MB_ICONERROR);
+        return 1;
+    }
     state.show_page(0);
     state.theme.scale_window(state.controls);
     state.spectator_controls.initialize(
@@ -2131,7 +2166,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         wchar_t effects_comparison_label[64]{};
         GetWindowTextW(state.comparison, effects_comparison_label, 64);
         spectator_ok =
-            spectator_ok && std::wstring(effects_comparison_label).find(L"effects") != std::wstring::npos;
+            spectator_ok && std::wstring(effects_comparison_label) == L"Effects A/B";
         spectator_ok = state.save() && spectator_ok;
         App spectator_restored;
         spectator_restored.ini = state.ini;
@@ -2248,7 +2283,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         const auto comparison_deadline = state.compare_until;
         const auto compared_options = state.draw_options(comparison_deadline - 1);
         wchar_t interaction_text[512]{};
-        GetWindowTextW(state.compact_status, interaction_text, 512);
+        GetWindowTextW(state.status_detail, interaction_text, 512);
         interactions_ok = interactions_ok && comparison_deadline >= comparison_started + 20000 &&
                           comparison_deadline <= GetTickCount64() + 20000 &&
                           compared_options.compare_original && !state.options.compare_original &&
@@ -2280,9 +2315,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         interactions_ok = interactions_ok && !state.compare_until;
         state.measured_fps = 89;
         state.update_status();
-        GetWindowTextW(state.compact_status, interaction_text, 512);
-        interactions_ok = interactions_ok && std::wstring(interaction_text).find(L"0 FPS") == 0 &&
-                          std::wstring(interaction_text).find(L"paused") != std::wstring::npos &&
+        GetWindowTextW(state.status_detail, interaction_text, 512);
+        interactions_ok = interactions_ok && state.footer_state == L"Output paused" &&
+                          std::wstring(interaction_text).find(L"FPS") == std::wstring::npos &&
                           std::wstring(interaction_text).find(L"Original") == std::wstring::npos;
         // The selected layout persists, while changing it during A/B preserves
         // the same deadline and never persists the temporary comparison itself.
@@ -2296,8 +2331,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             state.last_received_ms = GetTickCount64();
             auto contains = [&](const wchar_t *label) {
                 state.update_status();
-                GetWindowTextW(state.compact_status, interaction_text, 512);
-                return std::wstring(interaction_text).find(label) != std::wstring::npos;
+                GetWindowTextW(state.status_detail, interaction_text, 512);
+                return (state.footer_state + L" " + interaction_text).find(label) != std::wstring::npos;
             };
             source_status_ok &= contains(L"Peripheral + focus");
             wchar_t details[4096]{};
@@ -2307,7 +2342,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             source_status_ok &= !contains(L"Peripheral + focus");
             state.paused = false;
             state.last_received_ms = GetTickCount64() - 3000;
-            source_status_ok &= !contains(L"Peripheral + focus") && contains(L"waiting");
+            source_status_ok &= !contains(L"Peripheral + focus") && contains(L"Waiting");
             state.last_received_ms = GetTickCount64();
             state.demo = true;
             source_status_ok &= !contains(L"Peripheral + focus") && contains(L"Demo");
@@ -2330,7 +2365,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.last_received_ms = GetTickCount64();
         SendMessageW(state.controls, WM_HOTKEY, compare_id, 0);
         const auto mode_deadline = state.compare_until;
-        GetWindowTextW(state.compact_status, interaction_text, 512);
+        GetWindowTextW(state.status_detail, interaction_text, 512);
         interactions_ok = interactions_ok && mode_deadline &&
                           state.draw_options(mode_deadline - 1).compare_mode == 1 &&
                           std::wstring(interaction_text).find(L"50/50 comparison") != std::wstring::npos;
@@ -2841,8 +2876,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             GetClientRect(state.controls, &view);
             GetWindowRect(focused, &item);
             MapWindowPoints(nullptr, state.controls, reinterpret_cast<POINT *>(&item), 2);
-            compact_ok = IsChild(state.controls, focused) && item.left >= 0 && item.top >= 0 &&
-                         item.right <= view.right && item.bottom <= view.bottom && compact_ok;
+            const bool reachable = IsChild(state.controls, focused) && item.left >= 0 && item.top >= 0 &&
+                                   item.right <= view.right && item.bottom <= view.bottom;
+            if (!reachable)
+                trace << "tab-outside-viewport=" << GetDlgCtrlID(focused) << '\n';
+            compact_ok = compact_ok && reachable;
             reached_footer = reached_footer || focused == GetDlgItem(state.controls, show_id);
             reached_monitor = reached_monitor || focused == state.monitor;
             reached_navigation =

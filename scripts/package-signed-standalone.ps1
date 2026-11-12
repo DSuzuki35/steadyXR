@@ -108,7 +108,7 @@ try {
     Assert-Payload (Join-Path $roundTrip $folderName) $version
     if ($PreviousSettings) {
         # Personal settings belong only in this user's ready-to-run folder.
-        Copy-Item -LiteralPath $PreviousSettings -Destination (Join-Path $payload 'SteadyXR.ini')
+        Copy-ViewerSettings $PreviousSettings $payload
     }
     [IO.Directory]::CreateDirectory($gaming) | Out-Null
     foreach ($name in $outputNames) {

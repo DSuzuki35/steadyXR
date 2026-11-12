@@ -1,5 +1,6 @@
 #include "theme.hpp"
 #include <algorithm>
+#include <cmath>
 #include <commctrl.h>
 #include <cwchar>
 #include <iostream>
@@ -87,12 +88,12 @@ struct Canvas {
     HDC dc{};
     HBITMAP bitmap{};
     HGDIOBJ previous{};
-    Canvas() {
+    Canvas(int width = Slider::width, int height = Slider::height) {
         dc = CreateCompatibleDC(nullptr);
         BITMAPINFO info{};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        info.bmiHeader.biWidth = Slider::width;
-        info.bmiHeader.biHeight = -Slider::height;
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
         info.bmiHeader.biPlanes = 1;
         info.bmiHeader.biBitCount = 32;
         void *pixels{};
@@ -259,6 +260,11 @@ void small_work_area_keeps_scaled_controls_reachable() {
         CreateWindowW(L"BUTTON", L"Open preview", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 900, 700, 180, 40,
                       fixture.parent, nullptr, GetModuleHandleW(nullptr), nullptr);
     fixture.theme.control(footer, L"BUTTON");
+    const auto monitor = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, 900, 600, 180, 70,
+                                       fixture.parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    const auto reset = CreateWindowW(L"BUTTON", L"Reset", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 100, 14, 70, 32,
+                                     monitor, nullptr, GetModuleHandleW(nullptr), nullptr);
+    fixture.theme.control(reset, L"BUTTON");
     SetWindowPos(fixture.parent, nullptr, 0, 0, 1120, 760, SWP_NOZORDER | SWP_NOACTIVATE);
     SetPropW(fixture.parent, L"SteadyXRMainShell", reinterpret_cast<HANDLE>(1));
     fixture.theme.scale_window(fixture.parent, 144);
@@ -287,6 +293,12 @@ void small_work_area_keeps_scaled_controls_reachable() {
     check(control.left >= 0 && control.top >= 0 && control.right <= client.right &&
               control.bottom <= client.bottom,
           "focus can return to content at the top of the scrollable form");
+    SendMessageW(reset, WM_SETFOCUS, 0, 0);
+    GetWindowRect(reset, &control);
+    MapWindowPoints(nullptr, fixture.parent, reinterpret_cast<POINT *>(&control), 2);
+    check(control.left >= 0 && control.top >= 0 && control.right <= client.right &&
+              control.bottom <= client.bottom,
+          "focus reveals a nested monitor Reset button in the dashboard viewport");
     check(fixture.position() == -500, "scrolling never changes camera slider values");
 }
 
@@ -502,6 +514,60 @@ void combo_selection_survives_dpi_and_reposition() {
     fixture.dpi(96);
     check(SendMessageW(fixture.list, CB_GETCURSEL, 0, 0) == 5, "selection survives returning to 100 percent");
 }
+void check_vertical_scrollbar(HWND window_handle) {
+    SCROLLBARINFO info{sizeof(info)};
+    check(GetScrollBarInfo(window_handle, OBJID_VSCROLL, &info),
+          "native details scrollbar exposes its geometry");
+    const int middle = (info.rcScrollBar.left + info.rcScrollBar.right) / 2;
+    const int grip = info.rcScrollBar.top + (info.xyThumbTop + info.xyThumbBottom) / 2;
+    check(SendMessageW(window_handle, WM_NCHITTEST, 0, MAKELPARAM(middle, grip)) == HTVSCROLL,
+          "the native scrollbar handles pointer hits");
+    RECT window{};
+    GetWindowRect(window_handle, &window);
+    Canvas canvas(window.right - window.left, window.bottom - window.top);
+    SendMessageW(window_handle, WM_PRINT, reinterpret_cast<WPARAM>(canvas.dc), PRF_CLIENT | PRF_NONCLIENT);
+    auto thumb = canvas.pixel(middle - window.left, grip - window.top);
+    auto track =
+        canvas.pixel(middle - window.left, info.rcScrollBar.bottom - info.dxyLineButton - 5 - window.top);
+    HIGHCONTRASTW contrast{sizeof(contrast)};
+    SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0);
+    if (!(contrast.dwFlags & HCF_HIGHCONTRASTON)) {
+        auto light = [](COLORREF c) {
+            auto channel = [](BYTE v) {
+                const double n = v / 255.;
+                return n <= .04045 ? n / 12.92 : std::pow((n + .055) / 1.055, 2.4);
+            };
+            return .2126 * channel(GetRValue(c)) + .7152 * channel(GetGValue(c)) +
+                   .0722 * channel(GetBValue(c));
+        };
+        check(light(track) < .08, "native scroll track uses a dark surface");
+        check((light(thumb) + .05) / (light(track) + .05) >= 3,
+              "native scrollbar thumb contrasts with its track by at least 3 to 1");
+    }
+}
+
+void details_scrollbar_is_dark_and_keeps_native_input() {
+    Combos fixture;
+    auto edit = fixture.add(L"EDIT", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 90, 90,
+                            280, 140, 205);
+    std::wstring lines;
+    for (int i = 0; i < 65; ++i)
+        lines += L"OpenXR connection detail " + std::to_wstring(i) + L"\r\n";
+    SetWindowTextW(edit, lines.c_str());
+    SetFocus(edit);
+    check_vertical_scrollbar(edit);
+    SendMessageW(edit, WM_MOUSEWHEEL, MAKEWPARAM(0, WORD(-WHEEL_DELTA)), 0);
+    check(SendMessageW(edit, EM_GETFIRSTVISIBLELINE, 0, 0) > 0, "wheel scrolls connection details");
+    SendMessageW(edit, WM_VSCROLL, MAKEWPARAM(SB_THUMBPOSITION, 20), 0);
+    check(SendMessageW(edit, EM_GETFIRSTVISIBLELINE, 0, 0) == 20,
+          "native thumb positions scroll the details");
+    SendMessageW(edit, WM_KEYDOWN, VK_END, 0);
+    SendMessageW(edit, WM_KEYDOWN, VK_NEXT, 0);
+    check(SendMessageW(edit, EM_GETFIRSTVISIBLELINE, 0, 0) != 20, "keyboard pages the read-only details");
+    check(GetFocus() == edit, "the details edit retains keyboard focus");
+    fixture.theme.fit_window(fixture.parent, {20, 30, 460, 320});
+    check_vertical_scrollbar(fixture.parent);
+}
 } // namespace
 
 int main() {
@@ -524,6 +590,7 @@ int main() {
         {
             VisualStyles styles;
             check(styles.active, "activate version 6 common controls");
+            details_scrollbar_is_dark_and_keeps_native_input();
             combo_popup_keeps_its_height_through_every_layout_pass();
             combo_selection_survives_dpi_and_reposition();
         }

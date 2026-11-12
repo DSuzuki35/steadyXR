@@ -43,6 +43,7 @@ try {
     [IO.Directory]::CreateDirectory($staged) | Out-Null
     [IO.File]::WriteAllBytes((Join-Path $old 'SteadyXR.ini'),[byte[]](0,254,235,32,42))
     [IO.File]::WriteAllText((Join-Path $old 'SteadyXR-shortcuts.ini'),'joystick bindings')
+    [IO.File]::WriteAllBytes((Join-Path $old 'SteadyXR-ui.ini'),[byte[]](255,254,3,4,0))
     [IO.File]::WriteAllText((Join-Path $old 'Clips/clip.bin'),'recording')
     $reserved = Join-Path $staged 'SteadyXR.ini'
     [IO.File]::WriteAllText($reserved,'reserved file')
@@ -52,6 +53,16 @@ try {
     Install-StagedUpdate $staged $old $target
     Check ((Get-FileHash -LiteralPath (Join-Path $old 'SteadyXR.ini')).Hash -eq (Get-FileHash -LiteralPath (Join-Path $target 'SteadyXR.ini')).Hash) 'settings changed'
     Check ([IO.File]::ReadAllText((Join-Path $target 'SteadyXR-shortcuts.ini')) -eq 'joystick bindings') 'shortcut copy'
+    Check ((Get-FileHash -LiteralPath (Join-Path $old 'SteadyXR-ui.ini')).Hash -eq (Get-FileHash -LiteralPath (Join-Path $target 'SteadyXR-ui.ini')).Hash) 'layout copy'
+    $ready = Join-Path $root 'local-release'
+    [IO.Directory]::CreateDirectory($ready) | Out-Null
+    $namedMain = Join-Path $old 'my-preferred-profile.ini'
+    [IO.File]::WriteAllText($namedMain,'user-selected profile')
+    Copy-ViewerSettings $namedMain $ready
+    Check ([IO.File]::ReadAllText((Join-Path $ready 'SteadyXR.ini')) -eq 'user-selected profile') 'selected main settings'
+    foreach ($sidecar in @('SteadyXR-ui.ini','SteadyXR-shortcuts.ini')) {
+        Check ((Get-FileHash -LiteralPath (Join-Path $old $sidecar)).Hash -eq (Get-FileHash -LiteralPath (Join-Path $ready $sidecar)).Hash) 'local release sidecar copy'
+    }
     Check ([IO.File]::Exists((Join-Path $old 'Clips/clip.bin'))) 'rollback copy changed'
     Must-Fail { Install-StagedUpdate $staged $old $target } 'overwrote installed version'
     $cmd = Join-Path $root 'Start-Preview.cmd'
@@ -86,4 +97,4 @@ try {
         Remove-Item -LiteralPath $root -Force -Recurse
     }
 }
-'PASS: stable releases, authenticated asset selection, receipt enforcement, settings, clips and rollback'
+'PASS: stable releases, authenticated assets, receipts, settings, layout, bindings and rollback'

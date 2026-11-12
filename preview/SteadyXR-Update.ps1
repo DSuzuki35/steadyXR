@@ -60,18 +60,23 @@ function Assert-Payload([string]$Directory, [string]$Version) {
     }
 }
 
+function Copy-ViewerSettings([string]$Previous, [string]$Destination) {
+    $prior = Get-Item -LiteralPath $Previous
+    $directory = if ($prior.PSIsContainer) { $prior.FullName } else { $prior.DirectoryName }
+    foreach ($name in @('SteadyXR.ini','SteadyXR-shortcuts.ini','SteadyXR-ui.ini','preview.ini')) {
+        $to = Join-Path $Destination $name
+        if (Test-Path -LiteralPath $to) { throw "The package includes a reserved user data path: $name" }
+        $from = Join-Path $directory $name
+        if (!$prior.PSIsContainer -and $name -eq 'SteadyXR.ini') { $from = $prior.FullName }
+        if ([IO.File]::Exists($from)) { [IO.File]::Copy($from,$to) }
+    }
+}
+
 function Install-StagedUpdate([string]$Staged, [string]$Current, [string]$Target) {
     if ([IO.Directory]::Exists($Target) -or [IO.File]::Exists($Target)) {
         throw "This version folder already exists: $Target. Open the installed copy directly."
     }
-    foreach ($name in @('SteadyXR.ini','SteadyXR-shortcuts.ini','preview.ini')) {
-        $existing = Join-Path $Current $name
-        if (Test-Path -LiteralPath $existing) {
-            $to = Join-Path $Staged $name
-            if (Test-Path -LiteralPath $to) { throw "The update includes a reserved user data path: $name" }
-            Copy-Item -LiteralPath $existing -Destination $to -Recurse
-        }
-    }
+    Copy-ViewerSettings $Current $Staged
     # A same-volume, non-replacing rename publishes the fully prepared folder.
     [IO.Directory]::Move($Staged, $Target)
 }
@@ -138,7 +143,7 @@ function Invoke-ViewerUpdate {
     $parent = [IO.Directory]::GetParent($currentDir).FullName
     $target = Join-Path $parent "SteadyXR-$($offer.Version)"
     if (Test-Path -LiteralPath $target) { return }
-    $prompt = "Download SteadyXR $($offer.Version) and start it when you close the current app? Your settings and joystick bindings will be copied. Keep using the new folder for future launches:`r`n`r`n$target`r`n`r`nYour previous version stays available."
+    $prompt = "Download SteadyXR $($offer.Version) and start it when you close the current app? Your settings, joystick bindings and window layout will be copied. Keep using the new folder for future launches:`r`n`r`n$target`r`n`r`nYour previous version stays available."
     if ((Show-UpdateMessage $prompt 'YesNo' 'Question') -ne 'Yes') { return }
     $work = Join-Path $parent ('.steadyxr-update-' + [guid]::NewGuid().ToString('N'))
     try {
