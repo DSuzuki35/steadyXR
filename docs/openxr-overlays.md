@@ -1,11 +1,11 @@
-# SteadyXR 0.9: additional OpenXR overlays
+# Additional OpenXR overlays
 
 ## Install and test with Racelab
 
-1. Close the previous SteadyXR app and start Gaming-PC/Start-Preview.cmd from the 0.10 package.
-2. Use Upgrade connection (or Install connection) to activate the new capture DLL. Restart iRacing in OpenXR mode. 0.10's capture format cannot use an older DLL.
+1. Start SteadyXR.exe from the extracted standalone release.
+2. In **Settings**, install the OpenXR connection and restart iRacing in OpenXR mode.
 3. Enable the desired Racelab VR overlays in its OpenXR mode. The actual runtime call order needs to be game → overlay injector → SteadyXR → runtime. SteadyXR must see the extra layers and the injector's swapchain calls. Use the existing OpenXR layer editor to adjust registrations if needed, then restart the game; delivery itself changes no registrations. There is no universal up/down instruction for every loader configuration.
-4. For the standalone app open Overlay layers… . For OBS, close the standalone output, install the new obs-plugins/data folders with OBS closed, then open the SteadyXR OpenXR Capture source's OpenXR overlay layers group.
+4. Open **Settings → Overlay layers**.
 5. Refresh the list. Start with one supported Quad layer. Check the preview, then select additional layers as needed. One overlay program can submit several layers. Labels report type, dimensions and slot; OpenXR does not provide a reliable vendor name per composition layer.
 
 Racelab and OpenKneeboard are candidates because their OpenXR integrations submit composition layers. Compatibility of the particular runtime, injector order and installed versions needs a live test; a visible headset overlay is not proof that it reaches SteadyXR's interceptor. Pure SteamVR compositor overlays and overlays injected downstream of SteadyXR are not available through this capture path.
@@ -16,7 +16,7 @@ Racelab and OpenKneeboard are candidates because their OpenXR integrations submi
 - All supported includes newly appearing supported layers, within capture limits.
 - Individual checkboxes apply to this producer/session. After restarting the game, reselect the desired layers. Stored slot numbers are never applied to a different session.
 - Selection preferences are included in settings/presets; the detected list itself is not saved.
-- Refresh explicitly after changing third-party overlays. OBS's properties do not rebuild themselves during slider editing. Only the active viewer/source can change capture selection.
+- Refresh the layer list after changing third-party overlays.
 
 Overlays are composited in submission order with their own position, rotation, eye visibility and alpha. They follow the game stabilization. Original, 50/50 split and side-by-side A/B views use the corresponding original or corrected rays for overlays too; the comparison remains 20 seconds or until pressed again. Fixed screen-space overlay placement is not a separate mode in this release.
 

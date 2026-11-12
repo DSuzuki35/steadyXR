@@ -1,5 +1,4 @@
 #include "vrst/core.hpp"
-#include "vrst/protocol.hpp"
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -377,61 +376,6 @@ int main() {
              const auto r = h.sample(2000000000);
              check(r.valid && r.session == 43 && r.sample_time_ns == 2000000000,
                    "restart retained previous session timing");
-         }},
-        {"NTP offset sign maps sender clock to receiver clock",
-         [] {
-             ClockSync c;
-             check(c.observe(1000000000, 6001000000, 6002000000, 1003000000), "sync rejected");
-             near(c.offset_ns(), 5000000000, 1);
-             near(c.rtt_ms(), 2);
-             check(!c.observe(10, 20, 19, 30), "negative server interval");
-         }},
-        {"clock estimator ignores a high latency asymmetric outlier",
-         [] {
-             ClockSync c;
-             c.observe(1000000000, 6001000000, 6002000000, 1003000000);
-             c.observe(2000000000, 6001000000, 6002000000, 2500000000);
-             near(c.offset_ns(), 5000000000, 1);
-         }},
-        {"pose wire roundtrip preserves signed projection and timestamps",
-         [] {
-             wire::Message m;
-             m.type = wire::Type::pose;
-             m.pose = pose(11, 1234567890, 12);
-             m.pose.projection = {-.9, 1.2, 1.1, -.8};
-             auto b = wire::encode(m);
-             auto d = wire::decode(b.data(), b.size());
-             check(d.has_value(), "decode failed");
-             check(d->pose.sequence == 11 && d->pose.time_ns == 1234567890, "timestamp/sequence lost");
-             near(d->pose.projection.left, -.9);
-             near(d->pose.projection.up, 1.1);
-         }},
-        {"wire decoder rejects truncation unknown versions and invalid quaternions",
-         [] {
-             wire::Message m;
-             m.pose = pose(1, 123, 0);
-             auto b = wire::encode(m);
-             for (std::size_t i = 0; i < b.size(); ++i)
-                 check(!wire::decode(b.data(), i), "truncated packet accepted");
-             b[4] = 99;
-             check(!wire::decode(b.data(), b.size()), "version accepted");
-             m.pose.orientation.w = std::numeric_limits<double>::infinity();
-             b = wire::encode(m);
-             check(!wire::decode(b.data(), b.size()), "infinity accepted");
-         }},
-        {"sync reply wire format preserves all four-timestamp inputs", [] {
-             wire::Message m;
-             m.type = wire::Type::sync_reply;
-             m.nonce = 9;
-             m.client_send = 100;
-             m.server_receive = 210;
-             m.server_send = 220;
-             m.session = 42;
-             auto b = wire::encode(m);
-             auto d = wire::decode(b.data(), b.size());
-             check(d && d->nonce == 9 && d->client_send == 100 && d->server_receive == 210 &&
-                       d->server_send == 220 && d->session == 42,
-                   "sync mismatch");
          }}};
     int failed = 0;
     for (auto &c : cases) {

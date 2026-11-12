@@ -1,4 +1,4 @@
-#include "vrst/advanced.hpp"
+#include "vrst/image.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -57,8 +57,6 @@ int main() {
     check(iw.correction_fraction == 1 &&
               std::abs(iw.row_x[0] * .5 + iw.row_x[1] * .5 + iw.row_x[2] - .55) < 1e-8,
           "mirror preserves image shift and roll without crop");
-    check(required_pose_crop(1920, 1080, s, q, {}, 20) > 0 && required_image_crop(1920, 1080, s, r, 20) > 0,
-          "automatic crop still seeks real image margin with mirror enabled");
     s.input_left = 9;
     s.input_right = 13;
     s.input_top = 7;

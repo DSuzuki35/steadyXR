@@ -1,8 +1,7 @@
 # Viewer camera controls
 
-The **Director** page in **Spectator & effects** adds three independent controls.
-All start off and are included in complete presets. The same controls are in the
-**SteadyXR OpenXR Capture** OBS source. Master spectator bypass disables them.
+The **Director** page in **Settings → Gaze & effects** adds three independent controls.
+All start off and are included in complete presets. Master spectator bypass disables them.
 
 ## Lookahead
 
@@ -68,8 +67,6 @@ disabled speed framing performs no telemetry polling.
 For a two-PC HDMI/capture-card setup, run these camera controls in the gaming
 PC's standalone preview, then capture that result. The stream PC receives the
 already framed video without the original eye poses or hidden image reserve.
-Exposure, bloom and color can still run there in **SteadyXR Visual Effects**.
-The legacy SteamVR video filter does not gain these new OpenXR director controls.
 
 Start with automatic crop alone, then try a short lookahead delay and subtle
 speed crop. Actual GPU timing and iRacing/LMU headset behavior need a live

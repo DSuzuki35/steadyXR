@@ -75,9 +75,16 @@ try {
         Copy-Item -LiteralPath (Join-Path $root $relative) -Destination $payload -Recurse
     }
     Copy-Item -LiteralPath (Join-Path $root 'docs/standalone-updates.md') -Destination (Join-Path $payload 'Updates.md')
-    Copy-Item -LiteralPath (Join-Path $root 'preview/README.md') -Destination $payload
-    Copy-Item -LiteralPath (Join-Path $root 'docs/spectator-features.md') -Destination (Join-Path $payload 'Spectator-Guide.md')
-    Copy-Item -LiteralPath (Join-Path $root 'docs/viewer-director.md') -Destination (Join-Path $payload 'Director-Guide.md')
+    # The repository guide lives in preview/ while the portable guide lives at
+    # the root of the ZIP. Bundle every local image it references.
+    $guide = [IO.File]::ReadAllText((Join-Path $root 'preview/README.md'))
+    $imageDirectory = Join-Path $payload 'docs/images'
+    [IO.Directory]::CreateDirectory($imageDirectory) | Out-Null
+    foreach ($match in [regex]::Matches($guide, '!\[[^\]]*\]\(\.\./docs/images/(?<name>[a-z0-9-]+\.png)\)')) {
+        $name = $match.Groups['name'].Value
+        Copy-Item -LiteralPath (Join-Path $root "docs/images/$name") -Destination (Join-Path $imageDirectory $name) -Force
+    }
+    [IO.File]::WriteAllText((Join-Path $payload 'README.md'),$guide.Replace('../docs/images/','docs/images/'))
     if ($ValidationLog) { Copy-Item -LiteralPath $ValidationLog -Destination (Join-Path $payload 'automated-tests.log') }
     $checks = Get-ChildItem -LiteralPath $payload -File -Recurse | Sort-Object FullName | ForEach-Object {
         '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.FullName.Substring($payload.Length+1).Replace('\','/')
@@ -87,7 +94,7 @@ try {
     # Include current working sources used by the compiler, including new files in source directories.
     $tracked = @(git -c core.quotepath=false -C $root ls-files --cached)
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate tracked source.' }
-    $added = @(git -c core.quotepath=false -C $root ls-files --others --exclude-standard -- CMakeLists.txt cmake include plugin preview scripts sender src tests third_party docs/standalone-updates.md 'docs/*1.0.0*')
+    $added = @(git -c core.quotepath=false -C $root ls-files --others --exclude-standard -- CMakeLists.txt cmake include preview scripts src tests third_party licenses LICENSE THIRD-PARTY-NOTICES.md README.md SUPPORT.md .github/FUNDING.yml docs/images docs/standalone-updates.md 'docs/*1.0.0*')
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate new source inputs.' }
     foreach ($relative in $tracked + $added) {
         $from = Join-Path $root $relative

@@ -2,9 +2,9 @@
 
 SteadyXR checks the latest stable release on startup. A newer version with a compatible update package opens a confirmation dialog. Choose **Yes** to download it in the background, then close SteadyXR normally when you are ready to switch. The updater starts the new executable from its own version folder next to the old one. Use that new executable for future sessions.
 
-Version 1.0.1 and later copy your app settings, joystick bindings and window layout after the previous app exits. Named presets in the shared `Presets` folder remain available. An original `Start-Preview.cmd` pointing at the previous folder follows the update. Custom launchers keep their existing target. For rollback, close the new version and open `SteadyXR.exe` in the previous folder. Installing an update leaves OpenXR registrations alone. If you want a different capture DLL active, use the app's connection controls and restart the game.
+Updates copy your app settings, joystick bindings and window layout after the previous app exits. Named presets in the shared `Presets` folder remain available. An original `Start-Preview.cmd` pointing at the previous folder follows the update. Custom launchers keep their existing target. For rollback, close the new version and open `SteadyXR.exe` in the previous folder. Installing an update leaves OpenXR registrations alone. If you want a different capture DLL active, use the app's connection controls and restart the game.
 
-The updater reads [the project’s GitHub releases](https://github.com/DSuzuki35/horizonlock-vr/releases). While the repository is private, the Windows GitHub CLI must be installed in its standard Program Files location and signed into an account with read access. Public releases can be checked directly. Offline checks and older or prerelease versions leave the app available as usual.
+SteadyXR checks public releases directly through GitHub. You can use the app without a GitHub account or the GitHub CLI. If you are offline, keep using the current version. You can also download and extract a standalone ZIP manually. [SteadyXR releases](https://github.com/DSuzuki35/steadyXR/releases)
 
 ## Publishing the next version
 

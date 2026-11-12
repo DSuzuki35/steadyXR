@@ -1,13 +1,13 @@
-# Third-party notices
+# SteadyXR licensing and third-party notices
 
-VR Stabilizer source is licensed under GPL-2.0-or-later; see LICENSE. Corresponding project source and build scripts accompany the Windows package under `source/`.
+The public SteadyXR 1.0.0 standalone application and OpenXR capture layer use PolyForm Noncommercial 1.0.0 for their original code and assets. Earlier GPL grants remain in force for the code distributed under them. [SteadyXR license](LICENSE) · [GNU GPL version 2](licenses/GPL-2.0.txt)
 
-- **OBS Studio 32.2.2**: GPL-2.0-or-later. The plugin uses libobs's C API and links to the OBS installation's `obs.dll`; that DLL is not redistributed here. https://github.com/obsproject/obs-studio/tree/32.2.2
-- **Valve OpenVR SDK 2.15.6**: BSD-3-Clause, copyright Valve Corporation. `openvr_api.dll` is redistributed unchanged with the sender. The complete license is included at `licenses/OpenVR-LICENSE.txt`. https://github.com/ValveSoftware/openvr/tree/v2.15.6
-- **LLVM-MinGW toolchain 20260826** (alternative cross-builds): binaries built using the documented cross-compilation path statically include compiler/runtime support distributed under LLVM's Apache-2.0 with exceptions in `licenses/LLVM-MinGW-LICENSE.txt`, with MinGW and winpthreads notices in the other `licenses/` files. These notices are retained for reproducing that build. The v0.2.0 and v0.3.0 releases instead use native Visual Studio builds from Windows CI with the static C++ runtime. https://github.com/mstorsjo/llvm-mingw/releases/tag/20260826
+Required Notice: Copyright (c) 2026 Dan Suzuki (https://github.com/DSuzuki35/steadyXR)
 
-Windows and UCRT system DLLs are supplied by Windows. The native macOS verification harness uses SIMDe 0.8.2 headers (MIT); they are not included in the Windows package.
+## OpenXR SDK headers
 
-The implementation does not copy code from OpenXR-Layer-OBSMirror; that project is referenced as a capture option and conceptual precedent.
+Copyright 2017–2024, The Khronos Group Inc. SteadyXR uses the OpenXR SDK 1.1.43 headers at commit `781f2eab3698d653c804ecbd11e0aed47eaad1c6`. Their SPDX license expression is `Apache-2.0 OR MIT`. The source contains the headers and upstream notices in `third_party/openxr/`. The portable package carries both license texts. The game loads the capture layer through its OpenXR loader. [Upstream headers](https://github.com/KhronosGroup/OpenXR-SDK/tree/781f2eab3698d653c804ecbd11e0aed47eaad1c6) · [Apache License 2.0](licenses/OpenXR-Apache-2.0.txt) · [MIT license](licenses/OpenXR-MIT.txt)
 
-- **Khronos OpenXR SDK headers 1.1.43**: pinned commit `781f2eab3698d653c804ecbd11e0aed47eaad1c6`. The unchanged headers and their license notices accompany the preview source under `source/third_party/openxr`; license texts are also in `licenses/OpenXR-Apache-2.0.txt` and `licenses/OpenXR-MIT.txt`. No OpenXR loader/runtime binary is redistributed. https://github.com/KhronosGroup/OpenXR-SDK/tree/781f2eab3698d653c804ecbd11e0aed47eaad1c6
+## Alternative toolchains
+
+**LLVM-MinGW.** Alternative cross-builds can include LLVM compiler/runtime support under Apache-2.0 WITH LLVM-exception and MinGW-w64 or winpthreads runtime support. The repository retains the corresponding notices. The public standalone Windows build uses Visual Studio with the static Microsoft C++ runtime. Windows supplies its system DLLs. [LLVM-MinGW toolchain](https://github.com/mstorsjo/llvm-mingw) · [LLVM license and exceptions](licenses/LLVM-MinGW-LICENSE.txt) · [MinGW-w64 notices](licenses/COPYING.MinGW-w64-COPYING.MinGW-w64.txt) · [Winpthreads notice](licenses/Winpthreads-COPYING.txt)

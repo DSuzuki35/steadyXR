@@ -6,7 +6,7 @@ The standalone app has English native navigation for Preview, Camera, Workshop a
 
 Workshop records the complete submitted source rectangle of the selected OpenXR eye, including a separate focus view when supplied, before spectator cropping, stabilization and effects. Hardware H.264 proxies preserve source FOV and pair each accepted image with its pose, FOV, gaze and selected-game speed reading. Recording is opt-in, normally 30 seconds at 30 fps, with assignable keyboard/wheel input and no continuous recording buffer.
 
-Editing pauses live output. A draggable frame with eight resize handles and synchronized controls maintains the configured output aspect ratio, normally 16:9. Drafts replay through the existing camera renderer, support Original comparison and apply explicitly to the active profile. See [Workshop guide](workshop.md) for operation and limits.
+Editing pauses live output. A draggable frame with eight resize handles and synchronized controls maintains the configured output aspect ratio, normally 16:9. Drafts replay through the existing camera renderer, support Original comparison and apply explicitly to the active profile. See [archived Workshop guide](archive/capture-workshop-0.16.md) for operation and limits.
 
 ## Verification
 

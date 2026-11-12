@@ -7,13 +7,14 @@ function Must-Fail([scriptblock]$Operation, [string]$Message) {
 }
 function Fixture([string]$Tag) {
     $v = $Tag -replace '^v',''
-    $prefix = "https://github.com/DSuzuki35/horizonlock-vr/releases/download/$Tag"
+    $prefix = "https://github.com/DSuzuki35/steadyXR/releases/download/$Tag"
     $assets = @("SteadyXR-$v-Standalone-Windows-x64.zip","SteadyXR-$v-Release.ps1") | ForEach-Object {
         [pscustomobject]@{ name=$_; browser_download_url="$prefix/$_"; size=20000 }
     }
     [pscustomobject]@{ tag_name=$Tag; draft=$false; prerelease=$false; assets=$assets }
 }
 $current = [version]'1.0.0'
+Check (Get-UpdateOffer (Fixture 'v1.0.0') ([version]'0.14.0')) 'public v1.0.0 asset pair'
 Check (Get-UpdateOffer (Fixture 'v1.10.1') ([version]'1.9.3')) 'numeric comparison'
 Check (Get-UpdateOffer (Fixture '2.0.0') $current) 'tag without v'
 foreach ($tag in @('v0.99.1','v1.0.0','v1.1','v01.2.0','v1.0.1-beta3','v1.1.1+test','v65536.1.1','x1.1.1')) {
@@ -28,6 +29,9 @@ Check (!(Get-UpdateOffer $release $current)) 'prerelease accepted'
 $release.prerelease = $false
 $release.assets[0].browser_download_url = 'https://example.com/other.zip'
 Check (!(Get-UpdateOffer $release $current)) 'unrelated asset URL accepted'
+$release = Fixture 'v1.2.0'
+$release.assets[0].browser_download_url = $release.assets[0].browser_download_url.Replace('/steadyXR/', '/old-repository/')
+Check (!(Get-UpdateOffer $release $current)) 'wrong GitHub repository accepted'
 $release = Fixture 'v1.2.0'
 $release.assets += $release.assets[0]
 Check (!(Get-UpdateOffer $release $current)) 'duplicate asset accepted'

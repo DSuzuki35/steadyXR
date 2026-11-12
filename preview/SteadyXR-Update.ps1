@@ -8,7 +8,7 @@ foreach ($module in @('Microsoft.PowerShell.Utility','Microsoft.PowerShell.Secur
     Import-Module ([IO.Path]::Combine($PSHOME, 'Modules', $module, "$module.psd1")) -ErrorAction Stop
 }
 $publisher = '89F7F00A4FD4BD66F5617F1202B8E7B9DD662247'
-$repository = 'DSuzuki35/horizonlock-vr'
+$repository = 'DSuzuki35/steadyXR'
 
 function Assert-Publisher([string]$Path) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
@@ -34,7 +34,7 @@ function Get-UpdateOffer($Release, [version]$Current) {
         $limit = if ($name -eq $receipt) { 128KB } else { 256MB }
         if ($asset[0].size -le 0 -or $asset[0].size -gt $limit) { return }
     }
-    return [pscustomobject]@{ Version=$version; Tag=$Release.tag_name; Archive=$archive; Receipt=$receipt; Prefix=$prefix }
+    return [pscustomobject]@{ Version=$version; Archive=$archive; Receipt=$receipt; Prefix=$prefix }
 }
 
 function Assert-ReleaseArchive($Offer, [string]$Receipt, [string]$Archive) {
@@ -104,15 +104,6 @@ function Show-UpdateMessage([string]$Text, [string]$Buttons, [string]$Icon) {
     [Windows.Forms.MessageBox]::Show($Text, 'SteadyXR update', $Buttons, $Icon)
 }
 
-function Save-ReleaseAsset($Offer, [string]$Name, [string]$Work, [string]$GitHubCli, $Headers) {
-    if ($GitHubCli) {
-        & $GitHubCli release download $Offer.Tag --repo "github.com/$repository" --pattern $Name --dir $Work
-        if ($LASTEXITCODE -ne 0) { throw "GitHub could not download $Name." }
-    } else {
-        Invoke-WebRequest -UseBasicParsing -Uri "$($Offer.Prefix)/$Name" -OutFile (Join-Path $Work $Name) -Headers $Headers -TimeoutSec 180
-    }
-}
-
 function Invoke-ViewerUpdate {
     if ($ViewerPid -le 0) { return }
     $currentDir = $PSScriptRoot
@@ -122,21 +113,11 @@ function Invoke-ViewerUpdate {
     $current = [version](Get-Item -LiteralPath $currentExe).VersionInfo.ProductVersion
     $headers = @{ 'User-Agent'="SteadyXR/$current"; Accept='application/vnd.github+json' }
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $gh = $null
     try {
         $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$repository/releases/latest" -Headers $headers -TimeoutSec 12
     } catch {
-        # Private GitHub releases require an account with read access. Let an
-        # installed GitHub CLI handle its own stored credentials and downloads.
-        if (!$_.Exception.Response -or [int]$_.Exception.Response.StatusCode -notin @(403,404)) { return }
-        $gh = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'GitHub CLI/gh.exe'
-        if (!(Test-Path -LiteralPath $gh -PathType Leaf)) { return }
-        $env:GH_PROMPT_DISABLED = '1'
-        try {
-            $response = & $gh api --hostname github.com "repos/$repository/releases/latest" 2>$null
-            if ($LASTEXITCODE -ne 0) { return }
-            $latest = $response | ConvertFrom-Json
-        } catch { return }
+        # Offline, unavailable or rate-limited checks leave the viewer running.
+        return
     }
     $offer = Get-UpdateOffer $latest $current
     if (!$offer -or $viewer.HasExited) { return }
@@ -150,9 +131,9 @@ function Invoke-ViewerUpdate {
         [IO.Directory]::CreateDirectory($work) | Out-Null
         $receipt = Join-Path $work $offer.Receipt
         $archive = Join-Path $work $offer.Archive
-        Save-ReleaseAsset $offer $offer.Receipt $work $gh $headers
+        Invoke-WebRequest -UseBasicParsing -Uri "$($offer.Prefix)/$($offer.Receipt)" -Headers $headers -OutFile $receipt -TimeoutSec 30
         Assert-Publisher $receipt
-        Save-ReleaseAsset $offer $offer.Archive $work $gh $headers
+        Invoke-WebRequest -UseBasicParsing -Uri "$($offer.Prefix)/$($offer.Archive)" -Headers $headers -OutFile $archive -TimeoutSec 180
         $receiptLock = [IO.File]::OpenRead($receipt)
         try {
             $archiveLock = [IO.File]::OpenRead($archive)

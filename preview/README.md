@@ -1,198 +1,158 @@
-# SteadyXR 1.0.1
+# SteadyXR 1.0.0 streamer guide
 
-Open **SteadyXR.exe** to start the standalone Windows app. The 1.0.1 package contains a signed viewer and signed OpenXR capture DLL, both with **no expiry**.
+SteadyXR turns a VR game view into a stabilized stream. It opens two windows. Set up your camera in the dashboard and send **SteadyXR – Stream Output** to your audience. The dashboard, framing guides and status messages stay on your control screen.
 
-With OpenXR capture, SteadyXR can combine peripheral and high-resolution focus images in the stream. **Framing → Capture full eye** takes a still of the incoming image. The framing monitor shows your crop guide on every page and switches to the captured eye when the still is ready. Drag the monitor by its header to reposition the card. Drag either lower corner to resize it. **Reset** or a double-click on the header restores the original layout. Open **Edit captured frame…** to drag the rectangle or adjust crop reserve and horizontal or vertical framing while the stream keeps running.
+![SteadyXR Stream Output dashboard showing source controls, framing monitor and output details](../docs/images/steadyxr-dashboard.png)
 
-Quad views use the selected eye's submitted FOV and orientation, including a moving focus region. A single received image may be stereo or already combined upstream; it does not prove quad views are disabled. If focus detail is missing, check the game's quad-view setting and active OpenXR layer chain. The initial target is mbucchia Quad-Views-Foveated with Sboys3/SteamVR and Dream Air or Dream Air SE; live headset/game compatibility still needs validation. No provider installation or layer reordering happens automatically.
+## Set up your first stream
 
-Open **Gaze & effects** for gaze framing, chat exclusion and local exposure/bloom/color. All new features start **off**. The master bypass preserves tuning. Gaze & chat, Exposure, Bloom, Color and Director each have their own page. Camera and visual bypass switches preserve tuning; presets are explicit opt-ins.
+1. Extract the standalone ZIP into a writable folder. Keep its files together and open **SteadyXR.exe**.
+2. Open **Stream Output** in the sidebar and choose a **Live source**. For an existing game mirror, select **Capture a game window**, click **Refresh windows**, then choose the game under **Game window**. Leave that window open and unminimized.
+3. For the game's original eye image and matching headset poses, choose **OpenXR · pose and gaze**. Under **Settings**, click **Install for all users** or **Upgrade / repair** for an existing registration. Accept the Windows administrator prompt and restart the OpenXR game. Back on **Stream Output**, select the **Eye** you want to broadcast.
+4. Choose **30 FPS**, **60 FPS** or **90 FPS**. Click **Open stream output** and check that the image follows the game. **Frame rate** is a target. **Connection and capture details** shows what SteadyXR is receiving.
+5. Pick a starting look under **Presets…**. **Dan Suzuki** loads a complete 4K setup, including framing and output. After loading it, check your source, eye and output monitor. In OpenXR mode, sit in your normal driving position, look straight ahead with the headset upright and press **Camera → Center camera**.
 
-Enable gaze framing and chat exclusion, then press **Look at chat now / Learn** or **Ctrl+Alt+C** and look at chat: three seconds of countdown, then one second of stable samples. Adjust angular width/height. Head following continues while gaze toward chat is excluded. Relearn after recentering, changing eye/source/session, moving chat or loading a preset. Unsupported/stale gaze falls back to head stabilization. Actual Dream Air runtime compatibility still needs live validation.
+**One PC.** In OBS, add a **Window Capture** source and select **SteadyXR – Stream Output**. Keep the output visible. If your scene shows the dashboard, select the other SteadyXR window. Set up game and microphone audio separately.
 
-Image effects run before separately captured overlays. **A/B compares visual effects only** selects the twenty-second comparison with identical framing; start it with **Compare effects** in the main window. For minimum gaming-PC load, leave local image effects off and apply **SteadyXR Visual Effects** once to the capture-card source on the stream PC. The included **Spectator-Guide.md** explains the controls, SDR limits and measured costs. Pre-0.10 connections require an upgrade and game restart for IPC 4.
+**Gaming PC and capture card.** In Windows, extend the gaming PC desktop onto the display connected to the capture card. In **Settings → Output monitor**, select that display. Click **Open stream output**, then press **F11** in the output window to fill it. Enable **Start output in fullscreen** for future sessions. On the streaming PC, add the capture card as the video input. Windows display settings determine the HDMI resolution and refresh rate.
 
-Version **0.8.0** adds **Center camera**, global hotkeys, a temporary **20-second A/B comparison**, and compact capture/FPS feedback in the controls. The OBS drop-in folders now sit directly beside the standalone app in the delivered version folder. Existing settings and presets remain supported.
+## Stream Output and capture status
 
-Horizon Lock VR became **SteadyXR** in 0.7.0, which introduced the on-demand **OpenXR layers…** editor with staged changes, backups and restore. The filenames are SteadyXR.exe, SteadyXR.ini, SteadyXR-OpenXR.dll, SteadyXR.ico and SteadyXR.png.
+**Capture a game window** stabilizes motion estimated from the visible pixels. The game controls which eye and how much scenery appears in its mirror. The **Profile** selector cannot switch eyes in that source. Scene cuts, featureless scenery and a minimized window can interrupt tracking.
 
-0.6.1 fixes disappearing sliders and makes Y offset use hidden stabilization reserves as well as aspect-ratio crop. It adds three tuning presets and named complete presets. Slider adjustments remain live; automatic settings writes are deferred until dragging settles.
+**OpenXR · pose and gaze** uses submitted D3D11 or D3D12 game images and matching poses. Select **Left** or **Right** under **Eye**. With supported quad-view input, SteadyXR combines the peripheral image and high-resolution focus region for that eye. **Peripheral + focus** confirms both arrived. **Single view received** can mean a stereo image or an upstream layer that already combined the views. Gaze features also require the runtime to supply valid eye-tracking data.
 
-0.5.0 adds a dark native control panel and an embedded application icon. The PNG and Windows ICO are also included beside the EXE. Existing settings migrate when upgrading the ready-to-use package.
+Watch the status at the bottom of the dashboard. Pause preserves the last image. Hiding or minimizing the stream window suspends frame requests. Reopen it and resume output before going live. If the source stops sending frames, the output switches to a waiting screen after about two seconds and returns when frames arrive. **Output details** shows your configured resolution, aspect ratio and frame rate. Actual captured dimensions, frame flow and connection messages are under **Connection and capture details**.
 
-When no new frame arrives for two seconds, the output becomes a plain black screen with “Waiting for OpenXR capture…” (or “Waiting for window capture…” in image mode). The next received frame restores the live preview automatically. Deliberate pause retains the last image. The waiting screen uses the GPU presentation path and does not recenter or alter the headset.
+The status light is green for a live feed, amber while waiting, gray when paused or hidden, and red if another consumer owns the capture. The text beside the light identifies the state. **Buy me a coffee** and **Affiliate links** open optional support pages in your browser. Purchases through the affiliate links may earn Dan a commission.
 
-Standalone gaming-PC preview with OpenXR pose stabilization or existing-window capture. Preview stabilization affects only the stream output. Optional render extension asks the game to render a wider eye projection; the runtime receives that actual projection for correct headset composition. No OBS or video encoder is required on the gaming PC.
+## Camera
 
-## New in 0.14.0
+![Camera page with smoothing, horizon lock, vertical steadiness and centering](../docs/images/steadyxr-camera.png)
 
-D3D12 OpenXR sessions are detected automatically alongside D3D11. The native GPU capture preserves the submitted image and pose and uses the same framing, stabilization, overlay and OBS output. No extra setting is needed. Capture skips a frame if its bounded buffers are still busy. The game queue does not wait for the preview viewer. See [validation and signing](../docs/release-0.14.0-validation.md).
+| Control | How to use it |
+| --- | --- |
+| **Bypass stabilization** | Pass through camera movement while keeping capture and framing active. Toggle it again to restore your tuning. |
+| **Smoothing** | Increase it to soften quick head movements. Reduce it if the camera takes too long to follow a deliberate look into a corner. |
+| **Horizon lock** | Adjust how strongly headset roll is removed from the stream. Zero preserves the natural smoothed tilt. At 100% the correction aims to level the horizon. |
+| **Adaptive roll leveling** | Apply more correction to small tilts while allowing more of a large intentional lean. Turn it off for a linear response. |
+| **Vertical steadiness** | Reduce vertical camera movement from pitching your head relative to your centered reference. Start at zero if you want viewers to follow glances at the dash. |
+| **Center camera** | With your headset upright and eyes forward, set the stream's reference. Use it again after changing seating position or recentering in the simulator. |
 
-## From 0.13.1
+Horizon lock, adaptive leveling, vertical steadiness and centering use OpenXR pose data. A window source offers image-based smoothing. Stabilizing the stream leaves the headset camera under the game's control.
 
-The app, OBS source and newly compiled capture DLL have no expiry. **Install/Upgrade connection** registers SteadyXR system-wide (HKLM), requests Windows administrator approval when needed, and disables old per-user SteadyXR entries. Other layer enable states are preserved. With VectorXR present, SteadyXR is placed before it to capture the game's D3D11 images before Frame Generation creates a D3D12 session.
+## Framing
 
-A startup fix skips automatic eye-gaze extension probing before VectorXR has initialized. Application-requested eye-gaze extensions remain unchanged. Without an application request, automatic gaze features may be unavailable in this combination; normal head-pose stabilization remains available. Preview captures real game frames, not VectorXR-generated intermediate frames.
+![Framing page with crop reserve, horizontal and vertical position and mirror controls](../docs/images/steadyxr-framing.png)
 
-Earlier hardware validation is documented in the repository's 0.14.0 release notes. Signing a release verifies its publisher and integrity. In-game behavior still requires a hardware test with the relevant simulator and runtime.
+- **Crop reserve** zooms into the selected source, leaving hidden pixels available to absorb stabilization. The range is 0–97%. A larger reserve helps cover image edges during turns and makes the subject larger.
+- **Horizontal framing** moves the crop left or right. **Vertical framing** moves it up or down. Zero centers each axis. The available movement depends on the source and output aspect ratios and how much you cropped. Moving the rectangle to an extreme leaves less room for stabilization on that side.
+- **Mirror edges** fills exposed borders with reflected pixels. **Mirror limit** caps how far the reflection extends, from 0–50% of the source dimension. Beyond that limit the border is black. **Mirror softness** blends and darkens the reflection progressively. Increase reserve if you would prefer to keep recognizable reflected objects out of the shot.
+- The **Framing monitor** shows the crop guide and, after capture, the still used to position it. Drag its header to move the card within the dashboard. Drag a lower corner to resize it. Use **Reset** or double-click its header to restore the default layout. These changes affect the dashboard only.
 
-## From 0.13.0
+### Frame a shot with the mouse
 
-**Symmetric (both eyes)** in **Framing → Render & edge settings** mirrors render expansion between eyes: left-eye extra right follows right-eye extra left, and the two outer edges follow each other. Enabling it copies the currently selected eye to the other eye. Both eyes remain editable. Turning it off keeps the current values and restores independent editing. **Both eyes inward: 10%** also enables the lock. Click **Save for next game launch**, then restart the game. The lock is stored in settings and complete presets; old settings retain their independent values until you enable it.
+1. With a live eye or game window available, click **Capture full eye**. Wait for the capture status to confirm a screenshot. The live stream continues.
+2. Choose **Edit captured frame…**. Drag inside the rectangle to pan the shot. Drag a corner to resize it while retaining the output aspect ratio. The **Crop reserve**, **Horizontal framing** and **Vertical framing** sliders give precise control.
+3. Click **Apply framing** to use the draft in the stream. Use **Capture screenshot** inside the editor to refresh the reference after a change of scene or eye. Closing the editor before applying discards the pending framing edits when you reopen it.
 
-**LMU requires equal recommended image dimensions for both eyes.** Keep Symmetric enabled when using extra render area in LMU. Cropping and stabilization reserves remain independent.
+![Still-frame editor with the full-eye image, crop rectangle and framing sliders](../docs/images/steadyxr-framing-editor.png)
 
-The earlier 0.13.0 package preserved the signed 0.12.0 DLL. It remains untouched as a fallback; its old embedded expiry is unaffected by the new version.
+### Render and edge settings
 
-## From 0.12.0
+![Render and edge settings for per-eye OpenXR projection expansion](../docs/images/steadyxr-render-edges.png)
 
-**Director** adds optional lookahead stabilization, automatic crop and speed framing for iRacing and Le Mans Ultimate. Lookahead retains at most four delayed frames within a 256 MiB texture budget and displays actual video delay for audio sync. Automatic crop and speed framing also work with existing-window capture. All three default off. See [Viewer camera controls](../docs/viewer-director.md) for costs, limits and two-PC setup. Live driving validation is still pending.
+Open **Framing → Render & edge settings…**. **Editing eye profile** selects which eye's render settings to edit. Your broadcast eye is still selected on **Stream Output**.
 
-## Find your controls
+| Control | Effect |
+| --- | --- |
+| **Edge stretch** | Changes the appearance outside the original image while mirroring is enabled. Zero uses reflection. Higher values stretch edge colors to reduce repeated shapes. **Mirror limit** still caps the filled area. |
+| **Enable extra rendered area (next game launch)** | Asks a compatible OpenXR game for a wider horizontal eye image. This can provide real scenery to the stream at the edge of a stabilized frame. |
+| **Extra left** and **Extra right** | Request 0–30% additional width on each side of the original horizontal projection. The right edge is inward for the left eye, and the left edge is inward for the right eye. |
+| **Symmetric (both eyes)** | Mirrors the inner and outer requests across eyes so both recommended render widths match. Keep this enabled for **Le Mans Ultimate** when requesting extra area. |
+| **Both eyes inward: 10%** | Sets both inner requests to 10%, the outer requests to zero and enables symmetry. |
+| **Save for next game launch** | Commits the render profiles. Restart the OpenXR game to request the new projection and texture sizes. To revert, disable the extension, save again and restart. |
 
-- **Stream Output** selects the source, eye and frame rate.
-- **Camera** controls movement smoothing, horizon leveling and centering.
-- **Framing** controls crop, offsets, mirrored edges and full-eye still capture.
-- **Settings** controls the output window, OpenXR connection, gaze and effects, and joystick buttons.
+Extra area uses game GPU time. Test a busy scene and judge headset frame timing before increasing it. The game and runtime must honor the wider projection and texture recommendations. Runtime size limits and other FOV or foveation layers can affect the result. The extension applies to context views in quad-view capture. It cannot widen an ordinary window capture. Output crop, framing position and mirror adjustments apply live.
 
-Open **Presets…** for the Dan Suzuki factory preset and your saved configurations. Use **Shortcuts…** to see the global keyboard actions.
+## Settings and output
 
-## Upgrading to 1.0.1
+![Settings page with output dimensions, display selection and OpenXR tools](../docs/images/steadyxr-settings.png)
 
-Close the previous app, extract the package next to its version folder and run **SteadyXR-1.0.1/SteadyXR.exe**. For a manual upgrade, copy **SteadyXR.ini** (camera and output), **SteadyXR-shortcuts.ini** (joystick bindings) and **SteadyXR-ui.ini** (window layout) from the previous folder if present. Keep the shared **Presets** folder beside the version folders. Use **Upgrade connection** in the app when you want the new DLL active in the next game session.
+Choose an **Aspect ratio** from the list or enter one such as `239:100`. Enter width and height under **Render resolution** and click **Apply output**. The supported range is 320–7680 pixels wide and 180–4320 high. A 1920 × 1080 canvas requires less GPU work than 3840 × 2160. If the canvas or window differs from the chosen aspect ratio, expect letterboxing.
 
-Starting with 1.0.0, the app checks GitHub for signed stable updates at startup. Confirm an offered update to prepare the new version and switch after closing the app. The previous version stays in its own folder for rollback. Read **Updates.md** for repository access and package verification details.
+**Output monitor** chooses the fullscreen destination. **Start output in fullscreen** remembers your preference. With the stream window focused, **F11** or a double-click toggles fullscreen. **Esc** exits fullscreen. Use **Alt+Tab** to return to the dashboard.
 
-## Upgrade to 0.14.0
+### Connection, layers and overlays
 
-Close the previous app and start **Gaming-PC/Start-Preview.cmd**. The ready-to-use app lives in **Gaming-PC/SteadyXR-0.14.0** and inherits your previous SteadyXR.ini unchanged when its own INI is missing.
+- **Install for all users** registers the supplied capture layer system-wide. **Remove connection** unregisters it. These actions can request elevation. Restart the game after a change. Window capture works without installing the connection.
+- **Layer order…** opens the OpenXR layer editor. Select an entry to inspect its manifest, library path and registration scope. Changes to enabling, disabling, registering or reordering are staged. Review them, then use **Apply changes** or **Discard changes**. The editor supports verified backups, **Undo last apply** and **Restore backup…**. Apply changes with the game closed. Use **Administrator editor…** for a system-wide entry.
+- **Overlay layers…** selects additional supported composition layers submitted by the game or runtime. **None** is the default. **All supported** includes newly appearing supported overlays. For specific overlays, tick their slots. Choose **Refresh layers** after opening or closing an overlay. Individual selections apply to that game session. Recheck them after restarting. Capturing more layers adds texture copies. Unsupported or already baked-in elements cannot be isolated this way.
 
-**0.14.0 uses IPC 4 but requires the new capture DLL for D3D12 support.** After signing, click **Capture → Upgrade connection**, accept the Windows administrator prompt, and restart the OpenXR game. The preview itself runs without elevation. Existing-window capture needs no connection or game restart. Keep older directories until their layer is disabled or unregistered. Packaging never changes live registrations.
+### Gaze and effects
 
-For OBS, close OBS and copy **obs-plugins** and **data** from the separate **SteadyXR-0.14.0-OBS-Windows-x64.zip** (or Stream-PC) directly into **C:\Program Files\obs-studio**. The standalone community ZIP excludes OBS binaries. OBS uses the upgraded OpenXR layer without a running standalone app. Keep one active consumer: close/hide the standalone output while using OBS.
+Open **Settings → Gaze & effects…**. Values take effect when you leave a numeric field. **Bypass all spectator camera adjustments** and **Bypass all visual effects** let you audition your saved tuning. The optional features start off.
 
-## Additional OpenXR overlays
+![Gaze and effects panel showing gaze framing, chat exclusion and calibration](../docs/images/steadyxr-gaze.png)
 
-Open **Capture → Overlay layers…** to inspect layers detected from the current game. None is the default. All supported includes future supported layers; individual checkboxes capture only the selected slots in this specific game session. The choices are included in complete presets, but a restarted game requires individual layers to be selected again. This avoids silently substituting a different overlay. Refresh the list after opening or closing an overlay. Layer labels describe type and dimensions, not an inferred program name.
+| Page | What to adjust |
+| --- | --- |
+| **Gaze & chat** | **Enable gaze framing** lets a stable fixation shift the stream within available image margins. Strength sets the amount. Fixation dwell filters quick glances. The neutral zone leaves small departures from center alone. Horizontal and vertical limits bound travel, and gaze response controls how quickly it moves. |
+| **Exposure** | Set a fixed brightness change with **Enable manual exposure** and **Exposure (EV)**. **Enable luminance adaptation** uses target luminance, minimum and maximum gain, and separate brighten and darken rates. The metering bounds choose a normalized region of the picture. Reduce its size to exclude a bright HUD. Transition damping and recovery shape abrupt changes. |
+| **Bloom** | Threshold selects bright highlights, soft knee blends the transition, strength controls intensity and radius spreads the glow. |
+| **Color** | Temperature and tint set the color balance. Contrast and saturation set the overall look. Shadows and highlights adjust the tonal extremes. **Apply filmic visual preset** provides a starting point. **Reset visual effects to off** clears the grade. |
+| **Director** | **Enable lookahead** buffers one to four OpenXR frames and uses later poses to smooth the delayed view. The status reports actual video delay and GPU memory use. **Enable automatic crop** adds reserve when correction would expose an edge. Maximum limits the zoom, and release controls the return to wider framing. **Enable speed framing** adds crop at low speed and returns to normal at **Normal framing speed**. Response controls how quickly it follows telemetry. |
 
-Selected overlays use their own submitted geometry, positions and transparency and follow the stabilized game view, including 20-second A/B comparisons. No separate CPU video capture or encoder is used. Extra texture copying and drawing has a cost proportional to selected image sizes. See the packaged **docs/openxr-overlays.md** in the complete ZIP or the repository guide for setup, call order and format limits.
+For chat exclusion, enable gaze framing and **Exclude learned chat zone from gaze framing**, then click **Look at chat now / Learn**. Look at your chat panel through the three-second countdown and hold a steady fixation for the next second. Set the chat width and height in degrees. Looking there then suppresses the gaze contribution while normal head following continues. **Cancel learning** stops the acquisition, and **Clear chat zone** clears the learned position. Learn again after changing seats, recentering, moving the panel, changing source or eye, starting a new session or loading a preset. Unavailable or stale gaze falls back to normal stabilization.
 
-## Build validity
+Director lookahead requires stabilized OpenXR capture. Its 256 MiB texture budget can reduce the requested delay or bypass buffering with large eyes or overlays. At 60 captured FPS, three frames are roughly 50 ms. Use the measured delay to align separately recorded audio. Window capture supports automatic crop and speed framing. Speed telemetry supports **Auto**, **iRacing** and **Le Mans Ultimate** on the gaming PC. Without fresh data, framing returns toward its normal setting. Visual effects process the captured SDR image before separately composed overlays. They cannot recover clipped highlights.
 
-The app, new capture DLL and direct OBS source have **no expiry**. `SteadyXR-build.json` records the build timestamp and explicitly marks expiration disabled. Old signed DLLs retain their embedded deadlines until replaced by the newly signed capture DLL. No clock changes or settings edits are needed.
+## Presets, shortcuts and comparison
 
-## OpenXR layer editor
+Open **Presets…** and choose **Responsive**, **Stream Comfort** or **Strong leveling** to change stabilization tuning and keep the current shot. **Dan Suzuki** loads the saved camera, framing and 4K output setup. For your own complete profile, enter a name and click **Save new**. Use **Load**, **Overwrite selected** or **Delete** for a saved profile. Complete presets include source, eye, framing, effects, output and render-extension settings. A loaded render change takes effect at the next game launch. **Next preset** cycles through tuning presets, saved profiles and Dan Suzuki.
 
-Open **Capture → Layer order…** in SteadyXR, or run **Gaming-PC/Start-Layer-Editor.cmd**. The editor runs only when opened, uses the Windows PowerShell/.NET Framework included with Windows, and performs no GPU capture. It does not load the listed third-party DLLs.
-
-The default **64-bit (iRacing)** view shows system-wide and current-user implicit registrations followed by explicit registrations. Switch to 32-bit for older applications. Select a row for its technical name, full manifest/DLL paths and environment flags. Status describes the configuration visible to the editor; it cannot prove which layers an already-running game loaded. Elevated games ignore current-user registrations. Environment flags in the game process may differ from those visible to the editor.
-
-- **Enable / Disable** changes the selected registration's flag.
-- **Remove registration** unregisters the selected entry; its files stay on disk.
-- **Move up / Move down** changes implicit discovery order within the same system/user group. System registrations precede user registrations and cannot be interleaved. Order can affect how layers interact, for example when one changes poses and another captures them. Explicit layers are requested and ordered by the game or `XR_ENABLE_API_LAYERS`, so their move buttons are disabled.
-- **Register SteadyXR** uses the app's system-wide installer and requests Windows administrator approval when required. Legacy per-user SteadyXR registrations must be migrated through this installer rather than enabled again. The files are now XR_APILAYER_STEADYXR_preview.json and SteadyXR-OpenXR.dll. The internal `XR_APILAYER_HORIZONLOCK_preview` identifier is retained so old and new registrations are recognized as the same layer. Both filename generations are recognized by the editor and connection controls.
-- **Apply changes** checks for external registry changes and write access, saves a verified backup, writes the requested data/order, and reads it back. On a write failure it attempts restoration and reports whether that restoration was verified. **Discard changes** leaves the registry alone.
-- **Undo last apply** restores the previous configuration if it has not changed externally. **Restore backup…** stages a saved configuration for review and a new Apply. Select the backup's matching 32-bit/64-bit view first.
-- **Administrator editor…** opens only the editor with Windows' elevation prompt for system-wide edits. The preview does not need administrator privileges. Apply or discard any pending edits before switching.
-
-Backups live in **Gaming-PC/Layer-Backups**, outside versioned app folders. Keep this folder for recovery. Registry changes are verified but are not an operating-system transaction: avoid applying while an OpenXR game or another layer installer is starting. The editor refuses to replace keys with unexpected child keys when reordering. No runtime selection is changed. Restart the OpenXR game after applying layer changes.
-
-Opening the editor, upgrading SteadyXR or unpacking files does not register or enable anything. A missing registration is shown as missing; the current registry alone does not reveal why it was removed.
-
-Loader behavior: [Khronos OpenXR loader documentation](https://registry.khronos.org/OpenXR/specs/1.1/loader.html); [OpenXR API layer ordering guidance](https://fredemmott.com/blog/2024/11/25/best-practices-for-openxr-api-layers.html).
-
-## Extra OpenXR scenery, asymmetric reserves and Y offset
-
-Open **Framing → Render & edge settings…**. Choose the eye profile you want to edit; this does not switch the captured eye. Select the actual stream eye in the main window.
-
-In window capture, the same main-window selector is named **Profile**. It selects which reserve settings apply to the existing window; it cannot change which eye the game shows in that window.
-
-- **Use separate stabilization reserves:** four live sliders, 0–35% per edge in 0.1% steps. For a right-eye stream with more space kept on its inner side, try Left 2%, Right 20%; for the left eye, reverse these. The profile replaces the main uniform Crop reserve slider while enabled. Uniform reserve 10% equals 5% on each edge. Existing Crop left/right/top/bottom controls remain additional framing trims.
-- **Y offset:** shift the displayed rectangle upward (negative) or downward (positive), at the same zoom. It uses the full captured image, including pixels hidden by stabilization reserves and framing crops. 0 restores automatic placement; ±100 reaches the available upper/lower image limit. Shifting uses up stabilization room on that side. With no hidden vertical pixels at all, there is no room to shift. This shared setting works in both capture modes.
-- **Enable extra rendered area:** per-eye Extra left/right sliders, 0–30% each. Percentages refer to the original horizontal projection width, not degrees. Right-eye Extra left adds scenery toward the nose; left-eye Extra right is the corresponding inner side. **Both eyes inward: 10%** sets both inner sides to 10% and outer sides to zero.
-- **Save for next game launch:** commits both render profiles. Restart the OpenXR game afterward, because view sizes and projections are configured at startup. Render drafts survive closing/reopening the panel within this app session. They are committed by this button or by loading a complete preset. Saving a complete preset includes the current render draft without activating it. Crop/reserve/Y settings are live and save automatically.
-
-Cropping changes only the displayed output rectangle. It does not delete the original image behind it: the full captured eye remains available for stabilization. Mirroring supplies only pixels beyond the actual rendered boundaries. Aspect fitting can require further crop; separate reserves bias that extra crop toward the side with more reserve.
-
-The layer expands `xrLocateViews` FOV tangents and recommends proportionally wider eye textures. It preserves poses, vertical FOV and submitted projection metadata, and makes visibility masks unavailable for expanded context views so hidden-area culling does not remove the new scenery. Stereo and quad context views are supported; quad focus views retain their original FOV and resolution. No extra per-frame GPU copy or full-screen shader pass was added for these controls.
-
-The implementation uses standard OpenXR calls, with no Pimax- or SteamVR-specific switch. It is intended for native OpenXR and SteamVR OpenXR with SBoys3 alike; the game must actually run through OpenXR and honor the returned FOV. Window capture and a game's native OpenVR path cannot request extra rendering through this feature. Contract tests cover regular and asymmetric/canted stereo/quad configurations, but **physical validation in both runtime/driver combinations is still required**. Other FOV/visibility/foveation layers can affect the result.
-
-Extra pixels and disabled visibility masks increase game GPU work; the cost depends on the scene and runtime. Recommendations add width up to a conservative 8192 pixels per eye for possible side-by-side D3D11 packing, retain larger native recommendations, and respect the runtime maximum. If a limit is reached, or the game ignores the larger resolution recommendation, added FOV has lower pixel density. Output resolution (for example 3840 × 2160) is independent of the game's eye texture size. Disable extra rendering, save and restart the game to return to the runtime's normal projection/masks.
-
-
-## Controls
-
-- **Crop left / right / top / bottom:** independently trim 0–45% per side, in 0.1% steps. Arrow keys adjust one step.
-- **Crop reserve:** additional stabilization margin, separate from framing crop. Aspect fitting may trim the remaining image further.
-- **Smoothing:** movement smoothing with 0.1% precision, separate from horizon leveling.
-- **Horizon lock (OpenXR):** 0% preserves normal smoothed head roll; 100% levels roll using the upright Y-axis hemisphere of the submitted OpenXR layer space. This also supports iRacing poses whose upright direction is -Y. Hold the headset approximately upright and look normally ahead when starting the preview or pressing **Center camera**; the upright hemisphere is retained until reset. With **Adaptive curve** enabled (default), small tilts are suppressed more strongly while larger tilts retain some natural movement. At 50% strength, a 5° head tilt leaves about 0.5° and a 20° tilt leaves about 6.9° (away from vertical viewing). The response is continuous with no hard dead zone. Disable Adaptive curve to restore the previous linear response. Both modes preserve viewing direction. It fades near straight up/down, where a level horizon is undefined. Default: 0%. Inactive in image mode or when stabilization is disabled.
-- **Mirror edges:** fill exposed borders with reflected source content.
-- **Mirror limit:** maximum extension per source axis, as a percentage of source width/height. Default 10%; range 0–50%. Beyond the limit: black. Increase crop reserve or mirror limit if exposed edges appear. Mirroring does not reconstruct scenery.
-- **Disable stabilization:** keep stabilization bypassed while capture continues. This is a saved setting.
-- **Reset horizon:** hold the headset approximately upright, then reset the preview's upright reference while retaining smoothing without recentering the headset or changing tuning.
-- **A/B comparison:** choose Original, 50/50 split (left stabilized, right original with identical framing), or Side by side (both complete views fitted without stretching) in **Shortcuts…**. The compare button uses that view for twenty seconds, retaining crop, reserves, aspect and output framing. The chosen view is saved; active comparison is temporary. Press again to return immediately. It returns automatically after twenty seconds, including if capture stops, and cancels on pause, reset, source or preset changes. The comparison never changes the saved bypass setting or becomes part of a preset.
-- **Pause / GPU comparison:** stop capture and continuous rendering. Hiding/minimizing the output also pauses it. Compare VR frame times in the same scene.
-
-Capture state, measured FPS, requested FPS and temporary comparison feedback appear in the control panel only. No status overlay is added to the live stream output.
-
-## Hotkeys
-
-These global shortcuts work while SteadyXR is running, including when the game has focus:
+![Presets dialog with factory profiles and saved user presets](../docs/images/steadyxr-presets.png)
 
 | Default shortcut | Action |
-|---|---|
-| Ctrl+Alt+R | Reset horizon; hold the headset approximately upright |
-| Ctrl+Alt+P | Pause or resume capture |
-| Ctrl+Alt+N | Load the next preset |
-| Ctrl+Alt+B | Show the selected A/B view for twenty seconds; press again to return |
+| --- | --- |
+| **Ctrl+Alt+R** | Center camera |
+| **Ctrl+Alt+P** | Pause or resume output |
+| **Ctrl+Alt+N** | Load next preset |
+| **Ctrl+Alt+B** | Start or end the 20-second comparison |
+| **Ctrl+Alt+C** | Learn chat position |
 
-Open **Shortcuts…** to choose **Ctrl+Alt**, the alternate **Ctrl+Alt+Shift** combination, or **Off**. If another application owns a shortcut, the control panel reports the registration conflict; select the alternate combination or use the buttons.
+These shortcuts work while the game has focus. **Shortcuts… → Keyboard reference** shows the current set. Choose the **Ctrl+Alt+Shift** alternative if another app already uses the default keys, or turn global hotkeys off.
 
-Next preset cycles through **Responsive**, **Stream Comfort**, **Strong Leveling**, your saved presets alphabetically, and **Dan Suzuki**. Built-in presets change tuning while keeping framing; complete saved presets restore the settings described below. The direct OBS source uses OBS's own configurable **Settings → Hotkeys** entries instead of these standalone bindings.
+For wheel or joystick controls, use **Settings → Joystick buttons…** or **Shortcuts… → Assign joystick buttons…**. Choose the **Action** and the **Joystick or wheel**, click **Learn button**, then press the physical button. Available actions also include **Capture full eye**, so you can grab a still during a drive. Use **Refresh** after reconnecting hardware, **Cancel learning** to stop waiting for a press and **Clear assignment** to remove a binding.
 
-## Output
+![Joystick shortcuts dialog with action, device and button learning controls](../docs/images/steadyxr-joystick.png)
 
-Default internal render resolution: **3840 × 2160**. Enter width/height and click **Apply aspect / resolution**. Limits: 320–7680 × 180–4320. 4K costs more GPU work than 1080p; actual savings versus OBS have not been measured.
+**Shortcuts…** also lets you choose original, 50/50 split or side by side. Click **Compare** during live output to compare stabilization for 20 seconds. In split or side-by-side mode the stabilized view is on the left. Select **A/B compares visual effects only (same camera framing)** in **Gaze & effects…** to compare your grade with its bypassed image instead. The main action becomes **Effects A/B**. **End A/B** stops the comparison early.
 
-Select an aspect preset (16:9, 21:9, 32:9, 4:3, 1:1), or type a ratio such as 239:100, then apply. The image is fitted without stretching; letterboxing can appear in the output canvas or window.
+## Troubleshooting
 
-This controls internal rendering. The HDMI capture-card signal still follows Windows display settings; the app does not change them.
+| Symptom | What to check |
+| --- | --- |
+| Waiting screen or no captured FPS | Open and resume the stream window. For window mode, refresh and reselect the original simulator window, then restore it from the taskbar. For OpenXR, check that the game is using OpenXR, the connection is installed and the game was restarted after installation. |
+| Game appears in the headset but focus detail is missing | Check the eye, the source dimensions in capture details, the game's quad-view setting and the active layer chain. A single received view may already be combined upstream. Runtime and simulator combinations differ. |
+| Horizon moves or the view points too high or low | Confirm OpenXR capture and turn off **Bypass stabilization**. Sit upright, look forward and use **Center camera**. Adjust horizon lock for roll and vertical steadiness for pitch. |
+| Black or reflected borders during sharp turns | Increase crop reserve, move the crop away from the image edge, reduce correction, or adjust mirror limit. For a wider native view, try the render extension with the game restarted. |
+| Gaze has no effect | Check the gaze status, enable gaze framing, clear the camera bypass and hold a steady fixation. The headset runtime must expose a working eye-gaze action. Check chat exclusion if normal head following works but gaze is ignored in one region. |
+| Audio arrives before video or GPU frame times rise | Read the Director's measured lookahead delay, align audio or shorten lookahead. Compare a lower output resolution, fewer overlays, disabled effects and less render expansion one change at a time. |
+| Wrong screen or no capture-card signal | Confirm the capture-card display is enabled in Windows, check its display mode and refresh rate, select it under **Output monitor**, then toggle fullscreen on the stream window. |
 
-**Start preview in fullscreen** defaults to enabled. Choose **Output monitor**; the choice is remembered. F11 or double-click toggles fullscreen; Escape exits it. Alt+Tab returns to the control panel.
+## Files, updates and removal
 
-## Capture and troubleshooting
+Keep the release folder intact with its signed executable, capture DLL and updater. The app and capture DLL have no expiry. Keep the following settings files beside the executable.
 
-**OpenXR pose capture** uses submitted D3D11 images and matching poses, including stereo and context/foveal views. First-time setup uses **Install connection**, then one OpenXR game restart. The 0.6 layer is required; no tracking sender or network-delay adjustment is needed.
+| File or folder | Contents |
+| --- | --- |
+| `SteadyXR.ini` | App, source, camera, framing, output and effects settings. An older `preview.ini` can be migrated on first launch. |
+| `SteadyXR-shortcuts.ini` | Saved joystick or wheel bindings. |
+| `SteadyXR-ui.ini` | Framing-monitor position and size. |
 
-**Capture existing window** uses image analysis with no setup or game restart. Select the simulator window and leave it open and unminimized. It is independent of the VR runtime (OpenVR, Pimax OpenXR, SteamVR/SBoys3). It has no absolute headset-based horizon. Scene changes or missing cockpit detail may limit tracking. Window capture is SDR.
+Named presets live in the shared **Presets** folder one level above the app directory. The layer editor keeps its **Layer-Backups** there too. Keep these folders when moving versions or computers.
 
-Use **Clean Preview** on the capture-card display and disable the old OBS stabilization filter for that source to avoid stabilizing twice.
+At startup the app checks the project's stable GitHub releases. Confirm an offered update to download its signed package. Close the current app normally when you are ready. The updater verifies the receipt and payload, copies your settings and opens the new version from its own folder. An original **Start-Preview.cmd** follows the update. For a manual upgrade, extract the new version beside the old one and copy the available INIs before launch. To roll back, close the new app and launch the earlier executable. Switching the installed OpenXR layer is a separate action under **Settings**.
 
-If **Windows capture shutdown stalled** appears after quickly closing a source, restart only SteadyXR Preview. iRacing can remain running. Cleanup remains bounded and does not block the UI.
-
-Keep each preview directory intact. Settings are in SteadyXR.ini beside SteadyXR.exe. The new capture DLL reads SteadyXR.ini, with read-only fallback to preview.ini. An older registered DLL continues reading its own preview.ini, and explicit render saves still target that actual file. The --demo option shows synthetic content. Automated tests cover GPU output, resolution, crop/aspect, horizon, mirror limits, settings, fullscreen, capture lifecycle and OpenXR ownership. Driving quality and GPU cost still depend on the live setup.
-
-OpenXR performance: the viewer polls for GPU-ready frames independently of the selected capture rate and copies only the selected eye subrect. This avoids a second frame-rate gate and reduces GPU copy bandwidth for side-by-side stereo textures. The selected FPS remains a target; actual output depends on game frame rate and available GPU time.
-
-## Stream Comfort and softer mirrored borders
-
-**Stream Comfort** applies 60% smoothing, 50% horizon lock with Adaptive curve, 12% crop reserve, a 12% mirror limit and 70% mirror softness. Stabilization and mirroring are enabled. It keeps your source, eye, FPS, custom edge crops, per-eye reserves, Y offset, render-extension settings, aspect, output resolution and monitor. An enabled per-eye reserve profile continues to override the uniform reserve value. In image mode, the horizon setting is saved for OpenXR but has no effect on image stabilization.
-
-Fine-tune any slider after applying a tuning preset. **Undo tuning** restores stabilization tuning from before the first built-in preset click in this app session, including repeated clicks. Subsequent framing/output changes are kept. Loading a complete preset clears this temporary undo snapshot.
-
-**Mirror softness** ranges from 0–100% (default 60%). Zero restores the sharp legacy reflection. Higher values progressively soften and slightly darken the reflection outside the source image, with a smooth transition at the original image edge and a fade to black at the mirror limit. Original image pixels stay untouched. Both OpenXR and image capture use the effect. The extra four texture samples apply only to mirrored regions; live GPU cost depends on the visible border area.
-
-**Edge stretch** is under **Render / edges…** (and in the OBS source properties). It ranges from 0–100%, default 0 to preserve existing tuning. Toward the outer border, higher values blend mirrored scenery into stretched edge colors, reducing recognizable duplicate shapes. Start around 50% with Mirror softness enabled and compare. Actual image pixels stay unchanged and Mirror limit still controls the maximum extension; large missing areas can still look stretched. This reuses the existing texture samples and draw pass. Settings and presets store the value as MirrorStretchTenths.
-
-
-## Presets
-
-Open **Presets…** in the main window. **Responsive**, **Stream Comfort** and **Strong Leveling** change smoothing, horizon/adaptive curve, uniform crop reserve and mirror tuning. They retain the source, eye, FPS, edge profiles, framing trims, Y offset, render expansion, output resolution/aspect and monitor. Natural uses 25% smoothing / 25% horizon; Strong Leveling uses 70% / 85%.
-
-For your own preset, enter a name and click **Save new**. This saves a complete INI snapshot: all tuning, stabilization bypass, mode, selected source window identity, eye, FPS, both edge profiles, Y offset, both render-extension profiles (including current drafts), resolution, aspect, fullscreen startup preference and monitor. Valid edits in the aspect/resolution fields are included. Unknown future INI keys are preserved too. Pause, temporary original comparison, current fullscreen state and temporary smoothing/recenter history are session actions, not configuration; the fullscreen startup preference applies at the next preview launch.
-
-Select a saved preset and click **Load** to restore it, **Overwrite selected** to replace it with current settings, or **Delete** to remove it. Live preview settings apply immediately; changed OpenXR render expansion applies at the next game launch. No automatic game restart occurs. A saved window source is matched by executable and title; if unavailable, select it when it is running.
-
-Custom presets live in **Gaming-PC/Presets**, shared across versioned preview folders. Keep this folder when moving the app to another PC. Each preset is an INI file; saving a new name never overwrites an existing preset. Failed writes are reported rather than treated as successful saves.
-
+To remove SteadyXR, close the game, use **Settings → Remove connection** if the layer is registered, and close the app. Keep any settings, presets or backups you want, then remove the portable version folder. The next game session will use the remaining registered layers.

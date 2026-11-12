@@ -1,6 +1,5 @@
 #include "vrst/core.hpp"
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <limits>
 namespace vrst {
@@ -367,37 +366,5 @@ void limit_warp_correction(Warp &w, Quat correction, bool mirror_edges) {
         w.correction_fraction = lo;
         w.correction = slerp({}, desired, lo);
     }
-}
-bool ClockSync::observe(std::uint64_t t1, std::uint64_t t2, std::uint64_t t3, std::uint64_t t4) {
-    if (t4 < t1 || t3 < t2)
-        return false;
-    double rtt = static_cast<double>(t4 - t1) - static_cast<double>(t3 - t2);
-    if (rtt < 0 || rtt > 500000000.)
-        return false;
-    double offset = ((static_cast<double>(t2) - static_cast<double>(t1)) +
-                     (static_cast<double>(t3) - static_cast<double>(t4))) /
-                    2;
-    samples_.push_back({offset, rtt, t4});
-    while (samples_.size() > 32 || (!samples_.empty() && t4 - samples_.front().at > 15000000000ULL))
-        samples_.pop_front();
-    return true;
-}
-double ClockSync::offset_ns() const {
-    if (samples_.empty())
-        return 0;
-    return std::min_element(samples_.begin(), samples_.end(), [](auto a, auto b) { return a.rtt < b.rtt; })
-        ->offset;
-}
-double ClockSync::rtt_ms() const {
-    if (samples_.empty())
-        return 0;
-    return std::min_element(samples_.begin(), samples_.end(), [](auto a, auto b) { return a.rtt < b.rtt; })
-               ->rtt *
-           1e-6;
-}
-std::uint64_t monotonic_ns() {
-    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                          std::chrono::steady_clock::now().time_since_epoch())
-                                          .count());
 }
 } // namespace vrst

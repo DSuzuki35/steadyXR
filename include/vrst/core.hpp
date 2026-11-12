@@ -110,25 +110,4 @@ bool corners_inside(const Warp &warp);
 // Re-evaluate a correction after changing output framing.
 void limit_warp_correction(Warp &, Quat correction, bool mirror_edges);
 
-// Four timestamps: client sent, server received, server sent, client received.
-class ClockSync {
-  public:
-    bool observe(std::uint64_t t1, std::uint64_t t2, std::uint64_t t3, std::uint64_t t4);
-    bool ready() const {
-        return !samples_.empty();
-    }
-    double offset_ns() const; // server minus client
-    double rtt_ms() const;
-    void clear() {
-        samples_.clear();
-    }
-
-  private:
-    struct Sample {
-        double offset, rtt;
-        std::uint64_t at;
-    };
-    std::deque<Sample> samples_;
-};
-std::uint64_t monotonic_ns();
 } // namespace vrst

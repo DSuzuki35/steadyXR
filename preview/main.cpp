@@ -38,10 +38,10 @@ namespace {
 using namespace vrst::preview;
 constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, reset_id = 105, smooth_id = 106,
               crop_id = 107, mirror_id = 108, eye_id = 109, fps_id = 110, bypass_id = 111, mode_id = 112,
-              source_id = 113, refresh_id = 114, left_id = 115, right_id = 116, top_id = 117, bottom_id = 118,
+              source_id = 113, refresh_id = 114,
               horizon_id = 119, mirror_limit_id = 120, aspect_id = 121, width_id = 122, height_id = 123,
               apply_id = 124, auto_fullscreen_id = 125, monitor_id = 126, adaptive_horizon_id = 127,
-              mirror_softness_id = 128, comfort_id = 129, undo_comfort_id = 130, advanced_id = 131,
+              mirror_softness_id = 128, advanced_id = 131,
               presets_id = 132, layers_id = 133, compare_id = 134, next_preset_id = 135, hotkeys_id = 136,
               compact_status_id = 137, overlays_id = 138, spectator_id = 139, learn_chat_id = 140,
               capture_still_id = 141, pitch_id = 144,
@@ -179,8 +179,6 @@ struct App {
     bool window_mode{true};
     std::uint64_t last_capture_start{};
     Options options;
-    Options before_comfort;
-    bool can_undo_comfort{};
     bool paused{}, demo{}, fullscreen{}, dirty{true}, quit{}, timer_resolution{}, expired{};
     bool start_fullscreen{true}, diagnostic{}, compatible_connection{}, any_connection{};
     bool capture_conflict{};
@@ -413,7 +411,7 @@ struct App {
     }
     const wchar_t *waiting_text() const {
         return expired          ? L"Build expired. Please install a newer SteadyXR build."
-               : capture_conflict ? L"OpenXR capture is in use by OBS or another preview."
+               : capture_conflict ? L"Another capture app is using the OpenXR connection."
                : window_mode      ? L"Waiting for window capture…"
                                   : L"Waiting for OpenXR capture…";
     }
@@ -910,7 +908,6 @@ struct App {
         refresh_sources();
         restart_source();
         advanced.reload(render_ini);
-        can_undo_comfort = false;
         heartbeat();
         labels();
         setup_message = L"Complete preset loaded. Changed render expansion applies at the next game launch.";
@@ -938,8 +935,6 @@ struct App {
         preset_cursor = preset == BuiltinPreset::natural          ? L"builtin:natural"
                         : preset == BuiltinPreset::stream_comfort ? L"builtin:comfort"
                                                                   : L"builtin:strong";
-        if (!can_undo_comfort)
-            before_comfort = options;
         auto tuning = options;
         if (preset == BuiltinPreset::stream_comfort)
             apply_stream_comfort(tuning);
@@ -954,7 +949,6 @@ struct App {
             tuning.mirror_softness = strong ? 75 : 60;
         }
         set_tuning(tuning);
-        can_undo_comfort = true;
         labels();
         save();
         dirty = true;
@@ -1004,7 +998,6 @@ struct App {
         EnableWindow(adaptive_horizon, !window_mode);
         EnableWindow(mirror_limit, options.mirror);
         EnableWindow(mirror_softness, options.mirror);
-        EnableWindow(GetDlgItem(controls, undo_comfort_id), can_undo_comfort);
     }
     void update_status() {
         const auto now = GetTickCount64();
@@ -1034,8 +1027,7 @@ struct App {
                           : options.stabilize ? std::wstring(L"Stabilized")
                                               : std::wstring(L"Stabilization off");
         Frame captured_source{};
-        ID3D11Texture2D *source_images[2]{};
-        const bool has_source = !demo && !window_mode && renderer.source_snapshot(captured_source, source_images);
+        const bool has_source = !demo && !window_mode && renderer.source_frame(captured_source);
         const bool fresh_source = has_source && active() && last_received_ms && !stale && !capture_conflict;
         auto detail = view;
         if (live && fps_value > 0)
@@ -1117,8 +1109,7 @@ struct App {
         if (!hotkey_error.empty())
             text = hotkey_error + L"\r\n" + text;
         if (capture_conflict)
-            text += L"OpenXR capture is in use by OBS or another preview. Hide or pause that source to use "
-                    L"SteadyXR stream output.\r\n";
+            text += L"Another capture app is using the OpenXR connection. Pause its capture to resume SteadyXR.\r\n";
         if (paused)
             text += L"PAUSED – no new frame copies requested.\r\n";
         else if (!IsWindowVisible(output) || IsIconic(output))
@@ -1389,17 +1380,6 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         case layers_id:
             app->open_layer_editor();
             return 0;
-        case comfort_id: {
-            app->builtin(BuiltinPreset::stream_comfort);
-            break;
-        }
-        case undo_comfort_id:
-            if (app->can_undo_comfort) {
-                app->set_tuning(app->before_comfort);
-                app->can_undo_comfort = false;
-                app->setup_message = L"Previous stabilization settings restored.";
-            }
-            break;
         case apply_id:
             app->apply_output();
             break;
@@ -2019,7 +1999,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             return 1;
         }
         const bool display_controls =
-            !IsWindow(GetDlgItem(state.controls, left_id)) &&
             GetDlgItemInt(state.controls, 122, nullptr, FALSE) == 3840 &&
             GetDlgItemInt(state.controls, 123, nullptr, FALSE) == 2160 &&
             SendDlgItemMessageW(state.controls, 125, BM_GETCHECK, 0, 0) == BST_CHECKED &&
@@ -2505,22 +2484,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         }
         state.options.mirror_stretch = 18.6;
         const auto before_preset = state.options;
-        SendMessageW(state.controls, WM_COMMAND, comfort_id, 0);
-        SendMessageW(state.controls, WM_COMMAND, comfort_id, 0); // Reapplying retains the original undo.
-        okay = okay && state.can_undo_comfort && state.options.smoothing == 60 &&
+        state.builtin(BuiltinPreset::stream_comfort);
+        okay = okay && state.options.smoothing == 60 &&
                state.options.horizon_lock == 50 && state.options.mirror_softness == 70 &&
                SendMessageW(state.mirror_softness, TBM_GETPOS, 0, 0) == 700 &&
                state.options.output_width == before_preset.output_width &&
                state.options.crop_left == before_preset.crop_left;
-        state.options.mirror_stretch = 77.7;
-        state.options.crop_left = 2; // A later framing adjustment is not undone by the tuning preset.
-        SendMessageW(state.controls, WM_COMMAND, undo_comfort_id, 0);
-        okay = okay && !state.can_undo_comfort && state.options.crop_left == 2 &&
-               state.options.smoothing == before_preset.smoothing &&
-               state.options.mirror_softness == before_preset.mirror_softness &&
-               state.options.mirror_stretch == before_preset.mirror_stretch &&
-               state.options.horizon_lock == before_preset.horizon_lock &&
-               state.options.adaptive_horizon == before_preset.adaptive_horizon;
+        state.set_tuning(before_preset);
         state.advanced.open(1, true);
         const auto panel = state.advanced.handle();
         bool advanced_ok = panel && IsWindow(panel);
@@ -2606,6 +2576,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SendMessageW(GetDlgItem(panel, AdvancedSettings::render_left_id), TBM_SETPOS, TRUE, 237);
         SendMessageW(panel, WM_HSCROLL, 0,
                      reinterpret_cast<LPARAM>(GetDlgItem(panel, AdvancedSettings::render_left_id)));
+        state.options.crop_left = 2; // Existing profiles can contain independent edge trims.
         set_slider(state.vertical, -432);
         state.presets.open(false);
         const auto preset_panel = state.presets.handle();

@@ -604,12 +604,23 @@ FramingStill read_still(Renderer &renderer) {
 void quad_source_tests() {
     Renderer renderer;
     require(renderer.attach_offscreen(), "quad source renderer");
+    Channel channel;
+    require(channel.open(true, L"Local\\SteadyXR-quad-source-" + std::to_wstring(GetCurrentProcessId())),
+            "open source transport");
+    OutputReader producer(renderer.device());
+    ComPtr<IDXGIDevice> dxgi;
+    ComPtr<IDXGIAdapter> adapter;
+    DXGI_ADAPTER_DESC adapter_desc{};
+    require(SUCCEEDED(producer.device.As(&dxgi)) && SUCCEEDED(dxgi->GetAdapter(&adapter)) &&
+                SUCCEEDED(adapter->GetDesc(&adapter_desc)), "source adapter");
     Frame frame{};
+    frame.adapter = adapter_desc.AdapterLuid;
     frame.generation = frame.session = frame.sequence = 1;
     frame.producer_pid = 1;
     frame.display_time = 1000000000;
     frame.view_count = 2;
     ComPtr<ID3D11Texture2D> textures[2];
+    ComPtr<IDXGIKeyedMutex> keys[2];
     for (unsigned i = 0; i < 2; ++i) {
         const unsigned size = i ? 256 : 64;
         auto &v = frame.views[i];
@@ -629,10 +640,15 @@ void quad_source_tests() {
         desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
         desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
         D3D11_SUBRESOURCE_DATA data{input.data(), size * 4, 0};
-        require(SUCCEEDED(renderer.device()->CreateTexture2D(&desc, &data, &textures[i])), "quad source image");
+        ComPtr<IDXGIResource> resource;
+        HANDLE handle{};
+        require(SUCCEEDED(producer.device->CreateTexture2D(&desc, &data, &textures[i])) &&
+                    SUCCEEDED(textures[i].As(&keys[i])) && SUCCEEDED(textures[i].As(&resource)) &&
+                    SUCCEEDED(resource->GetSharedHandle(&handle)), "shared quad source image");
+        v.texture_handle = reinterpret_cast<std::uint64_t>(handle);
     }
-    ID3D11Texture2D *raw[]{textures[0].Get(), textures[1].Get()};
     require(source_view_summary(frame, true).find(L"Peripheral 64 x 64") != std::wstring::npos &&
                 source_view_summary(frame, true).find(L"Focus 256 x 256") != std::wstring::npos,
             "source status describes independent source resolutions");
@@ -645,25 +661,34 @@ void quad_source_tests() {
     std::vector<std::uint32_t> pixels;
     unsigned width{}, height{};
     auto draw = [&] {
-        require(renderer.consume_replay(frame, raw) && renderer.draw(options, false) &&
+        for (unsigned i = 0; i < frame.view_count; ++i)
+            require(keys[i]->AcquireSync(0, 1000) == S_OK && SUCCEEDED(keys[i]->ReleaseSync(1)),
+                    "publish source image");
+        ++frame.sequence;
+        frame.display_time += 16666667;
+        require(channel.lock(), "source publication lock");
+        channel.data()->frame = frame;
+        channel.data()->ready = 1;
+        channel.unlock();
+        require(renderer.consume(channel) && renderer.draw(options, false) &&
                     renderer.readback(pixels, width, height), "quad source draw/readback");
         require(width == 512 && height == 512, "compose at output size rather than peripheral size");
     };
     for (unsigned eye : {0u, 1u}) {
         frame.eye = eye;
-        for (bool source_mode : {false, true}) {
-            options.workshop_source = source_mode;
-            for (bool original : {false, true}) {
-                options.compare_original = original;
-                draw();
-                require(pixels[256 * width + 32] == 0xff0000ffu, "outside focus retains peripheral image");
-                require(pixels[256 * width + 208] == 0xff00ff00u &&
-                            pixels[256 * width + 216] == 0xffff0000u,
-                        source_mode ? "Workshop source preserves high-resolution focus detail"
-                                    : "processed preview preserves high-resolution focus detail");
-            }
+        for (bool original : {false, true}) {
+            options.compare_original = original;
+            draw();
+            require(pixels[256 * width + 32] == 0xff0000ffu, "outside focus retains peripheral image");
+            require(pixels[256 * width + 208] == 0xff00ff00u &&
+                        pixels[256 * width + 216] == 0xffff0000u,
+                    "preview preserves high-resolution focus detail");
         }
     }
+    Frame source{};
+    require(renderer.source_frame(source) && source.view_count == 2 && source.eye == 1 &&
+                source.views[0].rect_width == 64 && source.views[1].rect_width == 256,
+            "live status preserves current eye and full source dimensions");
     // Snapshot uses the selected eye's original FOV and focus density, independent
     // of the active output crop. The producer can disappear before transfer completes.
     require(renderer.begin_framing_still(), "request full eye screenshot");
@@ -681,7 +706,7 @@ void quad_source_tests() {
     frame.views[1].fov[1] = 1;
     draw();
     require(pixels[256 * width + 128] == 0xff0000ffu && pixels[256 * width + 384] == 0xff00ff00u,
-            "Workshop source uses displaced focus FOV");
+            "live output uses displaced focus FOV");
     frame.views[1].fov[0] = -.1f;
     frame.views[1].fov[1] = .1f;
     const auto yaw = std::atan(.5);
@@ -689,7 +714,12 @@ void quad_source_tests() {
     frame.views[1].orientation[3] = float(std::cos(yaw / 2));
     draw();
     require(pixels[256 * width + 128] != 0xff0000ffu && pixels[256 * width + 256] == 0xff0000ffu,
-            "Workshop source maps the submitted focus orientation");
+            "live output maps the submitted focus orientation");
+    require(renderer.begin_framing_still(), "capture displaced, rotated focus");
+    const auto rotated = read_still(renderer);
+    const auto row = rotated.pixels.get() + std::size_t(rotated.height / 2) * rotated.width;
+    require(row[rotated.width / 4] != 0xffff0000u && row[rotated.width / 2] == 0xffff0000u,
+            "full eye screenshot maps displaced and rotated focus into its optical position");
     frame.view_count = 1;
     draw();
     require(pixels[256 * width + 128] == 0xff0000ffu, "single-view transition never retains stale focus");
@@ -697,25 +727,6 @@ void quad_source_tests() {
 int main(int argc, char **argv) {
     try {
         quad_source_tests();
-        {
-            Renderer replay;
-            require(replay.attach_offscreen(), "replay device");
-            require(replay.demo(1, true), "source full-image pair");
-            Frame source{};
-            ID3D11Texture2D *textures[2]{};
-            require(replay.source_snapshot(source, textures), "full source snapshot available");
-            require(source.view_count == 2 && source.views[0].rect_width == 512,
-                    "snapshot must preserve full source and focus, not output aspect crop");
-            ComPtr<ID3D11Texture2D> saved[2]{textures[0], textures[1]};
-            replay.source_changed();
-            textures[0] = saved[0].Get();
-            textures[1] = saved[1].Get();
-            require(replay.consume_replay(source, textures, 100),
-                    "replay accepts source images and pose together");
-            require(replay.sequence() == source.sequence, "replay retains source sequence");
-            source.views[0].rect_width = 999;
-            require(!replay.consume_replay(source, textures), "replay rejects image metadata mismatch");
-        }
         visual_host_tests();
         overlay_tests();
         offscreen_tests<Renderer>();
@@ -729,6 +740,28 @@ int main(int argc, char **argv) {
         require(window != nullptr, "test window");
         Renderer renderer;
         require(renderer.attach(window), "native renderer initialize/shader compilation");
+        {
+            Options dan;
+            dan.smoothing = 82.5;
+            dan.crop = 45.8368;
+            dan.horizontal_offset = -62.627845;
+            dan.vertical_offset = -35;
+            dan.horizon_lock = 21.1;
+            dan.pitch_lock = 3.3;
+            dan.spectator.bypass = true;
+            require(renderer.demo(-2, true, 1) && !renderer.draw(dan, false) && !renderer.error().empty(),
+                    "invalid right-eye frame reports a diagnostic");
+            const auto start = GetTickCount64();
+            for (unsigned i = 0; i < 5; ++i) {
+                const double seconds = (GetTickCount64() - start) / 1000.;
+                require(renderer.demo(seconds, true, 1) && renderer.draw(dan, false),
+                        "Dan right-eye quad draws at live tick timestamps");
+                require(renderer.demo(seconds, true, 1) && renderer.draw(dan, false),
+                        "redrawing a demo on the same clock tick preserves its pose");
+                require(renderer.error().empty(), "valid demo frame clears the previous error");
+                Sleep(1);
+            }
+        }
         Options options;
         options.mirror_softness = 0; // Legacy mirror tests compare the exact unsoftened image.
         options.crop = 0;

@@ -370,7 +370,6 @@ struct Renderer::Impl {
     ComPtr<IDXGIKeyedMutex> keyed[max_images];
     ComPtr<ID3D11ShaderResourceView> srv[max_images];
     Frame frame{};
-    Frame source_packet{};
     Frame opened{};
     FrameStabilizer stabilizer;
     FrameBuffer frame_buffer;
@@ -382,9 +381,6 @@ struct Renderer::Impl {
     ImageStabilizer image_stabilizer;
     ImageResult image_result{};
     bool window_mode{};
-    bool replay_mode{};
-    double replay_speed{-1};
-    double correction_fraction{1};
     struct Pending {
         ComPtr<ID3D11Texture2D> full, analysis_texture, staging;
         ComPtr<ID3D11ShaderResourceView> view;
@@ -752,9 +748,7 @@ struct Renderer::Impl {
     bool make_local(unsigned i, const D3D11_TEXTURE2D_DESC &input) {
         D3D11_TEXTURE2D_DESC desc = input;
         desc.Usage = D3D11_USAGE_DEFAULT;
-        // Video-processor input binding enables optional full-source GPU proxy
-        // conversion without allocating another full-resolution source copy.
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         desc.CPUAccessFlags = 0;
         desc.MiscFlags = 0;
         local[i].Reset();
@@ -933,11 +927,9 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
 }
 void Renderer::source_changed() {
     auto &r = *impl_;
-    r.replay_mode = false;
     r.reset_director();
     r.frame = {};
     r.opened = {};
-    r.source_packet = {};
     r.pending.clear();
     r.free_pending.clear();
     r.stabilizer.reset();
@@ -1069,52 +1061,11 @@ StillStatus Renderer::poll_framing_still(FramingStill &result) {
     job.reset();
     return StillStatus::ready;
 }
-bool Renderer::source_snapshot(Frame &frame, ID3D11Texture2D *textures[2]) const {
+bool Renderer::source_frame(Frame &frame) const {
     const auto &r = *impl_;
-    if (r.window_mode || !r.frame.view_count || r.frame.view_count > 2)
+    if (r.window_mode || !r.frame.view_count)
         return false;
-    frame = r.source_packet.sequence == r.frame.sequence && r.source_packet.session == r.frame.session
-                ? r.source_packet
-                : r.frame;
-    for (unsigned i = 0; i < 2; ++i)
-        textures[i] = i < frame.view_count ? r.local[i].Get() : nullptr;
-    return textures[0] != nullptr;
-}
-double Renderer::correction_fraction() const {
-    return impl_->correction_fraction;
-}
-bool Renderer::consume_replay(const Frame &frame, ID3D11Texture2D *const textures[2], double speed) {
-    auto &r = *impl_;
-    if (!r.device || frame.view_count < 1 || frame.view_count > 2 || frame.eye > 1 || frame.display_time <= 0)
-        return false;
-    ComPtr<ID3D11ShaderResourceView> views[2];
-    for (unsigned i = 0; i < frame.view_count; ++i) {
-        if (!textures[i])
-            return false;
-        D3D11_TEXTURE2D_DESC desc{};
-        textures[i]->GetDesc(&desc);
-        ComPtr<ID3D11Device> device;
-        textures[i]->GetDevice(&device);
-        const auto &v = frame.views[i];
-        if (device.Get() != r.device.Get() || desc.Width != unsigned(v.rect_width) ||
-            desc.Height != unsigned(v.rect_height) || desc.Format != v.format || desc.ArraySize != 1 ||
-            desc.SampleDesc.Count != 1 || v.x || v.y ||
-            !valid(Quat{v.orientation[0], v.orientation[1], v.orientation[2], v.orientation[3]}) ||
-            !valid(Projection{v.fov[0], v.fov[1], v.fov[2], v.fov[3]}))
-            return false;
-        if (FAILED(r.device->CreateShaderResourceView(textures[i], nullptr, &views[i])))
-            return false;
-    }
-    for (unsigned i = 0; i < max_images; ++i) {
-        r.local[i] = i < frame.view_count ? textures[i] : nullptr;
-        r.srv[i] = i < frame.view_count ? views[i] : nullptr;
-    }
-    r.frame = frame;
-    r.frame.overlay_count = 0;
-    r.window_mode = false;
-    r.replay_mode = true;
-    r.replay_speed = speed;
-    r.error.clear();
+    frame = r.frame;
     return true;
 }
 bool Renderer::attach_offscreen(const LUID *adapter) {
@@ -1313,7 +1264,6 @@ bool Renderer::consume(Channel &channel, bool require_consumer) {
         return recover(L"Release GPU image", release);
     s.ready = 0;
     r.frame = packet;
-    r.source_packet = packet;
     for (unsigned i = 0; i < count; ++i) {
         auto &v = image_at(r.frame, i);
         v.x = v.y = 0;
@@ -1328,11 +1278,18 @@ bool Renderer::demo(double seconds, bool quad, unsigned eye) {
     auto &r = *impl_;
     if (!r.device)
         return false;
+    const auto display_time = 1000000000LL + static_cast<std::int64_t>(seconds * 1e9);
+    const auto view_count = quad ? 2u : 1u;
+    eye = std::min(eye, 1u);
+    // An overdue render and its catch-up iteration can share one Windows clock tick.
+    // Re-present the same simulated pose and textures without advancing pose history.
+    if (!r.window_mode && r.frame.producer_pid == GetCurrentProcessId() && r.frame.view_count == view_count &&
+        r.frame.eye == eye && r.frame.sequence == r.demo_sequence && r.frame.display_time == display_time)
+        return true;
     constexpr unsigned size = 512;
-    if (!r.frame.view_count || r.frame.producer_pid != GetCurrentProcessId() ||
-        r.frame.view_count != (quad ? 2u : 1u)) {
+    if (!r.frame.view_count || r.frame.producer_pid != GetCurrentProcessId() || r.frame.view_count != view_count) {
         std::vector<std::uint32_t> pixels(size * size);
-        for (unsigned i = 0; i < (quad ? 2u : 1u); ++i) {
+        for (unsigned i = 0; i < view_count; ++i) {
             D3D11_TEXTURE2D_DESC d{};
             d.Width = d.Height = size;
             d.MipLevels = d.ArraySize = 1;
@@ -1354,10 +1311,10 @@ bool Renderer::demo(double seconds, bool quad, unsigned eye) {
     f.adapter = r.adapter;
     f.generation = f.session = f.reference_epoch = 1;
     f.sequence = ++r.demo_sequence;
-    f.display_time = 1000000000LL + static_cast<std::int64_t>(seconds * 1e9);
+    f.display_time = display_time;
     f.producer_pid = GetCurrentProcessId();
-    f.view_count = quad ? 2 : 1;
-    f.eye = std::min(eye, 1u);
+    f.view_count = view_count;
+    f.eye = eye;
     auto q = axis_angle({0, 1, 0}, std::sin(seconds * 4) * .08);
     for (unsigned i = 0; i < f.view_count; ++i) {
         auto &v = f.views[i];
@@ -1372,6 +1329,7 @@ bool Renderer::demo(double seconds, bool quad, unsigned eye) {
         }
     }
     r.frame = f;
+    r.error.clear();
     return true;
 }
 
@@ -1392,10 +1350,7 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
     const auto director = sanitize_director_settings(options.director);
     const bool active_source = r.frame.view_count && !waiting_text;
     SpeedReading speed;
-    if (r.replay_mode) {
-        speed.valid = std::isfinite(r.replay_speed) && r.replay_speed >= 0;
-        speed.speed_kph = r.replay_speed;
-    } else if (active_source && director.speed_fov_enabled && !options.spectator.bypass) {
+    if (active_source && director.speed_fov_enabled && !options.spectator.bypass) {
         speed = r.speed_telemetry.sample(static_cast<SpeedGame>(director.telemetry_game));
         r.speed_active = true;
     } else if (r.speed_active) {
@@ -1430,7 +1385,7 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
     };
     const bool black = waiting_text || r.offscreen;
     auto visual = options.visual;
-    visual.bypass = visual.bypass || options.spectator.bypass || options.workshop_source;
+    visual.bypass = visual.bypass || options.spectator.bypass;
     const bool effects = visual.active() && draw_frame.view_count && !waiting_text;
     if (!effects && r.visual_active)
         r.release_visual();
@@ -1548,7 +1503,6 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
             if (paired)
                 tuning.compare_original = false;
             const auto composition = r.stabilizer.update(draw_frame, tuning, future_target, draw_speed);
-            r.correction_fraction = composition.warp.correction_fraction;
             if (!composition.valid)
                 return r.fail(L"Invalid pose or projection");
             record_director_status(r.stabilizer.director_status());
@@ -1571,8 +1525,6 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
             p.flags[2] = float(focus.rect_width);
             p.flags[3] = float(focus.rect_height);
         }
-        if (options.workshop_source)
-            p = full_eye_params(draw_frame, r.window_mode);
         D3D11_MAPPED_SUBRESOURCE mapped{};
         HRESULT hr = r.context->Map(r.constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         if (FAILED(hr))
@@ -1581,9 +1533,7 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
         r.context->Unmap(r.constants.Get(), 0);
         D3D11_VIEWPORT vp{};
         const float aspect =
-            options.workshop_source
-                ? float(draw_frame.views[0].rect_width) / draw_frame.views[0].rect_height
-                : float(std::isfinite(options.aspect) ? std::clamp(options.aspect, .25, 4.) : 16. / 9.);
+            float(std::isfinite(options.aspect) ? std::clamp(options.aspect, .25, 4.) : 16. / 9.);
         vp.Width = float(r.output_width);
         vp.Height = vp.Width / aspect;
         if (vp.Height > r.output_height) {
