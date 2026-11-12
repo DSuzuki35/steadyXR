@@ -8,7 +8,7 @@
 #include <vector>
 
 namespace vrst::preview {
-enum class BuiltinPreset { natural, stream_comfort, strong_leveling };
+enum class BuiltinPreset { natural, stream_comfort, strong_leveling, dan_suzuki };
 
 // Snapshots are opaque INI bytes, preserving every section and future setting.
 class PresetStore {
@@ -38,7 +38,8 @@ class PresetsDialog {
         comfort_id,
         strong_id,
         status_id,
-        close_id
+        close_id,
+        dan_id
     };
     struct Callbacks {
         std::function<std::string()> capture;

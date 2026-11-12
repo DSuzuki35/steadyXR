@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <vector>
 #include <windows.h>
 
@@ -23,8 +24,9 @@ class Theme {
     bool message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &result);
 
   private:
-    HFONT title_{}, heading_{};
+    HFONT title_{}, heading_{}, strong_{}, caption_{};
     HBRUSH background_{}, panel_{}, field_{};
+    std::array<HBRUSH, 4> shell_brushes_{};
     struct Placement {
         HWND window;
         RECT bounds;
@@ -36,7 +38,7 @@ class Theme {
     };
     struct Fonts {
         UINT dpi;
-        HFONT body, heading;
+        HFONT body, heading, title, strong;
     };
     std::vector<Layout> layouts_;
     std::vector<Fonts> fonts_;

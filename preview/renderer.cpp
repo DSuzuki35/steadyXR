@@ -220,6 +220,40 @@ void rect(float *r, float *c, const View &v) {
 bool same(LUID a, LUID b) {
     return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
 }
+Params full_eye_params(const Frame &frame, bool window) {
+    Params p{};
+    const auto &view = frame.views[0];
+    const auto &focus = frame.views[frame.view_count - 1];
+    rect(p.rect0, p.clamp0, view);
+    if (window) {
+        p.image_mode[0] = p.image_row_x[0] = p.image_row_y[1] = 1;
+        return p;
+    }
+    std::copy_n(view.fov, 4, p.input);
+    std::copy_n(view.fov, 4, p.output);
+    std::copy_n(focus.fov, 4, p.focus);
+    rect(p.rect1, p.clamp1, focus);
+    auto orientation = [](const View &v) {
+        return Quat{v.orientation[0], v.orientation[1], v.orientation[2], v.orientation[3]};
+    };
+    put(p.correction, Quat{});
+    put(p.focus_correction, multiply(conjugate(orientation(focus)), orientation(view)));
+    p.flags[1] = frame.view_count == 2;
+    p.flags[2] = float(focus.rect_width);
+    p.flags[3] = float(focus.rect_height);
+    return p;
+}
+struct StillReadback {
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<ID3D11Texture2D> staging;
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    FramingStill image;
+    unsigned row{};
+    ~StillReadback() {
+        if (mapped.pData)
+            context->Unmap(staging.Get(), 0);
+    }
+};
 // A conservative rectangle of captured pixels, excluding mirror/black borders.
 // The projection is convex in front of the eye, so checking four corners is enough.
 VisualRegion captured_region(const Params &p, const D3D11_VIEWPORT &vp, unsigned w, unsigned h) {
@@ -282,6 +316,7 @@ struct OutputWrite {
 } // namespace
 
 struct Renderer::Impl {
+    std::unique_ptr<StillReadback> still;
     HWND window{};
     bool offscreen{}, fixed_adapter{};
     LUID requested_adapter{};
@@ -313,6 +348,24 @@ struct Renderer::Impl {
     ComPtr<ID3D11BlendState> overlay_blend;
     ComPtr<ID3D11Buffer> constants;
     ComPtr<ID3D11SamplerState> sampler;
+    void draw_eye(ID3D11RenderTargetView *target_view, const D3D11_VIEWPORT &viewport,
+                  ID3D11Buffer *params, ID3D11ShaderResourceView *peripheral,
+                  ID3D11ShaderResourceView *focus) {
+        context->RSSetViewports(1, &viewport);
+        context->OMSetRenderTargets(1, &target_view, nullptr);
+        context->IASetInputLayout(nullptr);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vs.Get(), nullptr, 0);
+        context->PSSetShader(ps.Get(), nullptr, 0);
+        context->PSSetConstantBuffers(0, 1, &params);
+        auto *sample = sampler.Get();
+        context->PSSetSamplers(0, 1, &sample);
+        ID3D11ShaderResourceView *images[]{peripheral, focus};
+        context->PSSetShaderResources(0, 2, images);
+        context->Draw(3, 0);
+        ID3D11ShaderResourceView *empty[2]{};
+        context->PSSetShaderResources(0, 2, empty);
+    }
     ComPtr<ID3D11Texture2D> local[max_images], shared[max_images];
     ComPtr<IDXGIKeyedMutex> keyed[max_images];
     ComPtr<ID3D11ShaderResourceView> srv[max_images];
@@ -760,6 +813,7 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
             r.frame.display_time = static_cast<std::int64_t>(p.time_ns);
             r.frame.producer_pid = GetCurrentProcessId();
             r.frame.view_count = 1;
+            r.frame.eye = std::min(options.eye, 1u);
             auto &v = r.frame.views[0];
             v.width = v.rect_width = p.width;
             v.height = v.rect_height = p.height;
@@ -905,6 +959,115 @@ bool Renderer::attach(HWND w) {
     impl_->offscreen = false;
     impl_->fixed_adapter = false;
     return impl_->initialize();
+}
+double Renderer::source_aspect() const {
+    const auto &r = *impl_;
+    if (!r.frame.view_count)
+        return 0;
+    const auto &v = r.frame.views[0];
+    return r.window_mode ? double(v.rect_width) / v.rect_height
+                         : double(v.fov[1] - v.fov[0]) / (v.fov[2] - v.fov[3]);
+}
+unsigned Renderer::source_eye() const {
+    return impl_->frame.eye;
+}
+
+bool Renderer::begin_framing_still() {
+    auto &r = *impl_;
+    if (!r.device || r.still || !r.frame.view_count || r.frame.view_count > 2)
+        return false;
+    auto job = std::make_unique<StillReadback>();
+    auto &image = job->image;
+    image.eye = r.frame.eye;
+    image.views = r.frame.view_count;
+    image.window_source = r.window_mode;
+    image.source_aspect = source_aspect();
+    if (!std::isfinite(image.source_aspect) || image.source_aspect <= 0)
+        return false;
+
+    const auto &view = r.frame.views[0];
+    const auto &focus = r.frame.views[image.views - 1];
+    double width = std::max(double(view.rect_width), view.rect_height * image.source_aspect);
+    if (image.views == 2) {
+        // Preserve focus detail when the peripheral texture is low resolution.
+        // The still covers the entire context FOV at square optical pixels.
+        const double fx = (view.fov[1] - view.fov[0]) / (focus.fov[1] - focus.fov[0]);
+        const double fy = (view.fov[2] - view.fov[3]) / (focus.fov[2] - focus.fov[3]);
+        width = std::max({width, focus.rect_width * fx, focus.rect_height * fy * image.source_aspect});
+    }
+    // Bound this interactive reference's memory and GPU time on large HMDs.
+    width = std::min({width, 2560., 2560. * image.source_aspect});
+    image.width = std::max(1L, std::lround(width));
+    image.height = std::max(1L, std::lround(width / image.source_aspect));
+    image.pixels.reset(new (std::nothrow) std::uint32_t[std::size_t(image.width) * image.height]);
+    if (!image.pixels)
+        return false;
+    job->context = r.context;
+    D3D11_TEXTURE2D_DESC d{};
+    d.Width = image.width;
+    d.Height = image.height;
+    d.MipLevels = d.ArraySize = d.SampleDesc.Count = 1;
+    d.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    d.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ComPtr<ID3D11Texture2D> color;
+    ComPtr<ID3D11RenderTargetView> target;
+    if (FAILED(r.device->CreateTexture2D(&d, nullptr, &color)) ||
+        FAILED(r.device->CreateRenderTargetView(color.Get(), nullptr, &target)))
+        return false;
+    d.Usage = D3D11_USAGE_STAGING;
+    d.BindFlags = 0;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(r.device->CreateTexture2D(&d, nullptr, &job->staging)))
+        return false;
+    const auto params = full_eye_params(r.frame, r.window_mode);
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = sizeof(params);
+    desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    D3D11_SUBRESOURCE_DATA data{&params, 0, 0};
+    ComPtr<ID3D11Buffer> cb;
+    if (FAILED(r.device->CreateBuffer(&desc, &data, &cb)))
+        return false;
+
+    // The consumer already owns both eye textures. No producer mutex or live
+    // output texture is acquired by this pass, including with an offscreen reader.
+    D3D11_VIEWPORT vp{0, 0, float(image.width), float(image.height), 0, 1};
+    r.context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+    r.draw_eye(target.Get(), vp, cb.Get(), r.srv[0].Get(), r.srv[image.views - 1].Get());
+    r.context->OMSetRenderTargets(0, nullptr, nullptr);
+    r.context->CopyResource(job->staging.Get(), color.Get());
+    r.context->Flush();
+    r.still = std::move(job);
+    return true;
+}
+
+StillStatus Renderer::poll_framing_still(FramingStill &result) {
+    auto &job = impl_->still;
+    if (!job)
+        return StillStatus::failed;
+    if (!job->mapped.pData) {
+        const auto hr = job->context->Map(job->staging.Get(), 0, D3D11_MAP_READ,
+                                          D3D11_MAP_FLAG_DO_NOT_WAIT, &job->mapped);
+        if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+            return StillStatus::pending;
+        if (FAILED(hr)) {
+            job.reset();
+            return StillStatus::failed;
+        }
+    }
+    auto &image = job->image;
+    const unsigned pitch = image.width * sizeof(std::uint32_t);
+    const unsigned end = std::min(image.height, job->row + (2 * 1024 * 1024 / pitch));
+    // Budget CPU copying as well as GPU waiting, including first-touch page faults.
+    for (; job->row < end; ++job->row)
+        std::memcpy(image.pixels.get() + std::size_t(job->row) * image.width,
+                    static_cast<const BYTE *>(job->mapped.pData) + std::size_t(job->row) * job->mapped.RowPitch,
+                    pitch);
+    if (end != image.height)
+        return StillStatus::pending;
+    result = std::move(image);
+    job.reset();
+    return StillStatus::ready;
 }
 bool Renderer::source_snapshot(Frame &frame, ID3D11Texture2D *textures[2]) const {
     const auto &r = *impl_;
@@ -1161,7 +1324,7 @@ bool Renderer::consume(Channel &channel, bool require_consumer) {
     return true;
 }
 
-bool Renderer::demo(double seconds, bool quad) {
+bool Renderer::demo(double seconds, bool quad, unsigned eye) {
     auto &r = *impl_;
     if (!r.device)
         return false;
@@ -1194,6 +1357,7 @@ bool Renderer::demo(double seconds, bool quad) {
     f.display_time = 1000000000LL + static_cast<std::int64_t>(seconds * 1e9);
     f.producer_pid = GetCurrentProcessId();
     f.view_count = quad ? 2 : 1;
+    f.eye = std::min(eye, 1u);
     auto q = axis_angle({0, 1, 0}, std::sin(seconds * 4) * .08);
     for (unsigned i = 0; i < f.view_count; ++i) {
         auto &v = f.views[i];
@@ -1334,7 +1498,8 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
             }
             const auto region = framing_region(source_aspect, options, settings.edge_reserve);
             const bool final_framing =
-                director_framing || settings.edge_reserve.enabled ||
+                options.crop > 40. || director_framing || settings.edge_reserve.enabled ||
+                (std::isfinite(options.horizontal_offset) && options.horizontal_offset != 0) ||
                 (std::isfinite(options.vertical_offset) && options.vertical_offset != 0);
             auto make_framed = [&](const ImageResult &motion) {
                 auto warp =
@@ -1405,25 +1570,9 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
             p.flags[1] = draw_frame.view_count == 2 ? 1.f : 0.f;
             p.flags[2] = float(focus.rect_width);
             p.flags[3] = float(focus.rect_height);
-            if (options.workshop_source) {
-                const auto &view = draw_frame.views[0];
-                const Projection full{view.fov[0], view.fov[1], view.fov[2], view.fov[3]};
-                put(p.input, full);
-                put(p.output, full);
-                put(p.correction, Quat{});
-                // Source framing bypasses stabilization, but still combines
-                // the two submitted cameras at the final output resolution.
-                const Quat context_pose{view.orientation[0], view.orientation[1], view.orientation[2],
-                                        view.orientation[3]};
-                const Quat focus_pose{focus.orientation[0], focus.orientation[1], focus.orientation[2],
-                                      focus.orientation[3]};
-                const auto source_focus = multiply(conjugate(focus_pose), context_pose);
-                put(p.focus_correction, source_focus);
-                put(p.original_focus, source_focus);
-                p.flags[0] = 0;
-                p.comparison[0] = 0;
-            }
         }
+        if (options.workshop_source)
+            p = full_eye_params(draw_frame, r.window_mode);
         D3D11_MAPPED_SUBRESOURCE mapped{};
         HRESULT hr = r.context->Map(r.constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         if (FAILED(hr))
@@ -1444,23 +1593,9 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
         vp.TopLeftX = (r.output_width - vp.Width) / 2;
         vp.TopLeftY = (r.output_height - vp.Height) / 2;
         vp.MaxDepth = 1;
-        r.context->RSSetViewports(1, &vp);
         auto *rt = r.output_target.Get();
-        r.context->OMSetRenderTargets(1, &rt, nullptr);
-        r.context->IASetInputLayout(nullptr);
-        r.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        r.context->VSSetShader(r.vs.Get(), nullptr, 0);
-        r.context->PSSetShader(r.ps.Get(), nullptr, 0);
-        auto *cb = r.constants.Get();
-        r.context->PSSetConstantBuffers(0, 1, &cb);
-        auto *sampler = r.sampler.Get();
-        r.context->PSSetSamplers(0, 1, &sampler);
-        ID3D11ShaderResourceView *views[] = {draw_views[0].Get(),
-                                             draw_views[draw_frame.view_count - 1].Get()};
-        r.context->PSSetShaderResources(0, 2, views);
-        r.context->Draw(3, 0);
+        r.draw_eye(rt, vp, r.constants.Get(), draw_views[0].Get(), draw_views[draw_frame.view_count - 1].Get());
         ID3D11ShaderResourceView *empty[2] = {};
-        r.context->PSSetShaderResources(0, 2, empty);
         if (effects) {
             const bool compare = options.compare_original && options.compare_effects;
             const unsigned layout = compare && options.compare_mode <= 2 ? options.compare_mode : 0;

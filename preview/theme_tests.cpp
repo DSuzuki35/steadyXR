@@ -1,7 +1,10 @@
 #include "theme.hpp"
+#include <algorithm>
 #include <commctrl.h>
+#include <cwchar>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -131,9 +134,9 @@ void repeated_native_paint_keeps_track_and_thumb() {
     const auto thumb = slider.rectangle(TBM_GETTHUMBRECT);
     const auto y = (channel.top + channel.bottom) / 2;
     const auto background = canvas.pixel(0, Slider::height - 1);
-    check(background == RGB(26, 27, 31), "slider uses the approved dark surface");
-    check(canvas.pixel((thumb.left + thumb.right) / 2, thumb.top + 2) == RGB(112, 89, 221),
-          "slider uses the approved violet accent");
+    check(background == RGB(29, 31, 35), "slider uses the approved dark surface");
+    check(canvas.pixel((thumb.left + thumb.right) / 2, thumb.top + 2) == RGB(49, 108, 207),
+          "slider uses the blue action accent");
     check(canvas.pixel(channel.right - 2, y) != background, "first native paint draws the track");
     check(canvas.pixel((thumb.left + thumb.right) / 2, thumb.top + 2) != background,
           "first native paint draws the thumb");
@@ -286,21 +289,245 @@ void small_work_area_keeps_scaled_controls_reachable() {
           "focus can return to content at the top of the scrollable form");
     check(fixture.position() == -500, "scrolling never changes camera slider values");
 }
+
+// Activates the side-by-side common controls the shipped manifest selects, so the
+// same checks cover both the user32 combo and the comctl32 version 6 combo.
+struct VisualStyles {
+    HANDLE context{INVALID_HANDLE_VALUE};
+    ULONG_PTR cookie{};
+    bool active{};
+    VisualStyles() {
+        wchar_t directory[MAX_PATH]{};
+        GetSystemDirectoryW(directory, MAX_PATH);
+        ACTCTXW request{sizeof(request)};
+        request.dwFlags = ACTCTX_FLAG_RESOURCE_NAME_VALID | ACTCTX_FLAG_ASSEMBLY_DIRECTORY_VALID;
+        request.lpSource = L"shell32.dll";
+        request.lpAssemblyDirectory = directory;
+        request.lpResourceName = MAKEINTRESOURCEW(124);
+        context = CreateActCtxW(&request);
+        active = context != INVALID_HANDLE_VALUE && ActivateActCtx(context, &cookie);
+        if (active) {
+            INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
+            InitCommonControlsEx(&controls);
+        }
+    }
+    ~VisualStyles() {
+        if (active)
+            DeactivateActCtx(0, cookie);
+        if (context != INVALID_HANDLE_VALUE)
+            ReleaseActCtx(context);
+    }
+};
+
+// Native combos use the same window message routing as the application.
+struct Combos {
+    vrst::preview::Theme theme;
+    HWND parent{}, list{}, editable{}, collapsed{}, footer{};
+    unsigned selections{};
+    static constexpr int list_id = 201, editable_id = 202, collapsed_id = 203;
+    static constexpr int width = 900, height = 900;
+
+    static LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
+        auto *self = reinterpret_cast<Combos *>(GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (message == WM_NCCREATE) {
+            self = static_cast<Combos *>(reinterpret_cast<CREATESTRUCTW *>(l)->lpCreateParams);
+            SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        }
+        if (self) {
+            if (message == WM_COMMAND && HIWORD(w) == CBN_SELCHANGE)
+                ++self->selections;
+            LRESULT result{};
+            if (self->theme.message(window, message, w, l, result))
+                return result;
+        }
+        return DefWindowProcW(window, message, w, l);
+    }
+    HWND add(const wchar_t *kind, const wchar_t *text, DWORD style, int x, int y, int w, int h, int id) {
+        const auto window = CreateWindowExW(
+            0, kind, text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | theme.style(kind, style), x, y, w, h, parent,
+            reinterpret_cast<HMENU>(INT_PTR(id)), GetModuleHandleW(nullptr), nullptr);
+        check(window != nullptr, "create native combo fixture control");
+        theme.control(window, kind);
+        return window;
+    }
+    Combos() {
+        theme.initialize();
+        WNDCLASSW type{};
+        type.lpfnWndProc = procedure;
+        type.hInstance = GetModuleHandleW(nullptr);
+        type.lpszClassName = L"SteadyXRComboPopupTest";
+        RegisterClassW(&type);
+        parent = CreateWindowExW(WS_EX_NOACTIVATE, type.lpszClassName, L"", WS_POPUP, 40, 40, width, height,
+                                 nullptr, nullptr, type.hInstance, this);
+        check(parent != nullptr, "create hidden combo parent");
+        list = add(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 240, 214, 500, 180, list_id);
+        for (const auto text : {L"One", L"Two", L"Three", L"Four", L"Five", L"Six", L"Seven", L"Eight"})
+            SendMessageW(list, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
+        SendMessageW(list, CB_SETCURSEL, 1, 0);
+        editable = add(L"COMBOBOX", L"", CBS_DROPDOWN | CBS_HASSTRINGS | WS_VSCROLL, 240, 300, 180, 200,
+                       editable_id);
+        for (const auto text : {L"16:9", L"21:9", L"32:9", L"4:3", L"1:1"})
+            SendMessageW(editable, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
+        SetWindowTextW(editable, L"37:10");
+        // Created with only its closed height, like a control placed by a later layout pass.
+        collapsed = add(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 240, 380, 200, 10, collapsed_id);
+        for (const auto text : {L"A", L"B", L"C", L"D", L"E", L"F"})
+            SendMessageW(collapsed, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
+        footer = add(L"BUTTON", L"Open preview", BS_PUSHBUTTON, 700, 840, 180, 40, 204);
+        theme.scale_window(parent, 96);
+        ShowWindow(parent, SW_SHOWNOACTIVATE);
+    }
+    ~Combos() {
+        if (parent)
+            DestroyWindow(parent);
+    }
+    static HWND popup(HWND combo) {
+        COMBOBOXINFO info{sizeof(info)};
+        check(GetComboBoxInfo(combo, &info) && info.hwndList, "native combo exposes its popup list");
+        return info.hwndList;
+    }
+    static int item_height(HWND combo) {
+        return int(SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0));
+    }
+    // Opens the real popup and returns the height of the list the user would see.
+    static int open(HWND combo) {
+        SendMessageW(combo, CB_SHOWDROPDOWN, TRUE, 0);
+        check(SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0) != 0, "native combo popup opens");
+        check(IsWindowVisible(popup(combo)), "native combo popup list is shown");
+        RECT bounds{};
+        GetWindowRect(popup(combo), &bounds);
+        return bounds.bottom - bounds.top;
+    }
+    static void close(HWND combo) {
+        SendMessageW(combo, CB_SHOWDROPDOWN, FALSE, 0);
+        check(!SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0), "native combo popup closes");
+    }
+    // The popup must show `rows` whole items (or every item when there are fewer).
+    static void expect_rows(HWND combo, int rows, const char *message) {
+        const int count = int(SendMessageW(combo, CB_GETCOUNT, 0, 0));
+        const int tall = open(combo);
+        close(combo);
+        if (tall < std::min(rows, count) * item_height(combo)) {
+            std::cerr << "popup height " << tall << " item height " << item_height(combo) << '\n';
+            check(false, message);
+        }
+    }
+    void dpi(UINT value) {
+        RECT suggested{};
+        GetWindowRect(parent, &suggested);
+        LRESULT result{};
+        check(theme.message(parent, WM_DPICHANGED, MAKELONG(value, value),
+                            reinterpret_cast<LPARAM>(&suggested), result),
+              "theme handles combo DPI changes");
+    }
+    // Chooses a row with the mouse in the open popup, as a user would.
+    void click(HWND combo, int row) {
+        open(combo);
+        RECT item{};
+        const auto native = popup(combo);
+        check(SendMessageW(native, LB_GETITEMRECT, row, reinterpret_cast<LPARAM>(&item)) != LB_ERR,
+              "popup row is addressable");
+        RECT client{};
+        GetClientRect(native, &client);
+        check(item.top >= 0 && item.bottom <= client.bottom, "popup row is inside the visible popup");
+        const auto point = MAKELPARAM((item.left + item.right) / 2, (item.top + item.bottom) / 2);
+        SendMessageW(native, WM_MOUSEMOVE, 0, point);
+        SendMessageW(native, WM_LBUTTONDOWN, MK_LBUTTON, point);
+        SendMessageW(native, WM_LBUTTONUP, 0, point);
+        if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0))
+            SendMessageW(combo, CB_SHOWDROPDOWN, FALSE, 0);
+    }
+};
+
+void combo_popup_keeps_its_height_through_every_layout_pass() {
+    Combos fixture;
+    fixture.expect_rows(fixture.list, 5, "a new combo opens a usable popup");
+    fixture.expect_rows(fixture.collapsed, 5,
+                        "a combo created at its closed height still opens a usable popup");
+    for (const UINT value : {120u, 144u, 192u, 96u, 144u}) {
+        fixture.dpi(value);
+        fixture.expect_rows(fixture.list, 5, "the popup keeps its height after a DPI change");
+        fixture.expect_rows(fixture.editable, 5, "the editable popup keeps its height after a DPI change");
+        fixture.expect_rows(fixture.collapsed, 5, "the closed-height combo keeps a popup after a DPI change");
+    }
+    // A small work area turns on scrolling; focus then repositions every child.
+    const RECT available{20, 30, 820, 630};
+    fixture.theme.fit_window(fixture.parent, available);
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        SendMessageW(fixture.footer, WM_SETFOCUS, 0, 0);
+        SendMessageW(fixture.parent, WM_VSCROLL, SB_TOP, 0);
+        SendMessageW(fixture.parent, WM_MOUSEWHEEL, MAKEWPARAM(0, WORD(-WHEEL_DELTA)), 0);
+        SendMessageW(fixture.parent, WM_SIZE, SIZE_RESTORED, 0);
+    }
+    fixture.expect_rows(fixture.list, 5, "the popup keeps its height after scrolling repositions the combo");
+    fixture.expect_rows(fixture.editable, 5, "the editable popup keeps its height after scrolling");
+    fixture.expect_rows(fixture.collapsed, 5, "the closed-height combo keeps a popup after scrolling");
+    RECT closed{};
+    GetWindowRect(fixture.list, &closed);
+    check(closed.bottom - closed.top < 3 * fixture.item_height(fixture.list),
+          "layout passes leave the closed combo at its native closed height");
+    fixture.dpi(96);
+    fixture.expect_rows(fixture.list, 5, "returning to 100 percent restores the original popup");
+}
+
+void combo_selection_survives_dpi_and_reposition() {
+    Combos fixture;
+    check(SendMessageW(fixture.list, CB_GETCURSEL, 0, 0) == 1, "initial selection");
+    COMBOBOXINFO info{sizeof(info)};
+    check(GetComboBoxInfo(fixture.editable, &info) && info.hwndItem, "aspect combo owns its native edit");
+    SetFocus(info.hwndItem);
+    check(GetFocus() == info.hwndItem, "aspect editor can receive keyboard focus");
+    SetWindowPos(fixture.parent, nullptr, 95, 71, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    fixture.dpi(144);
+    const RECT available{20, 30, 820, 630};
+    fixture.theme.fit_window(fixture.parent, available);
+    check(GetFocus() == info.hwndItem, "scaling and moving preserve aspect editor focus");
+    SetFocus(fixture.footer);
+    SetFocus(fixture.list);
+    check(SendMessageW(fixture.list, CB_GETCURSEL, 0, 0) == 1, "layout passes preserve the selection");
+    wchar_t value[32]{};
+    GetWindowTextW(fixture.editable, value, 32);
+    check(!std::wcscmp(value, L"37:10"), "layout passes preserve typed text in an editable combo");
+    const auto before = fixture.selections;
+    fixture.click(fixture.list, 4);
+    check(SendMessageW(fixture.list, CB_GETCURSEL, 0, 0) == 4,
+          "a row chosen in the scaled popup is selected");
+    check(fixture.selections > before, "choosing a popup row still notifies the parent");
+    fixture.click(fixture.editable, 2);
+    GetWindowTextW(fixture.editable, value, 32);
+    check(!std::wcscmp(value, L"32:9"), "choosing a row updates the editable combo text");
+    SendMessageW(fixture.list, WM_KEYDOWN, VK_DOWN, 0);
+    SendMessageW(fixture.list, WM_KEYUP, VK_DOWN, 0);
+    check(SendMessageW(fixture.list, CB_GETCURSEL, 0, 0) == 5, "keyboard selection still works when closed");
+    fixture.dpi(96);
+    check(SendMessageW(fixture.list, CB_GETCURSEL, 0, 0) == 5, "selection survives returning to 100 percent");
+}
 } // namespace
 
 int main() {
     try {
+        // Opening popup windows and giving the aspect edit real focus must never
+        // interrupt keyboard or mouse input on the interactive desktop.
+        const auto name = L"SteadyXRThemeTests" + std::to_wstring(GetCurrentProcessId());
+        const auto desktop = CreateDesktopW(name.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+        check(desktop && SetThreadDesktop(desktop), "create a private desktop for native input tests");
         INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES};
         check(InitCommonControlsEx(&controls), "initialize native trackbars");
-        const auto foreground = GetForegroundWindow();
         repeated_native_paint_keeps_track_and_thumb();
         clipped_native_paint_restores_track_under_old_thumb();
         signed_range_fill_tracks_native_position();
         painting_preserves_native_input_and_notifications();
         dpi_change_scales_controls_and_preserves_input();
         small_work_area_keeps_scaled_controls_reachable();
-        check(GetForegroundWindow() == foreground, "slider tests never activate a window");
-        std::cout << "Native slider painting and input tests passed\n";
+        combo_popup_keeps_its_height_through_every_layout_pass();
+        combo_selection_survives_dpi_and_reposition();
+        {
+            VisualStyles styles;
+            check(styles.active, "activate version 6 common controls");
+            combo_popup_keeps_its_height_through_every_layout_pass();
+            combo_selection_survives_dpi_and_reposition();
+        }
+        std::cout << "Native slider, combo popup, DPI and focus tests passed\n";
         return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

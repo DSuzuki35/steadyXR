@@ -589,6 +589,18 @@ void visual_host_tests() {
             "all-off frees effects resources and stops GPU work");
     std::cout << "Native GPU: preview exposure, transfer, A/B and bypass passed\n";
 }
+FramingStill read_still(Renderer &renderer) {
+    FramingStill still;
+    auto status = StillStatus::pending;
+    const auto deadline = GetTickCount64() + 5000;
+    while (status == StillStatus::pending && GetTickCount64() < deadline) {
+        status = renderer.poll_framing_still(still);
+        if (status == StillStatus::pending)
+            Sleep(1);
+    }
+    require(status == StillStatus::ready, "asynchronous screenshot transfer completes");
+    return still;
+}
 void quad_source_tests() {
     Renderer renderer;
     require(renderer.attach_offscreen(), "quad source renderer");
@@ -652,6 +664,18 @@ void quad_source_tests() {
             }
         }
     }
+    // Snapshot uses the selected eye's original FOV and focus density, independent
+    // of the active output crop. The producer can disappear before transfer completes.
+    require(renderer.begin_framing_still(), "request full eye screenshot");
+    renderer.source_changed();
+    const auto still = read_still(renderer);
+    require(still.eye == 1 && still.views == 2 &&
+                still.width == 512 && still.height == 512 && still.source_aspect == 1,
+            "right-eye full field screenshot survives source loss");
+    require(still.pixels[256 * still.width + 32] == 0xffff0000u &&
+                still.pixels[256 * still.width + 208] == 0xff00ff00u &&
+                still.pixels[256 * still.width + 216] == 0xff0000ffu,
+            "screenshot includes peripheral edges and original focus detail in BGRA");
     options.compare_original = false;
     frame.views[1].fov[0] = 0;
     frame.views[1].fov[1] = 1;
@@ -1168,6 +1192,12 @@ int main(int argc, char **argv) {
         auto cropped = pixels[(h / 2) * w + w / 2];
         require(std::abs(int(cropped & 255) - 114) <= 2 && std::abs(int((cropped >> 8) & 255) - 114) <= 2,
                 "image crop must move sampled center to (45%,45%) without stretching");
+        require(renderer.begin_framing_still(), "queue full window despite cropped live output");
+        const auto window_still = read_still(renderer);
+        require(window_still.width == 512 && window_still.height == 288 &&
+                    window_still.pixels[0] == window_pixels.front() &&
+                    window_still.pixels[512 * 288 - 1] == window_pixels.back(),
+                "window screenshot preserves full source corners and sRGB colors");
         options.crop_left = options.crop_right = options.crop_top = options.crop_bottom = 0;
         options.edge_reserve[0] = {true, 2, 20, 5, 5};
         options.edge_reserve[1] = {true, 20, 2, 5, 5};

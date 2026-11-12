@@ -358,7 +358,8 @@ struct PresetsDialog::Impl {
         if (!callbacks.builtin)
             return;
         callbacks.builtin(preset);
-        feedback(L"Built-in tuning applied. Source, eye, output and render settings are unchanged.");
+        if (preset != BuiltinPreset::dan_suzuki)
+            feedback(L"Camera tuning applied.");
     }
     void create() {
         WNDCLASSW cls{};
@@ -377,16 +378,12 @@ struct PresetsDialog::Impl {
         if (!window)
             return;
         theme->titlebar(window);
-        child(L"STATIC", L"BUILT-IN STARTING POINTS", 0, 24, 20, 696, 26, 0, true);
-        child(L"STATIC", L"Apply a tuning starting point, then adjust it to suit your stream.", 0, 24, 55,
-              696, 24);
-        child(L"BUTTON", L"Responsive", BS_PUSHBUTTON, 24, 94, 216, 38, natural_id);
-        child(L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 264, 94, 216, 38, comfort_id);
-        child(L"BUTTON", L"Strong Leveling", BS_PUSHBUTTON, 504, 94, 216, 38, strong_id);
-        child(L"STATIC", L"Light smoothing and leveling.\r\nResponsive head turns.", 0, 24, 142, 216, 48);
-        child(L"STATIC", L"Balanced smoothing.\r\nA steady spectator view.", 0, 264, 142, 216, 48);
-        child(L"STATIC", L"Stronger horizon correction.\r\nSteadier near-level horizon.", 0, 504, 142, 216,
-              48);
+        child(L"STATIC", L"Factory presets", 0, 24, 22, 696, 30, 0, true);
+        child(L"BUTTON", L"Dan Suzuki", BS_PUSHBUTTON, 24, 73, 160, 39, dan_id);
+        child(L"BUTTON", L"Responsive", BS_PUSHBUTTON, 202, 73, 160, 39, natural_id);
+        child(L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 380, 73, 160, 39, comfort_id);
+        child(L"BUTTON", L"Strong leveling", BS_PUSHBUTTON, 558, 73, 162, 39, strong_id);
+        child(L"STATIC", L"Dan Suzuki includes the saved camera, framing and 4K output settings.", 0, 24, 137, 696, 48);
         child(L"STATIC", L"YOUR COMPLETE PRESETS", 0, 24, 220, 696, 26, 0, true);
         child(L"STATIC",
               L"Save all settings, including source, output, eye profiles and extra render area.\r\n"
@@ -455,6 +452,9 @@ struct PresetsDialog::Impl {
                 return 0;
             case delete_id:
                 self->erase();
+                return 0;
+            case dan_id:
+                self->builtin(BuiltinPreset::dan_suzuki);
                 return 0;
             case natural_id:
                 self->builtin(BuiltinPreset::natural);

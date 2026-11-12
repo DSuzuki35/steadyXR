@@ -3,15 +3,44 @@
 #include <commctrl.h>
 #include <cwchar>
 #include <dwmapi.h>
+#include <initializer_list>
 #include <uxtheme.h>
+#if __has_include("steadyxr_version.h")
+#include "steadyxr_version.h"
+#endif
 
 namespace vrst::preview {
 namespace {
 constexpr UINT reveal_control_message = WM_APP + 0x530;
-constexpr COLORREF bg = RGB(15, 15, 18), panel = RGB(26, 27, 31), field = RGB(37, 38, 44),
-                   border = RGB(50, 52, 60), text = RGB(244, 244, 246), muted = RGB(157, 160, 170),
-                   accent = RGB(112, 89, 221), accent_text = RGB(167, 155, 240),
-                   disabled = RGB(112, 114, 124);
+constexpr COLORREF bg = RGB(18, 20, 23), panel = RGB(29, 31, 35), field = RGB(42, 45, 50),
+                   border = RGB(64, 68, 75), text = RGB(244, 246, 248), muted = RGB(170, 176, 185),
+                   accent = RGB(49, 108, 207), accent_text = RGB(182, 211, 255),
+                   disabled = RGB(123, 128, 136);
+constexpr COLORREF chrome = RGB(21, 21, 23), canvas = RGB(28, 28, 31), card = RGB(36, 36, 40),
+                   rail = RGB(25, 25, 28), hairline = RGB(53, 53, 60), blue = RGB(94, 158, 255),
+                   active_nav = RGB(34, 49, 71);
+enum class ShellZone : unsigned { none, chrome, canvas, card, rail };
+constexpr COLORREF zone_colors[]{chrome, canvas, card, rail};
+ShellZone zone_at(RECT child) {
+    if (child.top < 64)
+        return ShellZone::chrome;
+    if (child.left < 208)
+        return ShellZone::rail;
+    if (child.top >= 628)
+        return ShellZone::chrome;
+    if (child.top < 590 && (child.left >= 844 || child.top >= 196))
+        return ShellZone::card;
+    return ShellZone::canvas;
+}
+unsigned zone_of(HWND child) {
+    return unsigned(reinterpret_cast<UINT_PTR>(GetPropW(child, L"SteadyXRShellZone")));
+}
+COLORREF control_background(HWND child) {
+    const auto zone = zone_of(child);
+    if (zone)
+        return zone_colors[zone - 1];
+    return GetPropW(child, L"SteadyXRSurface") ? bg : panel;
+}
 void fill(HDC dc, RECT r, COLORREF color) {
     SetDCBrushColor(dc, color);
     FillRect(dc, &r, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
@@ -29,26 +58,91 @@ void rounded(HDC dc, RECT r, COLORREF color, COLORREF edge, int radius = 12) {
     SelectObject(dc, pen);
     SelectObject(dc, brush);
 }
-void label(HDC dc, HWND window, RECT r, COLORREF color, UINT flags) {
+void sidebar_icon(HDC dc, UINT id, int x, int y, UINT dpi, COLORREF color) {
+    const int saved = SaveDC(dc);
+    // Use the same child-local coordinates as the text. Native WM_PRINT may
+    // combine a child offset with its own window origin and clipping region.
+    const auto sx = [=](LONG v) { return x + MulDiv(v, dpi, 96); };
+    const auto sy = [=](LONG v) { return y + MulDiv(v, dpi, 96); };
+    auto pen = CreatePen(PS_SOLID, MulDiv(2, dpi, 96), color);
+    SelectObject(dc, pen);
+    SelectObject(dc, GetStockObject(NULL_BRUSH));
+    const auto stroke = [&](std::initializer_list<POINT> path) {
+        const auto *first = path.begin();
+        MoveToEx(dc, sx(first->x), sy(first->y), nullptr);
+        for (auto point = first + 1; point != path.end(); ++point)
+            LineTo(dc, sx(point->x), sy(point->y));
+    };
+    const auto frame = [&](int left, int top, int right, int bottom, int radius) {
+        const int corner = MulDiv(radius, dpi, 96);
+        RoundRect(dc, sx(left), sy(top), sx(right), sy(bottom), corner, corner);
+    };
+    const auto circle = [&](int left, int top, int right, int bottom) {
+        Ellipse(dc, sx(left), sy(top), sx(right), sy(bottom));
+    };
+    switch (id) {
+    case 1500: // Stream output
+        frame(2, 3, 21, 16, 3);
+        stroke({{11, 16}, {11, 20}});
+        stroke({{6, 20}, {17, 20}});
+        break;
+    case 1501: // Camera
+        stroke({{2, 7}, {6, 7}, {8, 4}, {14, 4}, {16, 7}, {20, 7}, {20, 19}, {2, 19}, {2, 7}});
+        circle(7, 9, 15, 17);
+        break;
+    case 1502: // Framing
+        stroke({{5, 2}, {5, 17}, {21, 17}});
+        stroke({{2, 5}, {17, 5}, {17, 21}});
+        break;
+    case 1503: // Settings
+        stroke({{2, 6}, {8, 6}});
+        stroke({{13, 6}, {21, 6}});
+        stroke({{2, 15}, {13, 15}});
+        stroke({{18, 15}, {21, 15}});
+        circle(7, 3, 14, 10);
+        circle(12, 12, 19, 19);
+        break;
+    case 135: // Next preset
+        stroke({{3, 8}, {11, 4}, {20, 8}, {11, 12}, {3, 8}});
+        stroke({{3, 12}, {11, 16}, {20, 12}});
+        stroke({{3, 16}, {11, 20}, {20, 16}});
+        break;
+    case 148: // Coffee
+        frame(2, 7, 16, 18, 4);
+        stroke({{16, 8}, {19, 8}, {20, 10}, {20, 13}, {18, 15}, {16, 15}});
+        stroke({{2, 20}, {18, 20}});
+        stroke({{7, 2}, {7, 5}});
+        stroke({{12, 2}, {12, 5}});
+        break;
+    case 149: // Affiliate links
+        stroke({{12, 4}, {19, 4}, {19, 11}});
+        stroke({{19, 4}, {9, 14}});
+        stroke({{9, 7}, {4, 7}, {4, 19}, {16, 19}, {16, 14}});
+        break;
+    }
+    RestoreDC(dc, saved);
+    DeleteObject(pen);
+}
+void label(HDC dc, HWND window, RECT r, COLORREF color, UINT flags, HFONT custom_font = nullptr) {
     wchar_t value[1024]{};
     GetWindowTextW(window, value, 1024);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, color);
-    auto previous = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0)));
+    auto previous = SelectObject(
+        dc, custom_font ? custom_font : reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0)));
     DrawTextW(dc, value, -1, &r, flags | DT_NOPREFIX);
     SelectObject(dc, previous);
 }
 void checkbox(HDC dc, HWND window) {
     RECT r{};
     GetClientRect(window, &r);
-    fill(dc, r, GetPropW(window, L"SteadyXRSurface") ? bg : panel);
+    fill(dc, r, control_background(window));
     const auto dpi = UINT(reinterpret_cast<UINT_PTR>(GetPropW(GetParent(window), L"SteadyXRDpi")));
     const auto px = [dpi](int value) { return MulDiv(value, dpi ? dpi : 96, 96); };
     RECT box{px(2), (r.bottom - px(18)) / 2, px(20), (r.bottom + px(18)) / 2};
     const bool enabled = IsWindowEnabled(window),
                checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    fill(dc, box, checked && enabled ? accent : field);
-    outline(dc, box, enabled ? accent : border);
+    rounded(dc, box, checked && enabled ? accent : field, checked && enabled ? blue : border, px(6));
     if (checked) {
         auto pen = CreatePen(PS_SOLID, px(2), enabled ? text : disabled);
         auto old = SelectObject(dc, pen);
@@ -132,24 +226,33 @@ LRESULT CALLBACK combo_proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_
         RECT r{};
         GetClientRect(window, &r);
         const bool enabled = IsWindowEnabled(window);
+        const auto dpi = UINT(reinterpret_cast<UINT_PTR>(GetPropW(GetParent(window), L"SteadyXRDpi")));
+        const auto px = [dpi](int value) { return MulDiv(value, dpi ? dpi : 96, 96); };
+        const int saved = SaveDC(dc);
+        COMBOBOXINFO info{sizeof(info)};
+        if (editable && GetComboBoxInfo(window, &info) && info.hwndItem) {
+            RECT edit{};
+            GetWindowRect(info.hwndItem, &edit);
+            MapWindowPoints(nullptr, window, reinterpret_cast<POINT *>(&edit), 2);
+            ExcludeClipRect(dc, edit.left, edit.top, edit.right, edit.bottom);
+        }
         fill(dc, r, field);
         if (!editable) {
             RECT content = r;
-            content.left += 10;
-            content.right -= 30;
+            content.left += px(10);
+            content.right -= px(30);
             label(dc, window, content, enabled ? text : disabled,
                   DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         }
-        RECT arrow{r.right - 26, 1, r.right - 1, r.bottom - 1};
-        fill(dc, arrow, field);
-        outline(dc, r, GetFocus() == window ? accent : border);
-        auto pen = CreatePen(PS_SOLID, 2, enabled ? muted : disabled);
+        outline(dc, r, GetFocus() == window || IsChild(window, GetFocus()) ? accent : border);
+        auto pen = CreatePen(PS_SOLID, px(2), enabled ? muted : disabled);
         auto old = SelectObject(dc, pen);
-        MoveToEx(dc, arrow.left + 8, r.bottom / 2 - 2, nullptr);
-        LineTo(dc, arrow.left + 12, r.bottom / 2 + 2);
-        LineTo(dc, arrow.left + 16, r.bottom / 2 - 2);
+        MoveToEx(dc, r.right - px(18), r.bottom / 2 - px(2), nullptr);
+        LineTo(dc, r.right - px(14), r.bottom / 2 + px(2));
+        LineTo(dc, r.right - px(10), r.bottom / 2 - px(2));
         SelectObject(dc, old);
         DeleteObject(pen);
+        RestoreDC(dc, saved);
         if (message == WM_PAINT)
             EndPaint(window, &ps);
         return 0;
@@ -176,11 +279,15 @@ void Theme::initialize() {
                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     };
     body = font(16, FW_NORMAL);
-    title_ = font(27, FW_SEMIBOLD);
+    title_ = font(32, FW_SEMIBOLD);
     heading_ = font(20, FW_SEMIBOLD);
+    strong_ = font(16, FW_SEMIBOLD);
+    caption_ = font(12, FW_SEMIBOLD);
     background_ = CreateSolidBrush(bg);
     panel_ = CreateSolidBrush(panel);
     field_ = CreateSolidBrush(field);
+    for (size_t i = 0; i < shell_brushes_.size(); ++i)
+        shell_brushes_[i] = CreateSolidBrush(zone_colors[i]);
     icon = static_cast<HICON>(
         LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101), IMAGE_ICON, 64, 64, 0));
     small_icon = static_cast<HICON>(
@@ -190,11 +297,16 @@ Theme::~Theme() {
     for (const auto &fonts : fonts_) {
         DeleteObject(fonts.body);
         DeleteObject(fonts.heading);
+        DeleteObject(fonts.title);
+        DeleteObject(fonts.strong);
     }
-    for (auto object : {body, title_, heading_})
+    for (auto object : {body, title_, heading_, strong_, caption_})
         if (object)
             DeleteObject(object);
     for (auto brush : {background_, panel_, field_})
+        if (brush)
+            DeleteObject(brush);
+    for (auto brush : shell_brushes_)
         if (brush)
             DeleteObject(brush);
     if (icon)
@@ -252,9 +364,18 @@ void Theme::scale_window(HWND window, UINT dpi) {
             GetWindowRect(child, &bounds);
             wchar_t kind[32]{};
             GetClassNameW(child, kind, 32);
-            if (!std::wcscmp(kind, L"COMBOBOX"))
-                SendMessageW(child, CB_GETDROPPEDCONTROLRECT, 0, reinterpret_cast<LPARAM>(&bounds));
+            if (!_wcsicmp(kind, L"COMBOBOX") && (GetWindowLongPtrW(child, GWL_STYLE) & 3) != CBS_SIMPLE) {
+                // Windows sizes a combo with its dropdown included, but GetWindowRect
+                // describes only the closed field. Keep its real anchor and width.
+                RECT dropped{};
+                SendMessageW(child, CB_GETDROPPEDCONTROLRECT, 0, reinterpret_cast<LPARAM>(&dropped));
+                const auto row = SendMessageW(child, CB_GETITEMHEIGHT, 0, 0);
+                const LONG minimum = bounds.bottom - bounds.top + 6 * LONG(std::max<LRESULT>(1, row)) + 2;
+                bounds.bottom = bounds.top + std::max(minimum, dropped.bottom - dropped.top);
+            }
             MapWindowPoints(nullptr, window, reinterpret_cast<POINT *>(&bounds), 2);
+            if (GetPropW(window, L"SteadyXRMainShell"))
+                SetPropW(child, L"SteadyXRShellZone", reinterpret_cast<HANDLE>(UINT_PTR(zone_at(bounds))));
             entry.children.push_back({child, bounds});
         }
         layouts_.push_back(std::move(entry));
@@ -263,24 +384,29 @@ void Theme::scale_window(HWND window, UINT dpi) {
     auto fonts =
         std::find_if(fonts_.begin(), fonts_.end(), [dpi](const Fonts &entry) { return entry.dpi == dpi; });
     if (fonts == fonts_.end()) {
-        LOGFONTW body_font{}, heading_font{};
-        GetObjectW(body, sizeof(body_font), &body_font);
-        GetObjectW(heading_, sizeof(heading_font), &heading_font);
-        body_font.lfHeight = MulDiv(body_font.lfHeight, dpi, 96);
-        heading_font.lfHeight = MulDiv(heading_font.lfHeight, dpi, 96);
-        fonts_.push_back({dpi, CreateFontIndirectW(&body_font), CreateFontIndirectW(&heading_font)});
+        const auto scaled_font = [dpi](HFONT original) {
+            LOGFONTW description{};
+            GetObjectW(original, sizeof(description), &description);
+            description.lfHeight = MulDiv(description.lfHeight, dpi, 96);
+            return CreateFontIndirectW(&description);
+        };
+        fonts_.push_back(
+            {dpi, scaled_font(body), scaled_font(heading_), scaled_font(title_), scaled_font(strong_)});
         fonts = std::prev(fonts_.end());
     }
     SetPropW(window, L"SteadyXRDpi", reinterpret_cast<HANDLE>(UINT_PTR(dpi)));
     for (const auto &child : layout->children) {
         const auto &r = child.bounds;
+        if (GetPropW(child.window, L"SteadyXRSidebar") || GetPropW(child.window, L"SteadyXRPrimary") ||
+            GetDlgCtrlID(child.window) == 103)
+            SetPropW(child.window, L"SteadyXRStrongFont", fonts->strong);
+        const auto font = GetPropW(child.window, L"SteadyXRPageTitle") ? fonts->title
+                          : GetPropW(child.window, L"HorizonHeading")  ? fonts->heading
+                                                                       : fonts->body;
+        SendMessageW(child.window, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SetWindowPos(child.window, nullptr, MulDiv(r.left, dpi, 96), MulDiv(r.top, dpi, 96),
                      MulDiv(r.right - r.left, dpi, 96), MulDiv(r.bottom - r.top, dpi, 96),
                      SWP_NOZORDER | SWP_NOACTIVATE);
-        SendMessageW(child.window, WM_SETFONT,
-                     reinterpret_cast<WPARAM>(GetPropW(child.window, L"HorizonHeading") ? fonts->heading
-                                                                                        : fonts->body),
-                     TRUE);
     }
     RECT outer{0, 0, MulDiv(layout->width, dpi, 96), MulDiv(layout->height, dpi, 96)};
     // Nonclient metrics follow the actual monitor even when a diagnostic requests a different scale.
@@ -490,12 +616,16 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         auto dc = reinterpret_cast<HDC>(w);
         const auto child = reinterpret_cast<HWND>(l);
         const bool input = message == WM_CTLCOLOREDIT || message == WM_CTLCOLORLISTBOX;
+        const auto zone = zone_of(child);
         const bool surface = GetPropW(child, L"SteadyXRSurface") != nullptr;
         SetTextColor(dc, !IsWindowEnabled(child)             ? disabled
                          : GetPropW(child, L"SteadyXRMuted") ? muted
                                                              : text);
-        SetBkColor(dc, input ? field : surface ? bg : panel);
-        result = reinterpret_cast<LRESULT>(input ? field_ : surface ? background_ : panel_);
+        SetBkColor(dc, input ? field : control_background(child));
+        result = reinterpret_cast<LRESULT>(input     ? field_
+                                           : zone    ? shell_brushes_[zone - 1]
+                                           : surface ? background_
+                                                     : panel_);
         return true;
     }
     if (message == WM_ERASEBKGND) {
@@ -527,40 +657,43 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
             OffsetViewportOrgEx(dc, -GetScrollPos(window, SB_HORZ), -GetScrollPos(window, SB_VERT), nullptr);
         }
         fill(dc, r, bg);
-        rounded(dc, shell ? RECT{216, 154, r.right - 24, 584} : RECT{24, 164, r.right - 24, 550}, panel,
-                border, 18);
         if (shell) {
-            fill(dc, {0, 0, 192, r.bottom}, panel);
-            fill(dc, {191, 0, 192, r.bottom}, border);
-            DrawIconEx(dc, 20, 26, small_icon, 28, 28, 0, nullptr, DI_NORMAL);
-            auto old = SelectObject(dc, heading_);
+            fill(dc, r, canvas);
+            fill(dc, {0, 0, r.right, 64}, chrome);
+            fill(dc, {0, 64, r.right, 65}, hairline);
+            fill(dc, {0, 65, 208, r.bottom}, rail);
+            fill(dc, {207, 65, 208, r.bottom}, hairline);
+            fill(dc, {208, 628, r.right, r.bottom}, chrome);
+            fill(dc, {208, 628, r.right, 629}, hairline);
+
+            rounded(dc, {240, 196, 820, 590}, card, hairline, 20);
+            rounded(dc, {844, 104, 1208, 404}, card, hairline, 20);
+            rounded(dc, {844, 422, 1208, 590}, card, hairline, 20);
+
+            DrawIconEx(dc, 23, 16, icon, 32, 32, 0, nullptr, DI_NORMAL);
             SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, text);
-            RECT title{58, 29, 186, 57};
-            DrawTextW(dc, L"SteadyXR", -1, &title, DT_SINGLELINE);
-            SelectObject(dc, body);
-            SetTextColor(dc, muted);
-            RECT version{22, 66, 174, 92};
-            DrawTextW(dc, L"0.16.0", -1, &version, DT_SINGLELINE);
-            RECT footer{22, r.bottom - 66, 174, r.bottom - 16};
-            DrawTextW(dc, L"Your view.\nSteady by design.", -1, &footer, DT_WORDBREAK);
-            SelectObject(dc, old);
-            RestoreDC(dc, saved);
-            if (message == WM_PAINT)
-                EndPaint(window, &ps);
-            return true;
+            const auto caption = [&](const wchar_t *value, RECT bounds, HFONT font, COLORREF color,
+                                     UINT align = DT_LEFT) {
+                SelectObject(dc, font);
+                SetTextColor(dc, color);
+                DrawTextW(dc, value, -1, &bounds, align | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            };
+            caption(L"SteadyXR", {65, 0, 191, 64}, heading_, text);
+            fill(dc, {207, 20, 208, 44}, hairline);
+            rounded(dc, {238, 28, 246, 36}, blue, blue, 8);
+            caption(L"Stream Output", {257, 0, 510, 64}, strong_, text);
+#ifdef STEADYXR_VERSION_STRING
+            caption(L"v" STEADYXR_VERSION_STRING, {r.right - 112, 0, r.right - 24, 64}, body, muted,
+                    DT_RIGHT);
+#endif
+            SetTextCharacterExtra(dc, 1);
+            caption(L"WORKSPACE", {28, 86, 192, 113}, caption_, muted);
+            caption(L"PROFILE", {28, 386, 192, 413}, caption_, muted);
+            caption(L"SUPPORT", {28, 496, 192, 523}, caption_, muted);
+            SetTextCharacterExtra(dc, 0);
+        } else {
+            rounded(dc, {12, 12, r.right - 12, r.bottom - 12}, panel, border, 10);
         }
-        DrawIconEx(dc, 24, 18, icon, 52, 52, 0, nullptr, DI_NORMAL);
-        auto old = SelectObject(dc, title_);
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, text);
-        RECT title{92, 16, 580, 50};
-        DrawTextW(dc, L"SteadyXR", -1, &title, DT_SINGLELINE);
-        SelectObject(dc, body);
-        SetTextColor(dc, muted);
-        RECT tagline{94, 52, 590, 78};
-        DrawTextW(dc, L"A steady view. Every corner.", -1, &tagline, DT_SINGLELINE);
-        SelectObject(dc, old);
         RestoreDC(dc, saved);
         if (message == WM_PAINT)
             EndPaint(window, &ps);
@@ -575,36 +708,45 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
         const bool tab = GetPropW(item.hwndItem, L"SteadyXRTab") != nullptr;
         const bool selected = tab && SendMessageW(item.hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED;
         const bool hover = enabled && GetPropW(item.hwndItem, L"SteadyXRHover");
-        const bool surface = GetPropW(item.hwndItem, L"SteadyXRSurface") != nullptr;
         const bool sidebar = GetPropW(item.hwndItem, L"SteadyXRSidebar") != nullptr;
-        auto color = primary && enabled ? accent
-                     : selected         ? RGB(34, 30, 56)
-                     : tab              ? (sidebar ? panel : bg)
-                                        : field;
-        if (hover && !primary)
-            color = RGB(48, 43, 67);
-        if (item.itemState & ODS_SELECTED)
-            color = primary ? RGB(91, 70, 191) : border;
-        fill(item.hDC, item.rcItem, sidebar ? panel : surface ? bg : panel);
-        rounded(item.hDC, item.rcItem, color,
-                (primary && enabled) || selected ? accent
-                : tab && !hover                  ? (sidebar ? panel : bg)
-                                                 : border);
-        auto label_rect = item.rcItem;
-        if (sidebar)
-            label_rect.left += 18;
-        label(item.hDC, item.hwndItem, label_rect,
-              !enabled        ? disabled
-              : primary       ? text
-              : selected      ? accent_text
-              : tab && !hover ? muted
-                              : text,
-              DT_SINGLELINE | DT_VCENTER | (sidebar ? DT_LEFT : DT_CENTER));
-        if ((item.itemState & ODS_FOCUS) && !(item.itemState & ODS_NOFOCUSRECT)) {
-            auto focus = item.rcItem;
-            InflateRect(&focus, -4, -4);
-            DrawFocusRect(item.hDC, &focus);
+        const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+        const auto background = control_background(item.hwndItem);
+        const auto dpi_value = UINT(reinterpret_cast<UINT_PTR>(GetPropW(window, L"SteadyXRDpi")));
+        const UINT dpi = dpi_value ? dpi_value : 96;
+        const auto px = [dpi](int v) { return MulDiv(v, dpi, 96); };
+        const bool focus = (item.itemState & ODS_FOCUS) && !(item.itemState & ODS_NOFOCUSRECT);
+        COLORREF color = field, edge = RGB(70, 72, 80);
+        if (primary && enabled) {
+            color = pressed ? RGB(36, 83, 161) : hover ? RGB(61, 124, 222) : accent;
+            edge = RGB(76, 133, 224);
+        } else if (sidebar) {
+            color = selected ? active_nav : hover || pressed ? RGB(43, 44, 49) : background;
+            edge = selected ? RGB(53, 74, 105) : color;
+        } else if (pressed || hover) {
+            color = pressed ? RGB(47, 49, 54) : RGB(53, 56, 63);
         }
+        fill(item.hDC, item.rcItem, background);
+        rounded(item.hDC, item.rcItem, color, focus ? blue : edge, px(sidebar ? 14 : 12));
+        auto label_rect = item.rcItem;
+        if (sidebar) {
+            if (selected) {
+                RECT marker{px(1), item.rcItem.bottom / 2 - px(10), px(4), item.rcItem.bottom / 2 + px(10)};
+                rounded(item.hDC, marker, blue, blue, px(3));
+            }
+            sidebar_icon(item.hDC, item.CtlID, item.rcItem.left + px(14),
+                         (item.rcItem.top + item.rcItem.bottom - px(22)) / 2, dpi, selected ? blue : muted);
+            label_rect.left += px(46);
+            label_rect.right -= px(4);
+        }
+        const auto bold = (selected || primary)
+                              ? static_cast<HFONT>(GetPropW(item.hwndItem, L"SteadyXRStrongFont"))
+                              : nullptr;
+        label(item.hDC, item.hwndItem, label_rect,
+              !enabled            ? disabled
+              : selected          ? accent_text
+              : sidebar && !hover ? muted
+                                  : text,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | (sidebar ? DT_LEFT : DT_CENTER), bold);
         result = TRUE;
         return true;
     }
@@ -622,7 +764,8 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
             RECT client{}, channel{}, thumb{};
             GetClientRect(header->hwndFrom, &client);
             IntersectClipRect(draw.hdc, client.left, client.top, client.right, client.bottom);
-            fill(draw.hdc, client, panel);
+            const bool shell_slider = zone_of(header->hwndFrom) != 0;
+            fill(draw.hdc, client, shell_slider ? control_background(header->hwndFrom) : panel);
             SendMessageW(header->hwndFrom, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
             SendMessageW(header->hwndFrom, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
             const bool enabled = IsWindowEnabled(header->hwndFrom);
@@ -638,10 +781,19 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
                                                     (maximum - minimum));
                 fill(draw.hdc, channel, enabled ? accent : disabled);
             }
-            fill(draw.hdc, thumb, enabled ? accent : disabled);
-            if (GetFocus() == header->hwndFrom &&
-                !(SendMessageW(header->hwndFrom, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS))
+            const bool focused = GetFocus() == header->hwndFrom &&
+                                 !(SendMessageW(header->hwndFrom, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
+            const int size = std::min(thumb.right - thumb.left, thumb.bottom - thumb.top);
+            if (shell_slider) {
+                const int left = (thumb.left + thumb.right - size) / 2;
+                thumb = {left, mid - size / 2, left + size, mid - size / 2 + size};
+            }
+            const auto thumb_color = !enabled ? disabled : shell_slider ? blue : accent;
+            rounded(draw.hdc, thumb, thumb_color, focused ? text : thumb_color, size);
+            if (focused) {
+                InflateRect(&client, -1, -1);
                 DrawFocusRect(draw.hdc, &client);
+            }
             RestoreDC(draw.hdc, saved);
             result = CDRF_SKIPDEFAULT;
         } else

@@ -19,8 +19,8 @@ void valid_crop(FramingRegion r, double source, double output) {
     check(close((r.right - r.left) * source / (r.bottom - r.top), output),
           "crop resizing must preserve the optical output aspect");
     const double max_width = std::min(1., output / source);
-    check(r.right - r.left >= max_width * .6 - 1e-9,
-          "crop resize must respect the supported forty-percent zoom limit");
+    check(r.right - r.left >= max_width * framing_min_scale - 1e-9,
+          "crop resize must respect the supported zoom limit");
 }
 }
 int main() {
@@ -50,7 +50,7 @@ int main() {
               "edge resizing at a border must retain its opposite-edge anchor");
         check(same(resize_crop(square, CropHandle::top_left, .1, .1, 1, 1), {.2, .9, .2, .9}),
               "corner resizing must anchor the opposite corner");
-        check(same(resize_crop(square, CropHandle::top_left, 10, 10, 1, 1), {.3, .9, .3, .9}),
+        check(same(resize_crop(square, CropHandle::top_left, 10, 10, 1, 1), {.87, .9, .87, .9}),
               "corner resizing must stop at supported zoom without crossing its anchor");
         for (double source : {.5, 1., 2.4}) {
             for (double aspect : {.25, 1., 16. / 9., 4.}) {
@@ -58,7 +58,7 @@ int main() {
                 options.aspect = aspect;
                 options.pitch_lock = 37;
                 options.edge_reserve[1] = {true, 2, 20, 5, 7};
-                for (double crop : {0., 7.8, 20., 40.}) {
+                for (double crop : {0., 7.8, 20., 40., 45.8368, 80., 97.}) {
                     for (double x : {-100., -23., 0., 81., 100.}) {
                         options.crop = crop;
                         options.horizontal_offset = x;
@@ -91,6 +91,13 @@ int main() {
         options.horizontal_offset = 22;
         options.vertical_offset = -15;
         const auto advanced = crop_from_options(2, options);
+        auto migrated = options;
+        migrated.edge_reserve[1] = {true, 1, 2, 4, 8};
+        check(migrate_legacy_framing(migrated, 2, 0) &&
+                  same(crop_from_options(2, migrated), advanced) &&
+                  !migrated.edge_reserve[0].enabled && !migrated.edge_reserve[1].enabled &&
+                  !migrate_legacy_framing(migrated, 2, 0),
+              "legacy migration preserves the active eye and clears obsolete controls once");
         auto converted = options;
         crop_to_options(advanced, 2, converted);
         check(same(crop_from_options(2, converted), advanced),
@@ -98,6 +105,27 @@ int main() {
         check(converted.crop_left == 0 && converted.crop_right == 0 &&
                   converted.crop_top == 0 && converted.crop_bottom == 0 && !converted.edge_reserve[0].enabled,
               "visual crop editing must have one unambiguous canonical framing representation");
+        Options dan;
+        dan.crop = 19.4;
+        dan.crop_right = 32.8;
+        dan.horizontal_offset = -11.7;
+        dan.vertical_offset = -35;
+        const auto original = crop_from_options(1.035, dan);
+        check(migrate_legacy_framing(dan, 1.035, 0) && close(dan.crop, 45.8368) &&
+              same(original, crop_from_options(1.035, dan)),
+              "Dan's 0.16 framing must migrate without enlarging his selected source rectangle");
+        Frame input{};
+        input.session = input.sequence = input.display_time = input.view_count = 1;
+        input.views[0].width = input.views[0].rect_width = 1000;
+        input.views[0].height = input.views[0].rect_height = 1000;
+        input.views[0].fov[0] = -1.035f;
+        input.views[0].fov[1] = 1.035f;
+        FrameStabilizer compositor;
+        const auto composition = compositor.update(input, dan);
+        const auto tl = map_uv(composition.warp, 0., 0.), br = map_uv(composition.warp, 1., 1.);
+        check(composition.valid && same(crop_from_options(input.views[0].fov[1], dan),
+                                        {tl[0], br[0], tl[1], br[1]}),
+              "screenshot selection and live output rays share the migrated rectangle");
         for (double bad : {double(NAN), double(INFINITY), -100.}) {
             const auto r = constrain_crop({bad, bad, bad, bad}, bad, bad);
             valid_crop(r, 1, 16. / 9.);

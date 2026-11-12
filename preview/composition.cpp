@@ -63,6 +63,13 @@ FramingRegion framing_region(double source_aspect, const Options &options, EdgeR
         w = h * aspect / source_aspect;
     else
         h = w * source_aspect / aspect;
+    // The shared pose/image engines reserve at most 40%. Apply the remaining
+    // zoom in the actual output projection, keeping their legacy limits intact.
+    if (!reserve.enabled && std::isfinite(options.crop) && options.crop > 40.) {
+        const double scale = (100. - std::min(options.crop, framing_crop_max)) / 60.;
+        w *= scale;
+        h *= scale;
+    }
     const double cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
     FramingRegion fitted{cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2};
     if (reserve.enabled) {
@@ -198,7 +205,7 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
         spectator_.suspend();
         spectator_active_ = false;
     }
-    const bool final_framing = director_framing || camera_enabled || pitch_on || settings.edge_reserve.enabled ||
+    const bool final_framing = options.crop > 40. || director_framing || camera_enabled || pitch_on || settings.edge_reserve.enabled ||
                                (std::isfinite(options.horizontal_offset) && options.horizontal_offset != 0) ||
                                (std::isfinite(options.vertical_offset) && options.vertical_offset != 0);
     result.warp = make_warp(frame.views[0].rect_width, frame.views[0].rect_height, settings,

@@ -9,6 +9,9 @@ struct ID3D11Device;
 struct ID3D11Texture2D;
 
 namespace vrst::preview {
+// A legacy eye can keep 30% after asymmetric reserve and 10% after trims.
+inline constexpr double framing_crop_max = 97.;
+inline constexpr double framing_min_scale = 1. - framing_crop_max / 100.;
 struct Options {
     SpectatorSettings spectator{};
     VisualSettings visual{};
@@ -36,6 +39,13 @@ void apply_stream_comfort(Options &);
 struct FramingRegion {
     double left{}, right{1}, top{}, bottom{1};
 };
+struct FramingStill {
+    unsigned width{}, height{}, eye{}, views{};
+    bool window_source{};
+    double source_aspect{}; // Optical aspect for OpenXR, pixel aspect for window capture.
+    std::unique_ptr<std::uint32_t[]> pixels; // Top-down, sRGB BGRA for a Windows DIB.
+};
+enum class StillStatus { pending, ready, failed };
 FramingRegion framing_region(double source_aspect, const Options &, EdgeReserve reserve = {});
 struct Composition {
     bool valid{};
@@ -98,8 +108,12 @@ class Renderer {
     bool consume_replay(const Frame &, ID3D11Texture2D *const textures[2], double speed_kph = -1);
     ID3D11Device *device() const;
     bool consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, const Options &);
+    double source_aspect() const;
+    unsigned source_eye() const;
+    bool begin_framing_still(); // Queues one independent full-eye pass from the latest source.
+    StillStatus poll_framing_still(FramingStill &); // Never waits for a GPU fence.
     void source_changed();
-    bool demo(double seconds, bool quad = true);
+    bool demo(double seconds, bool quad = true, unsigned eye = 0);
     bool draw(const Options &, bool present = true, const wchar_t *waiting_text = nullptr);
     void reset();
     void reset_horizon();

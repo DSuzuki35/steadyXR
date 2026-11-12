@@ -22,15 +22,15 @@ inline double finite_delta(double value) { return std::isfinite(value) ? std::cl
 // All rectangles/deltas are full-source UVs, not coordinates within the reserved
 // image. source_aspect is optical tangent width/height, as used by composition:
 // (fov.right-fov.left)/(fov.up-fov.down), which can differ from texture aspect.
-// The editable range is the largest aspect-fit rectangle down to 60% of its
-// width/height (Options::crop 0..40). This is framing, before pose correction.
+// The editable range includes every previously valid combination of reserve
+// and trims. This is framing, before pose correction.
 inline FramingRegion constrain_crop(FramingRegion r, double source_aspect, double output_aspect) {
     const double ratio = crop_detail::output_aspect(output_aspect) / crop_detail::source_aspect(source_aspect);
     const double max_width = std::min(1., ratio);
     if (!crop_detail::valid(r))
         r = {};
     const double width = std::clamp(std::min(r.right - r.left, (r.bottom - r.top) * ratio),
-                                    max_width * .6, max_width);
+                                    max_width * framing_min_scale, max_width);
     const double height = width / ratio;
     const double cx = std::clamp(r.left / 2 + r.right / 2, width / 2, 1 - width / 2);
     const double cy = std::clamp(r.top / 2 + r.bottom / 2, height / 2, 1 - height / 2);
@@ -53,8 +53,8 @@ inline FramingRegion crop_from_options(double source_aspect, const Options &opti
 // Convert a visual edit into one canonical framing representation: uniform
 // crop, zero edge trims, selected-eye reserve disabled, signed placement.
 // Existing asymmetric settings are readable above; an edit within the supported
-// zoom range preserves their visible rectangle. Tighter legacy rectangles clamp
-// to the supported range. Other-eye reserve and non-framing settings survive.
+// zoom range preserves their visible rectangle. Other-eye reserve and
+// non-framing settings survive.
 // Offsets are percent of the available travel from centered framing to that
 // full-source boundary: -100 touches left/top; +100 touches right/bottom.
 inline void crop_to_options(FramingRegion r, double source_aspect, Options &options, unsigned eye = 0) {
@@ -62,13 +62,24 @@ inline void crop_to_options(FramingRegion r, double source_aspect, Options &opti
     r = constrain_crop(r, source_aspect, options.aspect);
     const double max_width = std::min(1., options.aspect / crop_detail::source_aspect(source_aspect));
     const double width = r.right - r.left, height = r.bottom - r.top;
-    options.crop = std::clamp((1 - width / max_width) * 100, 0., 40.);
+    options.crop = std::clamp((1 - width / max_width) * 100, 0., framing_crop_max);
     options.crop_left = options.crop_right = options.crop_top = options.crop_bottom = 0;
     options.edge_reserve[std::min(eye, 1U)].enabled = false;
     options.horizontal_offset = width < 1 - 1e-12
                                     ? std::clamp((r.left + r.right - 1) / (1 - width) * 100, -100., 100.) : 0;
     options.vertical_offset = height < 1 - 1e-12
                                   ? std::clamp((r.top + r.bottom - 1) / (1 - height) * 100, -100., 100.) : 0;
+}
+
+// The new profile has one framing for both eyes. Match the selected eye at its
+// submitted FOV, or pass the last known source aspect when migrating offline.
+inline bool migrate_legacy_framing(Options &options, double source_aspect, unsigned eye) {
+    if (!options.edge_reserve[0].enabled && !options.edge_reserve[1].enabled &&
+        !options.crop_left && !options.crop_right && !options.crop_top && !options.crop_bottom)
+        return false;
+    crop_to_options(crop_from_options(source_aspect, options, eye), source_aspect, options, eye);
+    options.edge_reserve[0] = options.edge_reserve[1] = {};
+    return true;
 }
 
 inline FramingRegion move_crop(FramingRegion r, double dx, double dy) {
@@ -88,7 +99,7 @@ inline FramingRegion resize_crop(FramingRegion r, CropHandle handle, double dx, 
     dx = crop_detail::finite_delta(dx);
     dy = crop_detail::finite_delta(dy);
     const double ratio = crop_detail::output_aspect(output_aspect) / crop_detail::source_aspect(source_aspect);
-    const double min_width = std::min(1., ratio) * .6;
+    const double min_width = std::min(1., ratio) * framing_min_scale;
     const double cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
     double width = r.right - r.left, height = r.bottom - r.top;
     if (handle == CropHandle::left || handle == CropHandle::right) {

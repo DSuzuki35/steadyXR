@@ -62,7 +62,7 @@ bool write_edge_settings(const std::wstring &ini, const Options &options) {
 }
 
 struct AdvancedSettings::Impl {
-    HWND parent{}, window{}, profile{}, separate{}, edges[4]{}, labels[4]{}, vertical{}, vertical_label{},
+    HWND parent{}, window{}, profile{},
         render{}, symmetric{}, expansions[2]{}, expansion_labels[2]{}, explanation{}, stretch{}, stretch_label{};
     Theme *theme{};
     Options *options{};
@@ -92,14 +92,6 @@ struct AdvancedSettings::Impl {
     }
     void refresh_labels() {
         SetWindowTextW(stretch_label, (L"Edge stretch: " + decimal(options->mirror_stretch) + L" %").c_str());
-        const auto &reserve = options->edge_reserve[editing];
-        const double values[]{reserve.left, reserve.right, reserve.top, reserve.bottom};
-        const wchar_t *names[]{L"Left reserve", L"Right reserve", L"Top reserve", L"Bottom reserve"};
-        for (unsigned i = 0; i < 4; ++i) {
-            SetWindowTextW(labels[i], (std::wstring(names[i]) + L": " + decimal(values[i]) + L" %").c_str());
-            EnableWindow(edges[i], reserve.enabled);
-        }
-        SetWindowTextW(vertical_label, (L"Y offset: " + decimal(options->vertical_offset) + L" %").c_str());
         const double extra[]{pending.eyes[editing].left, pending.eyes[editing].right};
         for (unsigned i = 0; i < 2; ++i) {
             SetWindowTextW(expansion_labels[i],
@@ -110,12 +102,6 @@ struct AdvancedSettings::Impl {
     void load_controls() {
         SendMessageW(stretch, TBM_SETPOS, TRUE, tenths(options->mirror_stretch, 0, 100));
         SendMessageW(profile, CB_SETCURSEL, editing, 0);
-        const auto &reserve = options->edge_reserve[editing];
-        SendMessageW(separate, BM_SETCHECK, reserve.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
-        const double values[]{reserve.left, reserve.right, reserve.top, reserve.bottom};
-        for (unsigned i = 0; i < 4; ++i)
-            SendMessageW(edges[i], TBM_SETPOS, TRUE, tenths(values[i], 0, 35));
-        SendMessageW(vertical, TBM_SETPOS, TRUE, tenths(options->vertical_offset, -100, 100));
         SendMessageW(render, BM_SETCHECK, pending.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
         SendMessageW(symmetric, BM_SETCHECK, pending.symmetric ? BST_CHECKED : BST_UNCHECKED, 0);
         SendMessageW(expansions[0], TBM_SETPOS, TRUE, tenths(pending.eyes[editing].left, 0, 30));
@@ -128,11 +114,6 @@ struct AdvancedSettings::Impl {
     }
     void scroll() {
         options->mirror_stretch = SendMessageW(stretch, TBM_GETPOS, 0, 0) / 10.;
-        auto &reserve = options->edge_reserve[editing];
-        double *values[]{&reserve.left, &reserve.right, &reserve.top, &reserve.bottom};
-        for (unsigned i = 0; i < 4; ++i)
-            *values[i] = SendMessageW(edges[i], TBM_GETPOS, 0, 0) / 10.;
-        options->vertical_offset = SendMessageW(vertical, TBM_GETPOS, 0, 0) / 10.;
         pending.eyes[editing].left = SendMessageW(expansions[0], TBM_GETPOS, 0, 0) / 10.;
         pending.eyes[editing].right = SendMessageW(expansions[1], TBM_GETPOS, 0, 0) / 10.;
         synchronize_render();
@@ -146,7 +127,7 @@ struct AdvancedSettings::Impl {
         cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         cls.lpfnWndProc = proc;
         RegisterClassW(&cls);
-        RECT r{0, 0, 744, 754};
+        RECT r{0, 0, 744, 524};
         const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
         AdjustWindowRectEx(&r, style, FALSE, WS_EX_CONTROLPARENT);
         window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"SteadyXR — Render & edge settings",
@@ -155,50 +136,40 @@ struct AdvancedSettings::Impl {
         if (!window)
             return;
         theme->titlebar(window);
-        child(L"STATIC", L"FRAMING / EXTRA RENDER AREA", 0, 24, 20, 690, 26, 0, true);
+        child(L"STATIC", L"Render & edge settings", 0, 24, 20, 690, 26, 0, true);
         child(L"STATIC",
-              L"Adjust the stream view. The full captured image remains available for stabilization.", 0, 24,
+              L"Adjust mirrored edges and request extra image area from your OpenXR game.", 0, 24,
               53, 695, 24);
         child(L"STATIC", L"Editing eye profile", 0, 24, 93, 192, 26);
         profile = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 240, 87, 474, 140, eye_id);
         SendMessageW(profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Left eye — inner edge is right"));
         SendMessageW(profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Right eye — inner edge is left"));
-        separate = child(L"BUTTON", L"Use separate stabilization reserves for this eye", BS_AUTOCHECKBOX, 24,
-                         133, 690, 28, separate_id);
-        for (unsigned i = 0; i < 4; ++i) {
-            const int y = 170 + int(i) * 31;
-            labels[i] = child(L"STATIC", L"", 0, 24, y, 205, 25);
-            edges[i] = slider(left_id + int(i), y - 5, 0, 350);
-        }
-        vertical_label = child(L"STATIC", L"", 0, 24, 308, 205, 25);
-        vertical = slider(vertical_id, 301, -1000, 1000, 387);
-        child(L"BUTTON", L"Center", BS_PUSHBUTTON, 636, 300, 78, 31, center_id);
-        child(L"STATIC",
-              L"Y offset shifts the view within the full image: negative = up, positive = down.\r\n"
-              L"Uses hidden crop pixels; shifting leaves less stabilization room on that edge.",
-              0, 24, 343, 690, 44);
-        stretch_label = child(L"STATIC", L"", 0, 24, 403, 205, 25);
-        stretch = slider(stretch_id, 396, 0, 1000);
+        stretch_label = child(L"STATIC", L"", 0, 24, 148, 205, 25);
+        stretch = slider(stretch_id, 142, 0, 1000);
         child(L"STATIC",
               L"0% keeps mirroring; 100% strongly stretches pixels outside the captured image.\r\n"
-              L"Mirror limit still caps the effect. Enable mirroring in the main window.",
-              0, 24, 439, 690, 44);
-        child(L"STATIC", L"OPENXR RENDER EXTENSION", 0, 24, 508, 690, 26, 0, true);
-        render = child(L"BUTTON", L"Enable extra rendered area (next game launch)", BS_AUTOCHECKBOX, 24, 540,
+              L"Mirror limit still caps the effect. Enable Mirror on the Framing page.",
+              0, 24, 189, 690, 44);
+        child(L"STATIC", L"OPENXR RENDER EXTENSION", 0, 24, 261, 690, 26, 0, true);
+        render = child(L"BUTTON", L"Enable extra rendered area (next game launch)", BS_AUTOCHECKBOX, 24, 297,
                        440, 28, render_id);
-        symmetric = child(L"BUTTON", L"Symmetric (both eyes)", BS_AUTOCHECKBOX, 475, 540,
+        symmetric = child(L"BUTTON", L"Symmetric (both eyes)", BS_AUTOCHECKBOX, 475, 297,
                           239, 28, symmetric_id);
         for (unsigned i = 0; i < 2; ++i) {
-            const int y = 581 + int(i) * 31;
+            const int y = 340 + int(i) * 31;
             expansion_labels[i] = child(L"STATIC", L"", 0, 24, y, 205, 25);
             expansions[i] = slider(render_left_id + int(i), y - 5, 0, 300);
         }
-        child(L"BUTTON", L"Both eyes inward: 10%", BS_PUSHBUTTON, 24, 653, 325, 36, inward_id);
-        child(L"BUTTON", L"Save for next game launch", BS_PUSHBUTTON, 365, 653, 349, 36, save_render_id);
+        child(L"BUTTON", L"Both eyes inward: 10%", BS_PUSHBUTTON, 24, 414, 325, 36, inward_id);
+        child(L"BUTTON", L"Save for next game launch", BS_PUSHBUTTON, 365, 414, 349, 36, save_render_id);
         explanation = child(L"STATIC",
-                            L"Symmetric links inner/outer expansion between eyes; recommended for LMU.\r\n"
-                            L"Extra render area increases GPU cost. Save, then restart your OpenXR game.",
-                            0, 24, 702, 690, 44);
+                            L"Some games, including LMU, require symmetric render settings.\r\n"
+                            L"Extra render area costs GPU performance. Restart the game to apply changes.",
+                            0, 24, 461, 690, 44);
+        theme->scale_window(window);
+        MONITORINFO monitor{sizeof(monitor)};
+        if (GetMonitorInfoW(MonitorFromWindow(parent, MONITOR_DEFAULTTONEAREST), &monitor))
+            theme->fit_window(window, monitor.rcWork);
     }
     static LRESULT CALLBACK proc(HWND h, UINT message, WPARAM w, LPARAM l) {
         auto *self = reinterpret_cast<Impl *>(GetWindowLongPtrW(h, GWLP_USERDATA));
@@ -208,20 +179,6 @@ struct AdvancedSettings::Impl {
         }
         if (!self)
             return DefWindowProcW(h, message, w, l);
-        if (message == WM_PAINT || message == WM_PRINTCLIENT) {
-            PAINTSTRUCT ps{};
-            auto dc = message == WM_PAINT ? BeginPaint(h, &ps) : reinterpret_cast<HDC>(w);
-            RECT r{};
-            GetClientRect(h, &r);
-            SetDCBrushColor(dc, RGB(24, 31, 42));
-            FillRect(dc, &r, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-            SetDCBrushColor(dc, RGB(53, 66, 82));
-            RECT line{24, 493, 714, 494};
-            FillRect(dc, &line, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-            if (message == WM_PAINT)
-                EndPaint(h, &ps);
-            return 0;
-        }
         LRESULT themed{};
         if (self->theme->message(h, message, w, l, themed))
             return themed;
@@ -236,16 +193,6 @@ struct AdvancedSettings::Impl {
                     self->editing = std::clamp(int(SendMessageW(self->profile, CB_GETCURSEL, 0, 0)), 0, 1);
                     self->load_controls();
                 }
-                return 0;
-            case separate_id:
-                self->options->edge_reserve[self->editing].enabled =
-                    SendMessageW(self->separate, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                self->refresh_labels();
-                self->changed();
-                return 0;
-            case center_id:
-                SendMessageW(self->vertical, TBM_SETPOS, TRUE, 0);
-                self->scroll();
                 return 0;
             case render_id:
                 self->pending.enabled = SendMessageW(self->render, BM_GETCHECK, 0, 0) == BST_CHECKED;
