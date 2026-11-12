@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <uxtheme.h>
 
 namespace {
 void check(bool condition, const char *message) {
@@ -541,8 +542,15 @@ void check_vertical_scrollbar(HWND window_handle) {
                    .0722 * channel(GetBValue(c));
         };
         check(light(track) < .08, "native scroll track uses a dark surface");
-        check((light(thumb) + .05) / (light(track) + .05) >= 3,
-              "native scrollbar thumb contrasts with its track by at least 3 to 1");
+        // Windows client and Server themes draw different thumb colors. Compare
+        // what the app selected with this machine's own dark Explorer styling.
+        SetWindowTheme(window_handle, L"DarkMode_Explorer", nullptr);
+        Canvas reference(window.right - window.left, window.bottom - window.top);
+        SendMessageW(window_handle, WM_PRINT, reinterpret_cast<WPARAM>(reference.dc), PRF_CLIENT | PRF_NONCLIENT);
+        check(thumb == reference.pixel(middle - window.left, grip - window.top) &&
+              track == reference.pixel(middle - window.left,
+                                       info.rcScrollBar.bottom - info.dxyLineButton - 5 - window.top),
+              "scrollbar thumb and track use the platform's native dark palette");
     }
 }
 
