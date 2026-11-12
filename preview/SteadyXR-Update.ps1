@@ -124,7 +124,7 @@ function Invoke-ViewerUpdate {
     $parent = [IO.Directory]::GetParent($currentDir).FullName
     $target = Join-Path $parent "SteadyXR-$($offer.Version)"
     if (Test-Path -LiteralPath $target) { return }
-    $prompt = "Download SteadyXR $($offer.Version) and start it when you close the current app? Your settings, joystick bindings and window layout will be copied. Keep using the new folder for future launches:`r`n`r`n$target`r`n`r`nYour previous version stays available."
+    $prompt = "Download SteadyXR $($offer.Version) and start it when you close the current app? Your settings and joystick bindings will be copied. Keep using the new folder for future launches:`r`n`r`n$target`r`n`r`nYour previous version stays available."
     if ((Show-UpdateMessage $prompt 'YesNo' 'Question') -ne 'Yes') { return }
     $work = Join-Path $parent ('.steadyxr-update-' + [guid]::NewGuid().ToString('N'))
     try {

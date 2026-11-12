@@ -26,7 +26,9 @@ On **Framing**, click **Capture full eye**, then **Edit captured frame…**. Dra
 
 ![Full-eye framing editor showing the crop and the three framing controls on a quad-view test pattern](docs/images/steadyxr-framing-editor.png)
 
-The **Framing monitor** is the card on the dashboard. Drag its header to move the card or either lower corner to resize it. Its **Reset** button restores the dashboard layout. To change what viewers see, use the framing controls or the still editor.
+You can also frame the shot directly in the dashboard's **Framing monitor**. Drag inside the crop rectangle to move the shot, or drag a corner of the rectangle to change how much of the eye reaches the stream. Dashboard edits change Stream Output immediately. The separate still editor lets you adjust a draft before you click **Apply framing**.
+
+For normal streams, I recommend **Camera → Smoothing**. When **Director → Enable lookahead** supplies the OpenXR camera pose, lookahead replaces ordinary smoothing. **Enable automatic crop** and **Enable speed framing** on their own keep your normal smoothing.
 
 ## Controls and setup
 

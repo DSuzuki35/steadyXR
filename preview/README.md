@@ -41,6 +41,8 @@ The status light is green for a live feed, amber while waiting, gray when paused
 
 Horizon lock, adaptive leveling, vertical steadiness and centering use OpenXR pose data. A window source offers image-based smoothing. Stabilizing the stream leaves the headset camera under the game's control.
 
+For a normal stream, Dan recommends starting with **Smoothing** here. The **Director** page described below adds delayed OpenXR lookahead and optional crop controls.
+
 ## Framing
 
 ![Framing page with crop reserve, horizontal and vertical position and mirror controls](../docs/images/steadyxr-framing.png)
@@ -48,7 +50,7 @@ Horizon lock, adaptive leveling, vertical steadiness and centering use OpenXR po
 - **Crop reserve** zooms into the selected source, leaving hidden pixels available to absorb stabilization. The range is 0–97%. A larger reserve helps cover image edges during turns and makes the subject larger.
 - **Horizontal framing** moves the crop left or right. **Vertical framing** moves it up or down. Zero centers each axis. The available movement depends on the source and output aspect ratios and how much you cropped. Moving the rectangle to an extreme leaves less room for stabilization on that side.
 - **Mirror edges** fills exposed borders with reflected pixels. **Mirror limit** caps how far the reflection extends, from 0–50% of the source dimension. Beyond that limit the border is black. **Mirror softness** blends and darkens the reflection progressively. Increase reserve if you would prefer to keep recognizable reflected objects out of the shot.
-- The **Framing monitor** shows the crop guide and, after capture, the still used to position it. Drag its header to move the card within the dashboard. Drag a lower corner to resize it. Use **Reset** or double-click its header to restore the default layout. These changes affect the dashboard only.
+- In the dashboard's **Framing monitor**, drag inside the crop rectangle to reposition your shot. Drag a corner of the rectangle to change crop reserve while keeping the selected output aspect ratio. These edits change Stream Output immediately. Use **Capture full eye** for a fresh reference image. In the separate still editor, your draft takes effect when you click **Apply framing**.
 
 ### Frame a shot with the mouse
 
@@ -91,19 +93,23 @@ Choose an **Aspect ratio** from the list or enter one such as `239:100`. Enter w
 
 ### Gaze and effects
 
-Open **Settings → Gaze & effects…**. Values take effect when you leave a numeric field. **Bypass all spectator camera adjustments** and **Bypass all visual effects** let you audition your saved tuning. The optional features start off.
+Open **Settings → Gaze & effects…**. Values take effect when you leave a numeric field. **Bypass spectator camera** and **Bypass visual effects** let you audition your saved tuning. The optional features start off.
 
 ![Gaze and effects panel showing gaze framing, chat exclusion and calibration](../docs/images/steadyxr-gaze.png)
 
 | Page | What to adjust |
 | --- | --- |
-| **Gaze & chat** | **Enable gaze framing** lets a stable fixation shift the stream within available image margins. Strength sets the amount. Fixation dwell filters quick glances. The neutral zone leaves small departures from center alone. Horizontal and vertical limits bound travel, and gaze response controls how quickly it moves. |
+| **Gaze & chat** | **Enable gaze-driven framing** lets a stable fixation shift the stream within available image margins. Strength sets the amount. Fixation dwell filters quick glances. The neutral zone leaves small departures from center alone. Horizontal and vertical limits bound travel, and gaze response controls how quickly it moves. |
 | **Exposure** | Set a fixed brightness change with **Enable manual exposure** and **Exposure (EV)**. **Enable luminance adaptation** uses target luminance, minimum and maximum gain, and separate brighten and darken rates. The metering bounds choose a normalized region of the picture. Reduce its size to exclude a bright HUD. Transition damping and recovery shape abrupt changes. |
 | **Bloom** | Threshold selects bright highlights, soft knee blends the transition, strength controls intensity and radius spreads the glow. |
 | **Color** | Temperature and tint set the color balance. Contrast and saturation set the overall look. Shadows and highlights adjust the tonal extremes. **Apply filmic visual preset** provides a starting point. **Reset visual effects to off** clears the grade. |
 | **Director** | **Enable lookahead** buffers one to four OpenXR frames and uses later poses to smooth the delayed view. The status reports actual video delay and GPU memory use. **Enable automatic crop** adds reserve when correction would expose an edge. Maximum limits the zoom, and release controls the return to wider framing. **Enable speed framing** adds crop at low speed and returns to normal at **Normal framing speed**. Response controls how quickly it follows telemetry. |
 
-For chat exclusion, enable gaze framing and **Exclude learned chat zone from gaze framing**, then click **Look at chat now / Learn**. Look at your chat panel through the three-second countdown and hold a steady fixation for the next second. Set the chat width and height in degrees. Looking there then suppresses the gaze contribution while normal head following continues. **Cancel learning** stops the acquisition, and **Clear chat zone** clears the learned position. Learn again after changing seats, recentering, moving the panel, changing source or eye, starting a new session or loading a preset. Unavailable or stale gaze falls back to normal stabilization.
+For chat exclusion, enable gaze framing and **Ignore gaze toward learned chat zone**, then click **Look at chat now / Learn**. Look at your chat panel through the three-second countdown and hold a steady fixation for the next second. Set the chat width and height in degrees. Looking there then suppresses the gaze contribution while normal head following continues. **Cancel learning** stops the acquisition, and **Clear chat zone** clears the learned position. Learn again after changing seats, recentering, moving the panel, changing source or eye, starting a new session or loading a preset. Unavailable or stale gaze falls back to normal stabilization.
+
+![Director page showing lookahead, automatic crop and speed framing](../docs/images/steadyxr-director.png)
+
+Dan recommends **Camera → Smoothing** for normal streams. When lookahead is actively providing the OpenXR camera pose, it replaces ordinary smoothing. Automatic crop and speed framing on their own keep ordinary smoothing.
 
 Director lookahead requires stabilized OpenXR capture. Its 256 MiB texture budget can reduce the requested delay or bypass buffering with large eyes or overlays. At 60 captured FPS, three frames are roughly 50 ms. Use the measured delay to align separately recorded audio. Window capture supports automatic crop and speed framing. Speed telemetry supports **Auto**, **iRacing** and **Le Mans Ultimate** on the gaming PC. Without fresh data, framing returns toward its normal setting. Visual effects process the captured SDR image before separately composed overlays. They cannot recover clipped highlights.
 
@@ -149,7 +155,6 @@ Keep the release folder intact with its signed executable, capture DLL and updat
 | --- | --- |
 | `SteadyXR.ini` | App, source, camera, framing, output and effects settings. An older `preview.ini` can be migrated on first launch. |
 | `SteadyXR-shortcuts.ini` | Saved joystick or wheel bindings. |
-| `SteadyXR-ui.ini` | Framing-monitor position and size. |
 
 Named presets live in the shared **Presets** folder one level above the app directory. The layer editor keeps its **Layer-Backups** there too. Keep these folders when moving versions or computers.
 
