@@ -877,6 +877,31 @@ int main(int argc, char **argv) {
     }
     CHECK(argc == 1 || (argc == 2 && !std::strcmp(argv[1], "--d3d12")));
     use_d3d12 = argc == 2;
+    for (const unsigned fps : {60u, 72u, 90u}) {
+        RateLimiter limiter;
+        unsigned delivered{}, longest_gap{}, last_frame{};
+        std::uint32_t random = 782;
+        for (unsigned i = 0; i < 7200; ++i) {
+            // 100 seconds of 72 Hz submissions, +/- 2 ms of CPU jitter and 0.4 ms
+            // between the legal swapchain snapshot and the successful publication.
+            random = 1664525u * random + 1013904223u;
+            const auto tick = 1000000000ull + std::uint64_t(i) * 1000000000ull / 72;
+            const auto release = tick - 2000000 + random % 4000001;
+            if (!limiter.due(release, fps))
+                continue;
+            CHECK(limiter.due(release + 400000, fps));
+            limiter.published(release + 400000, fps);
+            CHECK(!limiter.due(release + 400000, fps));
+            if (delivered)
+                longest_gap = std::max(longest_gap, i - last_frame);
+            ++delivered;
+            last_frame = i;
+        }
+        std::printf("72 Hz source, %u FPS target: %u/7200 published, longest gap %u ticks\n",
+                    fps, delivered, longest_gap);
+        CHECK(delivered == std::min(fps, 72u) * 100);
+        CHECK(longest_gap == (fps < 72 ? 2u : 1u));
+    }
     for (unsigned game_hz : {90u, 120u}) {
         RateLimiter limiter;
         unsigned delivered = 0;

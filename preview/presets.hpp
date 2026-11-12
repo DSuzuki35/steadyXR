@@ -45,6 +45,7 @@ class PresetsDialog {
         std::function<std::string()> capture;
         std::function<bool(const std::string &)> apply;
         std::function<void(BuiltinPreset)> builtin;
+        std::function<void()> list_changed;
     };
     PresetsDialog();
     ~PresetsDialog();

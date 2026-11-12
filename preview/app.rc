@@ -2,6 +2,17 @@
 #include "steadyxr_version.h"
 101 ICON "assets/SteadyXR.ico"
 201 RCDATA "assets/dan-suzuki.ini"
+STEADYXR_LAYER_SETUP DIALOGEX 0, 0, 285, 118
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "SteadyXR OpenXR setup"
+FONT 10, "Segoe UI"
+BEGIN
+    LTEXT "Install the SteadyXR OpenXR layer?", 1001, 15, 15, 255, 14
+    LTEXT "OpenXR capture uses this layer to receive images and poses from the game. Window capture works without it.", -1, 15, 35, 255, 27
+    LTEXT "Restart the game after installation.", -1, 15, 67, 255, 12
+    CONTROL "Install for all users", IDOK, "Button", BS_OWNERDRAW | WS_TABSTOP, 93, 88, 108, 19
+    CONTROL "Later", IDCANCEL, "Button", BS_OWNERDRAW | WS_TABSTOP, 207, 88, 63, 19
+END
 1 VERSIONINFO
 FILEVERSION STEADYXR_VERSION_NUMERIC
 PRODUCTVERSION STEADYXR_VERSION_NUMERIC

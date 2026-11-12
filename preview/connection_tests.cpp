@@ -60,6 +60,23 @@ int main() {
     RegCreateKeyExW(HKEY_CURRENT_USER, user_key.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &user, nullptr);
     bool okay = true;
     const auto check = [&](const char *label, bool value) { std::cout << label << ": " << value << '\n'; okay = value && okay; };
+    const auto state = [&] { return inspect_layer_connection(current.wstring(), roots).state; };
+    check("empty registration offers installation", state() == LayerConnectionState::missing);
+    put(user, legacy_path, 1);
+    check("disabled registration offers installation", state() == LayerConnectionState::missing);
+    RegDeleteValueW(user, legacy_path.c_str());
+    const auto broken = (root / L"deleted" / L"XR_APILAYER_STEADYXR_preview.json").wstring();
+    put(user, broken, 0);
+    check("missing per-user files offer repair", state() == LayerConnectionState::upgrade_or_repair);
+    RegDeleteValueW(user, broken.c_str());
+    put(machine, broken, 0);
+    check("missing machine files offer repair", state() == LayerConnectionState::upgrade_or_repair);
+    RegDeleteValueW(machine, broken.c_str());
+    put(machine, legacy_path, 0);
+    put(user, old_path, 0);
+    check("outdated machine layer wins over compatible user DLL", state() == LayerConnectionState::upgrade_or_repair);
+    RegDeleteValueW(machine, legacy_path.c_str());
+    check("compatible DLL in another folder skips startup setup", state() == LayerConnectionState::compatible);
     put(user, old_path, 0); put(user, legacy_path, 0);
     check("compatible per-user DLL is discovered before migration", compatible_layer_directory(current.wstring(), roots) == old.wstring());
     put(machine, L"first unrelated.json", 0); put(machine, vector_path, 0); put(machine, L"disabled unrelated.json", 7);
@@ -77,6 +94,13 @@ int main() {
     std::cout << "install result: " << install_result << '\n';
     check("install migrates even a byte-identical per-user DLL", install_result == ERROR_SUCCESS);
     auto installed = read(HKEY_CURRENT_USER, machine_key), users = read(HKEY_CURRENT_USER, user_key);
+    check("registered bundled DLL is compatible", state() == LayerConnectionState::compatible);
+    const auto locked = CreateFileW((current / L"SteadyXR-OpenXR.dll").c_str(), GENERIC_READ, 0,
+                                    nullptr, OPEN_EXISTING, 0, nullptr);
+    check("unreadable bundled DLL offers repair", locked != INVALID_HANDLE_VALUE &&
+          state() == LayerConnectionState::upgrade_or_repair);
+    if (locked != INVALID_HANDLE_VALUE)
+        CloseHandle(locked);
     check("only current bundled DLL is globally enabled", get(installed, current_path) == 0 && get(users, old_path) == 1 && get(users, legacy_path) == 1 && get(users, current_path) == 99 && machine_layer_installed(current.wstring(), false, roots));
     check("bundled layer immediately precedes enabled VectorXR", installed.size() == 5 && installed[0].name == L"first unrelated.json" && installed[1].name == current_path && installed[2].name == vector_path);
     auto filtered = installed;
@@ -86,6 +110,8 @@ int main() {
     check("missing bundle cannot replace working installation", set_layer_connection((root / L"missing").wstring(), true, roots) == ERROR_FILE_NOT_FOUND && same(installed, read(HKEY_CURRENT_USER, machine_key)));
     // Failure in the second scope must leave the staged machine changes uncommitted.
     const LayerRegistryRoots invalid_user{HKEY_CURRENT_USER, machine_key.c_str(), reinterpret_cast<HKEY>(static_cast<ULONG_PTR>(0x1234)), L"Invalid"};
+    const LayerRegistryRoots unreadable{invalid_user.user_hive, invalid_user.user_key, nullptr, nullptr};
+    check("registry read failure skips startup setup", inspect_layer_connection(current.wstring(), unreadable).state == LayerConnectionState::unknown);
     check("failed user migration rolls back machine upgrade", set_layer_connection(old.wstring(), true, invalid_user) != ERROR_SUCCESS && same(installed, read(HKEY_CURRENT_USER, machine_key)));
     check("disconnect disables both scopes without changing unrelated values", set_layer_connection(current.wstring(), false, roots) == ERROR_SUCCESS && get(read(HKEY_CURRENT_USER, machine_key), current_path) == 1 && !layer_installed(current.wstring(), true, roots));
     // Reopen handles: an atomic replacement can retire a previous key handle.

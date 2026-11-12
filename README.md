@@ -4,21 +4,23 @@
 
 SteadyXR is a standalone Windows app. It takes an OpenXR eye image or an existing game window, smooths the camera movement, and opens a clean **Stream Output** window. You choose what stays in frame.
 
-**[Download SteadyXR 1.0.0 for Windows x64](https://github.com/DSuzuki35/steadyXR/releases/download/v1.0.0/SteadyXR-1.0.0-Standalone-Windows-x64.zip)** · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.0.0)
+**[Download SteadyXR 1.0.1 for Windows x64](https://github.com/DSuzuki35/steadyXR/releases/download/v1.0.1/SteadyXR-1.0.1-Standalone-Windows-x64.zip)** · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.0.1)
 
-![SteadyXR 1.0.0 dashboard with stream source, eye selection and a framing monitor](docs/images/steadyxr-dashboard.png)
+![SteadyXR 1.0.1 dashboard with stream source, eye selection and a framing monitor](docs/images/steadyxr-dashboard.png)
 
 ## Go live
 
 1. Extract the whole ZIP and start **SteadyXR.exe**.
-2. On **Stream Output**, choose your source. For head-pose stabilization, select **OpenXR**, open **Settings**, install the OpenXR connection, then start or restart the game. To capture a game mirror, choose **Capture a game window** and select its window.
-3. Open **Presets… → Dan Suzuki** to try my 4K setup. Under **Camera**, look straight ahead with your headset upright and click **Center camera**.
+2. On **Stream Output**, choose your source. For head-pose stabilization, choose **OpenXR**. If SteadyXR offers to install or update its OpenXR connection on startup, accept, then restart the game. You can also install it later from **Settings**. To capture a game mirror, choose **Capture a game window** and select its window.
+3. Choose **Dan Suzuki** from **Choose preset…** in the top-right corner of the dashboard to try my 4K setup. Under **Camera**, look straight ahead with your headset upright and click **Center camera**.
 4. Open the output. Use the setup that matches your stream.
 
 | Your setup | Where the picture goes |
 | --- | --- |
 | **Single PC** | In OBS, add a **Window Capture** source and select **SteadyXR – Stream Output**. |
 | **Dual PC** | In SteadyXR **Settings → Output monitor**, select the display connected to your capture card. Put Stream Output fullscreen there with **F11**. On the streaming PC, use the capture card as your video source. |
+
+For a 72 Hz headset, choose **72 FPS** to match a steady 72-frame OpenXR source. A **60 FPS** cap skips about 12 source frames each second. A **90 FPS** cap can also show all 72, since the source sets the upper limit.
 
 ## Frame a lap
 
@@ -64,4 +66,4 @@ The app and capture layer are built in `build/preview/Release`. The downloadable
 
 ## License
 
-Original SteadyXR standalone code and assets in this public **1.0.0** release are source-available under **PolyForm Noncommercial 1.0.0**, the same license used by OpenGrid XR. Earlier license grants remain valid. Third-party components retain their own terms. [License](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md)
+Original SteadyXR standalone code and assets in this public release are source-available under **PolyForm Noncommercial 1.0.0**, the same license used by OpenGrid XR. Earlier license grants remain valid. Third-party components retain their own terms. [License](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md)

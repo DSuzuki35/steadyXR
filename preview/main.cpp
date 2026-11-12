@@ -21,7 +21,9 @@
 #include "shortcuts.hpp"
 #include "release_update.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <chrono>
 #include <commctrl.h>
 #include <cwchar>
 #include <cwctype>
@@ -45,13 +47,21 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               compact_status_id = 137, overlays_id = 138, spectator_id = 139, learn_chat_id = 140,
               capture_still_id = 141, pitch_id = 144,
               vertical_id = 145, horizontal_id = 146, edit_still_id = 147, coffee_id = 148,
-              affiliate_id = 149, joystick_id = 150, framing_card_id = 151, status_light_id = 152;
+              affiliate_id = 149, joystick_id = 150, framing_card_id = 151, status_light_id = 152, manage_presets_id = 153;
 constexpr int hotkeys_default_id = 2100, hotkeys_alternate_id = 2101, hotkeys_off_id = 2102;
 constexpr int navigation_id = 1500;
+constexpr std::array<unsigned, 4> frame_rates{30, 60, 72, 90};
+int frame_rate_row(unsigned fps) {
+    return int(std::find(frame_rates.begin(), frame_rates.end(), fps) - frame_rates.begin());
+}
 constexpr int comparison_original_id = 2110, comparison_split_id = 2111, comparison_side_by_side_id = 2112;
 constexpr UINT_PTR save_timer = 4101, comparison_timer = 4102;
 constexpr int hotkey_actions[]{reset_id, pause_id, next_preset_id, compare_id, learn_chat_id};
 constexpr wchar_t hotkey_letters[]{L'R', L'P', L'N', L'B', L'C'};
+struct PresetChoice {
+    std::wstring key, label;
+    std::optional<BuiltinPreset> builtin;
+};
 std::wstring executable_path(DWORD pid) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     wchar_t path[32768]{};
@@ -138,7 +148,7 @@ struct App {
     std::vector<HWND> control_pages[4];
     unsigned selected_page{};
     FramingEditor framing;
-    std::wstring footer_state, footer_detail;
+    std::wstring footer_state, footer_detail, still_status_text, comparison_text, diagnostics_text;
     COLORREF light_color{RGB(155, 162, 173)};
     ShortcutController shortcuts;
     void show_page(unsigned selected) {
@@ -188,10 +198,11 @@ struct App {
     std::wstring directory, ini, render_ini, setup_message;
     std::filesystem::path presets_directory;
     std::wstring preset_cursor, hotkey_error;
+    std::vector<PresetChoice> preset_choices;
     unsigned hotkey_profile{1}; // 0 off, 1 Ctrl+Alt, 2 Ctrl+Alt+Shift.
     bool hotkey_registered[5]{};
     std::uint64_t compare_until{};
-    std::uint64_t start_ms{}, last_received_ms{}, last_sequence{}, fps_frames{}, fps_start{};
+    std::uint64_t last_received_ms{}, last_sequence{}, fps_frames{}, fps_start{};
     double measured_fps{};
     ~App() {
         unregister_hotkeys();
@@ -331,43 +342,58 @@ struct App {
         }
         update_status();
     }
-    void next_preset() {
-        PresetStore store(presets_directory);
+    void select_preset_row() const {
+        auto found = std::find_if(preset_choices.begin(), preset_choices.end(),
+                                  [&](const auto &item) { return item.key == preset_cursor; });
+        const int row = found == preset_choices.end() ? 0 : int(found - preset_choices.begin()) + 1;
+        SendDlgItemMessageW(controls, presets_id, CB_SETCURSEL, row, 0);
+    }
+    bool refresh_preset_list() {
         std::wstring error;
-        const auto saved = store.list(error);
+        const auto names = PresetStore(presets_directory).list(error);
+        std::vector<PresetChoice> choices{
+            {L"builtin:natural", L"Responsive", BuiltinPreset::natural},
+            {L"builtin:comfort", L"Stream Comfort", BuiltinPreset::stream_comfort},
+            {L"builtin:strong", L"Strong leveling", BuiltinPreset::strong_leveling}};
+        for (const auto &name : names)
+            choices.push_back({L"saved:" + name, name, std::nullopt});
+        choices.push_back({L"builtin:dan", L"Dan Suzuki", BuiltinPreset::dan_suzuki});
+        const auto list = GetDlgItem(controls, presets_id);
+        preset_choices = std::move(choices);
+        SendMessageW(list, CB_RESETCONTENT, 0, 0);
+        SendMessageW(list, CB_ADDSTRING, 0, LPARAM(L"Choose preset…"));
+        for (const auto &item : preset_choices) {
+            const auto label = item.builtin ? item.label : L"Saved · " + item.label;
+            SendMessageW(list, CB_ADDSTRING, 0, LPARAM(label.c_str()));
+        }
+        select_preset_row();
         if (!error.empty()) {
             setup_message = error;
             update_status();
-            return;
         }
-        std::vector<std::wstring> entries{L"builtin:natural", L"builtin:comfort", L"builtin:strong"};
-        for (const auto &name : saved)
-            entries.push_back(L"saved:" + name);
-        entries.push_back(L"builtin:dan");
-        const auto previous = std::find(entries.begin(), entries.end(), preset_cursor);
-        const auto next = previous == entries.end()
-                              ? 0u
-                              : unsigned((std::distance(entries.begin(), previous) + 1) % entries.size());
-        if (entries[next] == L"builtin:dan") {
-            builtin(BuiltinPreset::dan_suzuki);
-        } else if (next < 3) {
-            const BuiltinPreset builtins[]{BuiltinPreset::natural, BuiltinPreset::stream_comfort,
-                                           BuiltinPreset::strong_leveling};
-            builtin(builtins[next]);
+        return error.empty();
+    }
+    void apply_preset_choice(PresetChoice choice) {
+        if (choice.builtin) {
+            builtin(*choice.builtin);
         } else {
-            const auto &name = saved[next - 3];
-            const auto bytes = store.read(name, error);
-            if (!bytes || !apply_snapshot(*bytes)) {
-                setup_message = error.empty()
-                                    ? L"Could not apply the next preset. Check access to the settings folder."
-                                    : error;
-                update_status();
-                return;
+            std::wstring error;
+            const auto bytes = PresetStore(presets_directory).read(choice.label, error);
+            if (bytes && apply_snapshot(*bytes)) {
+                preset_cursor = choice.key;
+                setup_message = L"Preset: " + choice.label + L". Changed render settings apply at the next game launch.";
+            } else {
+                setup_message = error.empty() ? L"Could not load the preset. Check access to the settings folder." : error;
             }
-            preset_cursor = entries[next];
-            setup_message = L"Preset: " + name + L". Changed render settings apply at the next game launch.";
             update_status();
         }
+        select_preset_row();
+    }
+    void next_preset() {
+        if (!refresh_preset_list())
+            return;
+        const auto row = SendDlgItemMessageW(controls, presets_id, CB_GETCURSEL, 0, 0);
+        apply_preset_choice(preset_choices[std::max<LRESULT>(0, row) % preset_choices.size()]);
     }
     void refresh_editor_connection() {
         const auto old_ini = render_ini;
@@ -426,12 +452,39 @@ struct App {
     bool registered(bool any_version = false) const {
         return any_version ? any_connection : compatible_connection;
     }
-    void resolve_connection() {
-        const auto installed =
-            diagnostic ? std::optional<std::wstring>{} : compatible_layer_settings_path(directory);
-        compatible_connection = installed.has_value() || (!diagnostic && layer_installed(directory, false));
-        any_connection = compatible_connection || (!diagnostic && layer_installed(directory, true));
-        render_ini = installed ? *installed : ini;
+    LayerConnectionState resolve_connection() {
+        const auto installed = diagnostic ? LayerConnectionInfo{} : inspect_layer_connection(directory);
+        compatible_connection = installed.state == LayerConnectionState::compatible;
+        any_connection = compatible_connection || installed.state == LayerConnectionState::upgrade_or_repair;
+        render_ini = installed.settings_path.value_or(ini);
+        return installed.state;
+    }
+    static INT_PTR CALLBACK layer_setup_dialog(HWND dialog, UINT message, WPARAM w, LPARAM l) {
+        auto owner = reinterpret_cast<App *>(GetWindowLongPtrW(dialog, DWLP_USER));
+        if (message == WM_INITDIALOG) {
+            owner = reinterpret_cast<App *>(l);
+            SetWindowLongPtrW(dialog, DWLP_USER, l);
+            owner->theme.titlebar(dialog);
+            if (owner->any_connection) {
+                SetDlgItemTextW(dialog, 1001, L"Update or repair the SteadyXR OpenXR layer?");
+                SetDlgItemTextW(dialog, IDOK, L"Update / repair");
+            }
+            SetPropW(GetDlgItem(dialog, IDOK), L"SteadyXRPrimary", reinterpret_cast<HANDLE>(1));
+            SendMessageW(dialog, DM_SETDEFID, IDCANCEL, 0);
+            SetFocus(GetDlgItem(dialog, IDCANCEL));
+            return FALSE;
+        }
+        if (message == WM_COMMAND && (LOWORD(w) == IDOK || LOWORD(w) == IDCANCEL)) {
+            EndDialog(dialog, LOWORD(w));
+            return TRUE;
+        }
+        if (message == WM_CTLCOLORSTATIC || message == WM_DRAWITEM || message == WM_PAINT ||
+            message == WM_ERASEBKGND || message == WM_PRINTCLIENT) {
+            LRESULT result{};
+            if (owner && owner->theme.message(dialog, message, w, l, result))
+                return message == WM_CTLCOLORSTATIC ? result : TRUE;
+        }
+        return FALSE;
     }
     void connection(bool enable) {
         if (enable && expired) {
@@ -597,7 +650,7 @@ struct App {
         read_edge_settings(ini, options);
         rate = value(L"FPS", 60, 30, 90);
         window_mode = value(L"Mode", 0, 0, 1) == 0;
-        if (rate != 30 && rate != 60 && rate != 90)
+        if (frame_rate_row(rate) == int(frame_rates.size()))
             rate = 60;
     }
     bool active() const {
@@ -805,11 +858,24 @@ struct App {
         SendMessageW(vertical, TBM_SETPOS, TRUE, LPARAM(std::lround(options.vertical_offset * 10)));
         SendMessageW(horizontal, TBM_SETPOS, TRUE, LPARAM(std::lround(options.horizontal_offset * 10)));
     }
-    void framing_labels() {
-        SetWindowTextW(crop_label, (L"Crop reserve   " + decimal(options.crop) + L" %").c_str());
-        SetWindowTextW(vertical_label, (L"Vertical framing   " + decimal(options.vertical_offset) + L" %").c_str());
-        SetWindowTextW(horizontal_label,
-                       (L"Horizontal framing   " + decimal(options.horizontal_offset) + L" %").c_str());
+    struct SliderBinding {
+        int id;
+        double Options::*value;
+        HWND App::*label;
+        const wchar_t *caption;
+        bool frames_image{};
+    };
+    static constexpr SliderBinding slider_bindings[]{
+        {smooth_id, &Options::smoothing, &App::smooth_label, L"Smoothing: "},
+        {horizon_id, &Options::horizon_lock, &App::horizon_label, L"Horizon lock: "},
+        {pitch_id, &Options::pitch_lock, &App::pitch_label, L"Vertical steadiness: "},
+        {crop_id, &Options::crop, &App::crop_label, L"Crop reserve   ", true},
+        {horizontal_id, &Options::horizontal_offset, &App::horizontal_label, L"Horizontal framing   ", true},
+        {vertical_id, &Options::vertical_offset, &App::vertical_label, L"Vertical framing   ", true},
+        {mirror_limit_id, &Options::mirror_limit, &App::mirror_limit_label, L"Mirror limit: "},
+        {mirror_softness_id, &Options::mirror_softness, &App::mirror_softness_label, L"Mirror softness: "}};
+    void update_slider_label(const SliderBinding &slider) {
+        SetWindowTextW(this->*slider.label, (slider.caption + decimal(options.*slider.value) + L" %").c_str());
     }
     void set_tuning(const Options &tuning) {
         options.smoothing = tuning.smoothing;
@@ -842,7 +908,9 @@ struct App {
         options.crop_left = options.crop_right = options.crop_top = options.crop_bottom = 0;
         options.edge_reserve[0] = options.edge_reserve[1] = {};
         set_framing_sliders();
-        framing_labels();
+        for (const auto &slider : slider_bindings)
+            if (slider.frames_image)
+                update_slider_label(slider);
         InvalidateRect(framing_card, nullptr, FALSE);
         queue_save();
         dirty = true;
@@ -902,7 +970,7 @@ struct App {
         set_tuning(options);
         SendMessageW(eye, CB_SETCURSEL, selected_eye, 0);
         SendMessageW(mode, CB_SETCURSEL, window_mode ? 0 : 1, 0);
-        SendMessageW(fps, CB_SETCURSEL, rate == 30 ? 0 : rate == 60 ? 1 : 2, 0);
+        SendMessageW(fps, CB_SETCURSEL, frame_rate_row(rate), 0);
         SetWindowTextW(output_width, std::to_wstring(options.output_width).c_str());
         SetWindowTextW(output_height, std::to_wstring(options.output_height).c_str());
         SetWindowTextW(
@@ -979,9 +1047,9 @@ struct App {
         InvalidateRect(framing_card, nullptr, FALSE);
     }
     void labels() {
-        framing_labels();
+        for (const auto &slider : slider_bindings)
+            update_slider_label(slider);
         refresh_card();
-        SetWindowTextW(smooth_label, (L"Smoothing: " + decimal(options.smoothing) + L" %").c_str());
         SetWindowTextW(pause, paused ? L"Resume output" : L"Pause output");
         EnableWindow(source, window_mode);
         EnableWindow(GetDlgItem(controls, refresh_id), window_mode);
@@ -991,12 +1059,6 @@ struct App {
         EnableWindow(GetDlgItem(controls, remove_id), !connection_process);
         SetWindowTextW(GetDlgItem(controls, setup_id),
                        registered(true) ? L"Upgrade / repair" : L"Install for all users");
-        SetWindowTextW(horizon_label, (L"Horizon lock: " + decimal(options.horizon_lock) + L" %").c_str());
-        SetWindowTextW(pitch_label, (L"Vertical steadiness: " + decimal(options.pitch_lock) + L" %").c_str());
-        SetWindowTextW(mirror_limit_label,
-                       (L"Mirror limit: " + decimal(options.mirror_limit) + L" %").c_str());
-        SetWindowTextW(mirror_softness_label,
-                       (L"Mirror softness: " + decimal(options.mirror_softness) + L" %").c_str());
         EnableWindow(horizon, !window_mode);
         EnableWindow(pitch, !window_mode);
         EnableWindow(GetDlgItem(controls, reset_id), !window_mode);
@@ -1009,8 +1071,10 @@ struct App {
         if (card_revision != framing.still_revision() || card_source_aspect != renderer.source_aspect())
             refresh_card();
         const auto &still_status = framing.status();
-        if (!still_status.empty())
+        if (still_status != still_status_text) {
+            still_status_text = still_status;
             SetWindowTextW(framing_status, still_status.c_str());
+        }
         const bool comparison_active = comparing(now);
         const bool stale = last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000;
         const auto fps_value = !active() || stale || capture_conflict ? 0 : int(measured_fps + .5);
@@ -1051,14 +1115,21 @@ struct App {
             if (status_light)
                 InvalidateRect(status_light, nullptr, FALSE);
         }
-        SetWindowTextW(comparison, comparison_active ? L"End A/B" : options.compare_effects ? L"Effects A/B" : L"Compare");
+        const auto compare_label = comparison_active ? L"End A/B" : options.compare_effects ? L"Effects A/B" : L"Compare";
+        if (comparison_text != compare_label) {
+            comparison_text = compare_label;
+            SetWindowTextW(comparison, compare_label);
+        }
         EnableWindow(comparison, comparison_active || (!paused && !expired && !waiting(now)));
         if (expired) {
             const auto message = std::wstring(L"This SteadyXR build has expired.\r\nValid until: ") +
                                  build_expiry_text() +
                                  L"\r\nPlease install a newer build to resume stream output.\r\nYour settings "
                                  L"are retained. The OpenXR layer editor remains available.";
-            SetWindowTextW(status, message.c_str());
+            if (diagnostics_text != message) {
+                diagnostics_text = message;
+                SetWindowTextW(status, message.c_str());
+            }
             return;
         }
         std::wstring text;
@@ -1089,24 +1160,32 @@ struct App {
                     text = L"OpenXR feed connected.\r\n";
                     text += std::wstring(s.application, wcsnlen(s.application, 128)) + L"\r\n";
                     text += std::wstring(s.status, wcsnlen(s.status, 192)) + L"\r\n";
+                    RenderSettings active_render{};
+                    active_render.enabled = s.render_enabled != 0;
+                    for (unsigned eye = 0; eye < 2; ++eye) {
+                        active_render.eyes[eye].left = s.render_left[eye];
+                        active_render.eyes[eye].right = s.render_right[eye];
+                    }
+                    channel.unlock();
                     const auto configured = read_render_settings(render_ini);
-                    bool pending = configured.enabled != bool(s.render_enabled);
+                    bool pending = configured.enabled != active_render.enabled;
                     if (configured.enabled)
                         for (unsigned eye = 0; eye < 2; ++eye)
-                            pending |= std::abs(configured.eyes[eye].left - s.render_left[eye]) > .05 ||
-                                       std::abs(configured.eyes[eye].right - s.render_right[eye]) > .05;
+                            pending |= std::abs(configured.eyes[eye].left - active_render.eyes[eye].left) > .05 ||
+                                       std::abs(configured.eyes[eye].right - active_render.eyes[eye].right) > .05;
                     if (pending)
                         text += L"New render settings pending: restart the OpenXR game.\r\n";
                     else if (setup_message.rfind(L"Render settings saved.", 0) == 0)
                         setup_message.clear();
-                    if (s.render_enabled) {
+                    if (active_render.enabled) {
                         const auto eye = std::min(selected_eye, 1u);
-                        text += L"Render extension this session: L " + decimal(s.render_left[eye]) +
-                                L" %, R " + decimal(s.render_right[eye]) + L" %.\r\n";
+                        text += L"Render extension this session: L " + decimal(active_render.eyes[eye].left) +
+                                L" %, R " + decimal(active_render.eyes[eye].right) + L" %.\r\n";
                     }
-                } else
+                } else {
+                    channel.unlock();
                     text += L"Waiting for an OpenXR game using D3D11 or D3D12.\r\n";
-                channel.unlock();
+                }
             }
         }
         if (!setup_message.empty())
@@ -1137,11 +1216,10 @@ struct App {
                 L"\r\nF11: fullscreen. No OBS or encoder required.";
         // Preserve selection/scrolling in the details field while only the FPS
         // summary changes. Errors and connection changes remain inspectable.
-        std::wstring previous(std::size_t(GetWindowTextLengthW(status)) + 1, L'\0');
-        GetWindowTextW(status, previous.data(), int(previous.size()));
-        previous.resize(std::wcslen(previous.c_str()));
-        if (previous != text)
-            SetWindowTextW(status, text.c_str());
+        if (text != diagnostics_text) {
+            diagnostics_text = std::move(text);
+            SetWindowTextW(status, diagnostics_text.c_str());
+        }
     }
 };
 App *app{};
@@ -1299,20 +1377,18 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         if (!bar)
             break;
         const double value = SendMessageW(bar, TBM_GETPOS, 0, 0) / 10.;
-        switch (GetDlgCtrlID(bar)) {
-        case smooth_id: app->options.smoothing = value; break;
-        case horizon_id: app->options.horizon_lock = value; break;
-        case pitch_id: app->options.pitch_lock = value; break;
-        case crop_id: app->options.crop = value; break;
-        case horizontal_id: app->options.horizontal_offset = value; break;
-        case vertical_id: app->options.vertical_offset = value; break;
-        case mirror_limit_id: app->options.mirror_limit = value; break;
-        case mirror_softness_id: app->options.mirror_softness = value; break;
-        default: return 0;
+        const auto id = GetDlgCtrlID(bar);
+        for (const auto &slider : App::slider_bindings) {
+            if (id != slider.id || app->options.*slider.value == value)
+                continue;
+            app->options.*slider.value = value;
+            app->update_slider_label(slider);
+            if (slider.frames_image)
+                InvalidateRect(app->framing_card, nullptr, FALSE);
+            app->queue_save();
+            app->dirty = true;
+            break;
         }
-        app->labels();
-        app->queue_save();
-        app->dirty = true;
         return 0;
     }
     case WM_COMMAND:
@@ -1373,9 +1449,22 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         case advanced_id:
             app->advanced.open(app->selected_eye);
             return 0;
-        case presets_id:
+        case manage_presets_id:
             app->presets.open();
             return 0;
+        case presets_id: {
+            const auto list = GetDlgItem(window, presets_id);
+            if (HIWORD(w) == CBN_DROPDOWN)
+                app->refresh_preset_list();
+            if (HIWORD(w) == CBN_SELENDOK) {
+                const auto row = SendMessageW(list, CB_GETCURSEL, 0, 0);
+                if (row > 0 && size_t(row) <= app->preset_choices.size())
+                    app->apply_preset_choice(app->preset_choices[size_t(row) - 1]);
+                else
+                    app->select_preset_row();
+            }
+            return 0;
+        }
         case overlays_id:
             app->overlays.open(app->controls, app->theme, app->channel, app->options.overlays, [] {
                 app->queue_save();
@@ -1397,27 +1486,30 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             app->start_fullscreen = SendMessageW(app->auto_fullscreen, BM_GETCHECK, 0, 0) == BST_CHECKED;
             break;
         case monitor_id:
-            if (HIWORD(w) == CBN_SELCHANGE)
-                app->move_to_monitor();
+            if (HIWORD(w) != CBN_SELCHANGE)
+                return 0;
+            app->move_to_monitor();
             break;
-        case mode_id:
-            if (HIWORD(w) == CBN_SELCHANGE) {
-                app->window_mode = SendMessageW(app->mode, CB_GETCURSEL, 0, 0) == 0;
-                app->restart_source();
-            }
+        case mode_id: {
+            if (HIWORD(w) != CBN_SELCHANGE)
+                return 0;
+            app->window_mode = SendMessageW(app->mode, CB_GETCURSEL, 0, 0) == 0;
+            app->restart_source();
             break;
-        case source_id:
-            if (HIWORD(w) == CBN_SELCHANGE) {
-                const int index = int(SendMessageW(app->source, CB_GETCURSEL, 0, 0));
-                app->source_window = index > 0 && std::size_t(index) <= app->sources.size()
-                                         ? app->sources[std::size_t(index - 1)].handle
-                                         : nullptr;
-                app->source_pid = app->source_window ? app->sources[std::size_t(index - 1)].pid : 0;
-                app->source_executable = executable_path(app->source_pid);
-                app->source_title = app->source_window ? app->sources[std::size_t(index - 1)].title : L"";
-                app->restart_source();
-            }
+        }
+        case source_id: {
+            if (HIWORD(w) != CBN_SELCHANGE)
+                return 0;
+            const int index = int(SendMessageW(app->source, CB_GETCURSEL, 0, 0));
+            app->source_window = index > 0 && std::size_t(index) <= app->sources.size()
+                                     ? app->sources[std::size_t(index - 1)].handle
+                                     : nullptr;
+            app->source_pid = app->source_window ? app->sources[std::size_t(index - 1)].pid : 0;
+            app->source_executable = executable_path(app->source_pid);
+            app->source_title = app->source_window ? app->sources[std::size_t(index - 1)].title : L"";
+            app->restart_source();
             break;
+        }
         case refresh_id:
             app->refresh_sources();
             break;
@@ -1453,26 +1545,30 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             app->options.adaptive_horizon =
                 SendMessageW(app->adaptive_horizon, BM_GETCHECK, 0, 0) == BST_CHECKED;
             break;
-        case eye_id:
-            if (HIWORD(w) == CBN_SELCHANGE) {
-                app->cancel_comparison();
-                app->selected_eye = unsigned(SendMessageW(app->eye, CB_GETCURSEL, 0, 0));
-                app->options.eye = app->selected_eye;
-                app->renderer.reset();
-            }
+        case eye_id: {
+            if (HIWORD(w) != CBN_SELCHANGE)
+                return 0;
+            app->cancel_comparison();
+            app->selected_eye = unsigned(SendMessageW(app->eye, CB_GETCURSEL, 0, 0));
+            app->options.eye = app->selected_eye;
+            app->renderer.reset();
             break;
-        case fps_id:
-            if (HIWORD(w) == CBN_SELCHANGE) {
-                int selected = int(SendMessageW(app->fps, CB_GETCURSEL, 0, 0));
-                app->rate = selected == 0 ? 30 : selected == 1 ? 60 : 90;
-            }
+        }
+        case fps_id: {
+            if (HIWORD(w) != CBN_SELCHANGE)
+                return 0;
+            const auto row = SendMessageW(app->fps, CB_GETCURSEL, 0, 0);
+            if (row < 0 || size_t(row) >= frame_rates.size())
+                return 0;
+            app->rate = frame_rates[size_t(row)];
             break;
+        }
         default:
             return DefWindowProcW(window, message, w, l);
         }
         app->heartbeat();
         app->labels();
-        app->save();
+        app->queue_save();
         app->update_status();
         app->dirty = true;
         return 0;
@@ -1596,8 +1692,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.ini =
             state.directory + L"\\preview-selftest-" + std::to_wstring(GetCurrentProcessId()) + L".ini";
     state.read();
-    state.resolve_connection();
-    state.start_ms = state.fps_start = GetTickCount64();
+    const auto startup_connection = state.resolve_connection();
+    state.fps_start = GetTickCount64();
     INITCOMMONCONTROLSEX common{sizeof(common), ICC_BAR_CLASSES};
     InitCommonControlsEx(&common);
     state.theme.initialize();
@@ -1670,9 +1766,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         const auto description = note(page, descriptions[page], 240, 155, 580, 34);
         SetPropW(description, L"SteadyXRSurface", reinterpret_cast<HANDLE>(1));
     }
-    const auto next_preset =
-        add(-1, L"BUTTON", L"Next preset", BS_PUSHBUTTON, 16, 424, 176, 40, next_preset_id);
-    SetPropW(next_preset, L"SteadyXRSidebar", reinterpret_cast<HANDLE>(1));
+    add(-1, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 940, 19, 184, 220, presets_id);
+    const auto manage = add(-1, L"BUTTON", L"Manage presets…", BS_PUSHBUTTON, 16, 424, 176, 40, manage_presets_id);
+    SetPropW(manage, L"SteadyXRSidebar", reinterpret_cast<HANDLE>(1));
     auto support = [&](const wchar_t *caption, int y, int id) {
         auto link = add(-1, L"BUTTON", caption, BS_PUSHBUTTON, 12, y, 188, 38, id);
         SetPropW(link, L"SteadyXRSidebar", reinterpret_cast<HANDLE>(1));
@@ -1700,9 +1796,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     SendMessageW(state.eye, CB_SETCURSEL, state.selected_eye, 0);
     add(0, L"STATIC", L"Frame rate", 0, 672, 256, 128, 23);
     state.fps = add(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 672, 285, 128, 160, fps_id);
-    for (auto text : {L"30 FPS", L"60 FPS", L"90 FPS"})
-        SendMessageW(state.fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
-    SendMessageW(state.fps, CB_SETCURSEL, state.rate == 30 ? 0 : state.rate == 60 ? 1 : 2, 0);
+    for (const auto rate : frame_rates) {
+        const auto label = std::to_wstring(rate) + L" FPS";
+        SendMessageW(state.fps, CB_ADDSTRING, 0, LPARAM(label.c_str()));
+    }
+    SendMessageW(state.fps, CB_SETCURSEL, frame_rate_row(state.rate), 0);
     add(0, L"STATIC", L"Game window", 0, 260, 326, 540, 23);
     state.source = add(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 260, 356, 340, 300, source_id);
     add(0, L"BUTTON", L"Refresh windows", BS_PUSHBUTTON, 614, 353, 186, 36, refresh_id);
@@ -1778,16 +1876,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     add(3, L"BUTTON", L"Layer order…", BS_PUSHBUTTON, 624, 452, 176, 36, layers_id);
     add(3, L"BUTTON", L"Overlay layers…", BS_PUSHBUTTON, 260, 497, 170, 36, overlays_id);
     add(3, L"BUTTON", L"Gaze & effects…", BS_PUSHBUTTON, 442, 497, 170, 36, spectator_id);
-    add(3, L"BUTTON", L"Joystick buttons…", BS_PUSHBUTTON, 624, 497, 176, 36, joystick_id);
-    note(3, L"Restart the game after changing the OpenXR connection or render extension.", 260,
-         548, 540, 42);
+    add(3, L"BUTTON", L"Shortcuts…", BS_PUSHBUTTON, 624, 497, 176, 36, hotkeys_id);
+    note(3, L"Restart the game after layer or render extension changes.", 260,
+         547, 540, 32);
     state.status_light = add(-1, L"STATIC", L"", SS_OWNERDRAW, 235, 648, 17, 27, status_light_id);
     state.compact_status = add(-1, L"STATIC", L"", SS_ENDELLIPSIS, 260, 647, 300, 27, compact_status_id);
     state.status_detail = add(-1, L"STATIC", L"", SS_ENDELLIPSIS, 260, 678, 319, 27);
     SetPropW(state.status_detail, L"SteadyXRMuted", reinterpret_cast<HANDLE>(1));
-    state.comparison = add(-1, L"BUTTON", L"Compare", BS_PUSHBUTTON, 592, 650, 96, 44, compare_id);
-    add(-1, L"BUTTON", L"Presets…", BS_PUSHBUTTON, 700, 650, 90, 44, presets_id);
-    add(-1, L"BUTTON", L"Shortcuts…", BS_PUSHBUTTON, 802, 650, 96, 44, hotkeys_id);
+    state.comparison = add(-1, L"BUTTON", L"Compare", BS_PUSHBUTTON, 802, 650, 96, 44, compare_id);
     // These controls are common to all four pages, and sit on the rail's card surfaces.
     auto rail = [&](const wchar_t *caption, DWORD style, int x, int y, int w, int h, int id = 0) {
         return child(state.controls, L"STATIC", caption, style, x, y, w, h, id);
@@ -1855,9 +1951,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                                   wchar_t name[65]{};
                                   GetDlgItemTextW(state.presets.handle(), PresetsDialog::names_id, name, 65);
                                   state.preset_cursor = L"saved:" + std::wstring(name);
+                                  state.select_preset_row();
                                   return true;
                               },
-                              [&](BuiltinPreset preset) { state.builtin(preset); }});
+                              [&](BuiltinPreset preset) { state.builtin(preset); state.select_preset_row(); },
+                              [&] { state.refresh_preset_list(); }});
+    state.refresh_preset_list();
     state.set_tuning(state.options);
     state.list_monitors();
     if (!self_test)
@@ -1956,6 +2055,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             }
             return true;
         };
+        // Opening and cancelling a list must not persist the configuration.
+        WritePrivateProfileStringW(L"Preview", L"SmoothingTenths", L"987", state.ini.c_str());
+        auto start_notifications = std::chrono::steady_clock::now();
+        for (unsigned i = 0; i < 5; ++i)
+            for (int event : {CBN_SETFOCUS, CBN_DROPDOWN, CBN_SELENDCANCEL, CBN_CLOSEUP, CBN_KILLFOCUS})
+                SendMessageW(state.controls, WM_COMMAND, MAKEWPARAM(fps_id, event), LPARAM(state.fps));
+        const bool no_spurious_save = GetPrivateProfileIntW(L"Preview", L"SmoothingTenths", 0, state.ini.c_str()) == 987;
+        trace << "dropdown-notifications-us=" << std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - start_notifications).count() << " preserved=" << no_spurious_save << '\n';
+        const auto old_rate = state.rate;
+        const auto row72 = SendMessageW(state.fps, CB_FINDSTRINGEXACT, WPARAM(-1), LPARAM(L"72 FPS"));
+        SendMessageW(state.fps, CB_SETCURSEL, row72, 0);
+        SendMessageW(state.controls, WM_COMMAND, MAKEWPARAM(fps_id, CBN_SELCHANGE), LPARAM(state.fps));
+        state.save();
+        App reloaded_rate;
+        reloaded_rate.ini = state.ini;
+        reloaded_rate.read();
+        const bool rate72_ok = row72 != CB_ERR && state.rate == 72 && reloaded_rate.rate == 72;
+        SendMessageW(state.fps, CB_SETCURSEL, frame_rate_row(old_rate), 0);
+        SendMessageW(state.controls, WM_COMMAND, MAKEWPARAM(fps_id, CBN_SELCHANGE), LPARAM(state.fps));
         const auto before_navigation = state.snapshot();
         // Loading a pre-0.15 profile keeps gaze and regular smoothing, but cannot enable retired motion.
         App legacy;
@@ -1977,9 +2096,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             }
             return true;
         };
-        bool navigation_ok = legacy_ok && IsWindow(GetDlgItem(state.controls, 1500)) &&
+        bool navigation_ok = no_spurious_save && rate72_ok && legacy_ok && IsWindow(GetDlgItem(state.controls, 1500)) &&
                              visible_control(state.mode) && !visible_control(state.smooth) &&
-                             !visible_control(state.monitor);
+                             !visible_control(state.monitor) && !visible_control(GetDlgItem(state.controls, hotkeys_id));
         const wchar_t *navigation_titles[]{L"Stream Output", L"Camera", L"Framing", L"Settings"};
         for (unsigned p = 0; p < std::size(navigation_titles); ++p) {
             wchar_t title[64]{};
@@ -1993,7 +2112,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                         visible_control(GetDlgItem(state.controls, capture_still_id)) &&
                         !visible_control(state.smooth) && selected_navigation(state.controls, navigation_id, 4, 2);
         SendMessageW(state.controls, WM_COMMAND, 1503, 0);
-        navigation_ok = navigation_ok && visible_control(state.monitor) && !visible_control(state.smooth) &&
+        navigation_ok = navigation_ok && visible_control(state.monitor) && visible_control(GetDlgItem(state.controls, hotkeys_id)) && !visible_control(state.smooth) &&
                         before_navigation == state.snapshot() &&
                         selected_navigation(state.controls, navigation_id, 4, 3);
         SendMessageW(state.controls, WM_COMMAND, 1500, 0);
@@ -2026,7 +2145,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         // control owns focus. Diagnostic runs send messages without reserving keys.
         SendMessageW(state.controls, WM_HOTKEY, pause_id, 0);
         bool interactions_ok = !state.paused && IsWindow(state.comparison) &&
-                               IsWindow(GetDlgItem(state.controls, next_preset_id)) &&
+                               IsWindow(GetDlgItem(state.controls, presets_id)) &&
                                IsWindow(GetDlgItem(state.controls, hotkeys_id));
         const bool spectator_entry_ok = IsWindow(GetDlgItem(state.controls, spectator_id));
         trace << "spectator-controls-entry=" << spectator_entry_ok << '\n';
@@ -2655,7 +2774,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             state.options.edge_reserve[1].right == 20 &&
             state.source_executable == L"C:\\Preset test\\simulator.exe" && !state.source_window &&
             read_render_settings(state.ini).eyes[1].left == 23.7 &&
-            state.advanced.draft().eyes[1].left == 23.7 && SendMessageW(state.fps, CB_GETCURSEL, 0, 0) == 2 &&
+            state.advanced.draft().eyes[1].left == 23.7 && SendMessageW(state.fps, CB_GETCURSEL, 0, 0) == frame_rate_row(90) &&
             SendMessageW(state.eye, CB_GETCURSEL, 0, 0) == 1 &&
             SendMessageW(state.bypass, BM_GETCHECK, 0, 0) == BST_CHECKED &&
             SendMessageW(state.vertical, TBM_GETPOS, 0, 0) == -432;
@@ -2750,6 +2869,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.heartbeat();
         trace << "preset-shortcuts=" << preset_shortcuts_ok << '\n';
         preset_ok = preset_shortcuts_ok && preset_ok;
+        const auto list = GetDlgItem(state.controls, presets_id);
+        const auto select_from_list = [&](const wchar_t *label) {
+            const auto index = SendMessageW(list, CB_FINDSTRINGEXACT, WPARAM(-1), LPARAM(label));
+            if (index == CB_ERR)
+                return false;
+            SendMessageW(list, CB_SETCURSEL, index, 0);
+            SendMessageW(state.controls, WM_COMMAND, MAKEWPARAM(presets_id, CBN_SELENDOK), LPARAM(list));
+            return true;
+        };
+        preset_ok = select_from_list(L"Stream Comfort") && state.options.smoothing == 60 && preset_ok;
+        preset_ok = select_from_list(L"Saved · Complete round trip") &&
+                    state.preset_cursor == L"saved:Complete round trip" && preset_ok;
+        SendDlgItemMessageW(state.controls, manage_presets_id, BM_CLICK, 0, 0);
+        preset_ok = IsWindowVisible(preset_panel) && preset_ok;
+        ShowWindow(preset_panel, SW_HIDE);
         // Exercise the shipped preset through its normal dialog action.
         SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::dan_id, 0);
         preset_ok = preset_ok && state.preset_cursor == L"builtin:dan" && state.options.smoothing == 82.5 &&
@@ -2782,6 +2916,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         preset_ok = save_controls(preset_panel, state.directory + L"\\preview-presets-test.bmp") && preset_ok;
         SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::delete_id, 0);
         preset_ok = test_store.list(preset_error).empty() && preset_ok;
+        preset_ok = preset_ok && SendMessageW(list, CB_FINDSTRINGEXACT, WPARAM(-1), LPARAM(L"Saved · Complete round trip")) == CB_ERR;
         RemoveDirectoryW(presets_directory.c_str());
         trace << "complete-presets=" << preset_ok << '\n';
         okay = okay && preset_ok;
@@ -2936,12 +3071,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     ShowWindow(state.output, SW_SHOW);
     if (state.start_fullscreen && !state.fullscreen)
         state.toggle_fullscreen();
-    if (!state.demo)
+    if (!state.demo && !state.diagnostic) {
+        if (!state.expired && (startup_connection == LayerConnectionState::missing ||
+                               startup_connection == LayerConnectionState::upgrade_or_repair) &&
+            DialogBoxParamW(instance, L"STEADYXR_LAYER_SETUP", state.controls, App::layer_setup_dialog,
+                            reinterpret_cast<LPARAM>(&state)) == IDOK)
+            state.connection(true);
         check_for_release_update();
+    }
     state.heartbeat();
     state.update_status();
     std::uint64_t last_status = 0, last_heartbeat = 0;
-    double next_frame = double(GetTickCount64());
+    const auto frame_origin = std::chrono::steady_clock::now();
+    const auto frame_clock_ms = [&] {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frame_origin).count();
+    };
+    double next_frame_ms = 0;
     bool was_waiting = false;
     std::uint64_t last_waiting_paint{};
     MSG msg{};
@@ -2996,8 +3141,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         // polling gate misses frames whose GPU key becomes ready just after
         // the poll, leaving the producer's single slot occupied another frame.
         const bool submitted_feed = !state.demo && !state.window_mode;
-        if (state.active() && (submitted_feed || double(now) >= next_frame)) {
-            bool received = state.demo          ? state.renderer.demo((now - state.start_ms) / 1000., true, state.selected_eye)
+        const double frame_ms = submitted_feed ? 0. : frame_clock_ms();
+        if (state.active() && (submitted_feed || frame_ms >= next_frame_ms)) {
+            bool received = state.demo          ? state.renderer.demo(frame_ms / 1000., true, state.selected_eye)
                             : state.window_mode ? state.capture_frame(now)
                                                 : state.channel.owns_consumer() &&
                                                       state.renderer.consume(state.channel, true);
@@ -3017,8 +3163,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             if ((received || state.dirty) && !state.waiting(now))
                 state.renderer.draw(state.draw_options(now));
             state.dirty = false;
-            if (!submitted_feed)
-                next_frame = std::max(next_frame + 1000. / state.rate, double(now));
+            if (!submitted_feed) {
+                const double period_ms = 1000. / state.rate;
+                // Missed ticks (for example after a pause) should not produce a burst.
+                next_frame_ms += (1. + std::floor((frame_ms - next_frame_ms) / period_ms)) * period_ms;
+            }
         } else if (state.dirty && !state.waiting(now) && IsWindowVisible(state.output) &&
                    !IsIconic(state.output)) {
             state.renderer.draw(state.draw_options(now));
@@ -3039,7 +3188,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         const DWORD delay = !state.active()        ? 50
                             : submitted_feed
                                 ? 1
-                                : DWORD(std::clamp(next_frame - double(GetTickCount64()), 1., 16.));
+                                : DWORD(std::clamp(next_frame_ms - frame_clock_ms(), 1., 16.));
         MsgWaitForMultipleObjectsEx(0, nullptr, delay, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
     state.channel.release_consumer();

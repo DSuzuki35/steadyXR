@@ -81,7 +81,7 @@ bool viewer_active(const Shared &shared, std::uint64_t now_ms);
 
 // A phase-preserving capture schedule, independent of game frame cadence.
 struct RateLimiter {
-    std::uint64_t next_ns{};
+    std::uint64_t next_ns{}, early_ns{};
     unsigned fps{};
     bool due(std::uint64_t now_ns, unsigned requested_fps);
     void published(std::uint64_t now_ns, unsigned requested_fps);

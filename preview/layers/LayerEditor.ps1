@@ -125,116 +125,197 @@ if ($Report) {
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -Path (Join-Path $PSScriptRoot 'LayerEditorTheme.cs') -ReferencedAssemblies System.Windows.Forms,System.Drawing
+[void][SteadyXR.LayerEditorTheme]::SetProcessDPIAware()
 [Windows.Forms.Application]::EnableVisualStyles()
-$bg = [Drawing.Color]::FromArgb(16, 21, 29)
-$panel = [Drawing.Color]::FromArgb(24, 31, 42)
-$field = [Drawing.Color]::FromArgb(33, 43, 56)
-$textColor = [Drawing.Color]::FromArgb(231, 239, 248)
-$accent = [Drawing.Color]::FromArgb(63, 218, 231)
-$muted = [Drawing.Color]::FromArgb(153, 172, 191)
+$display = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
+try { $dpiScale = $display.DpiX / 96.0 } finally { $display.Dispose() }
+function Scale-Unit([int]$value) { return [int][Math]::Round($value * $dpiScale) }
+$highContrast = [Windows.Forms.SystemInformation]::HighContrast
+function Get-Color([string]$hex, [Drawing.Color]$accessible) {
+    if ($highContrast) { return $accessible }
+    return [Drawing.ColorTranslator]::FromHtml($hex)
+}
+$chrome = Get-Color '#151517' ([Drawing.SystemColors]::Control)
+$canvas = Get-Color '#1c1c1f' ([Drawing.SystemColors]::Window)
+$rail = Get-Color '#19191c' ([Drawing.SystemColors]::Control)
+$card = Get-Color '#242428' ([Drawing.SystemColors]::Window)
+$field = Get-Color '#2a2d32' ([Drawing.SystemColors]::Control)
+$line = Get-Color '#35353c' ([Drawing.SystemColors]::WindowText)
+$textColor = Get-Color '#f4f6f8' ([Drawing.SystemColors]::WindowText)
+$muted = Get-Color '#aab0b9' ([Drawing.SystemColors]::WindowText)
+$blue = Get-Color '#5e9eff' ([Drawing.SystemColors]::Highlight)
 $script:form = New-Object Windows.Forms.Form
+$script:form.SuspendLayout()
 $script:form.Text = 'SteadyXR - OpenXR layers'
-$script:form.BackColor = $bg
+$script:form.BackColor = $canvas
 $script:form.ForeColor = $textColor
 $script:form.Font = New-Object Drawing.Font('Segoe UI', 10)
-$script:form.ClientSize = New-Object Drawing.Size(1120, 780)
-$script:form.MinimumSize = New-Object Drawing.Size(1080, 790)
+$script:form.AutoScaleMode = 'None'
+$script:form.ClientSize = New-Object Drawing.Size((Scale-Unit 1100), (Scale-Unit 692))
+$script:form.MinimumSize = New-Object Drawing.Size((Scale-Unit 440), (Scale-Unit 330))
 $script:form.StartPosition = 'CenterScreen'
-$script:form.AutoScaleMode = 'Dpi'
 $icon = Join-Path $versionDirectory 'SteadyXR.ico'
 if (-not (Test-Path -LiteralPath $icon)) { $icon = Join-Path $versionDirectory 'assets\SteadyXR.ico' }
 if (Test-Path -LiteralPath $icon) { $script:form.Icon = New-Object Drawing.Icon($icon) }
 
-function Add-Label([string]$caption, [int]$x, [int]$y, [int]$width, [int]$height) {
+function Place-Control($control, $parent, [int]$x, [int]$y, [int]$width, [int]$height, [string]$anchor) {
+    $control.SetBounds((Scale-Unit $x), (Scale-Unit $y), (Scale-Unit $width), (Scale-Unit $height))
+    $parent.Controls.Add($control)
+    if ($anchor) { $control.Anchor = $anchor }
+}
+function Add-Panel($parent, $color, $x, $y, $width, $height, $anchor) {
+    $surface = New-Object Windows.Forms.Panel
+    $surface.BackColor = $color
+    Place-Control $surface $parent $x $y $width $height $anchor
+    return $surface
+}
+function Add-Label($parent, [string]$caption, $x, $y, $width, $height, $fontSize, $color, [switch]$Strong) {
     $label = New-Object Windows.Forms.Label
-    $label.Text = $caption; $label.Location = New-Object Drawing.Point($x, $y)
-    $label.Size = New-Object Drawing.Size($width, $height)
-    $script:form.Controls.Add($label)
+    $label.Text = $caption
+    $label.TextAlign = 'MiddleLeft'
+    $label.ForeColor = $color
+    $family = if ($Strong) { 'Segoe UI Semibold' } else { 'Segoe UI' }
+    $label.Font = New-Object Drawing.Font($family, $fontSize)
+    $label.AutoEllipsis = $true
+    Place-Control $label $parent $x $y $width $height
     return $label
 }
-function Add-Button([string]$caption, [int]$x, [int]$y, [int]$width, [scriptblock]$action) {
+function Add-Button($parent, [string]$caption, $x, $y, $width, [scriptblock]$action, [switch]$Primary) {
     $button = New-Object Windows.Forms.Button
-    $button.Text = $caption; $button.Location = New-Object Drawing.Point($x, $y)
-    $button.Size = New-Object Drawing.Size($width, 34)
-    $button.BackColor = $field; $button.ForeColor = $textColor; $button.FlatStyle = 'Flat'
-    $button.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(53, 66, 82)
-    $button.Add_Paint({
-        if (-not $this.Enabled) {
-            $inside = New-Object Drawing.Rectangle(1, 1, ($this.Width - 2), ($this.Height - 2))
-            $brush = New-Object Drawing.SolidBrush($this.BackColor)
-            try { $_.Graphics.FillRectangle($brush, $inside) } finally { $brush.Dispose() }
-            [Windows.Forms.TextRenderer]::DrawText($_.Graphics, $this.Text, $this.Font, $inside,
-                [Drawing.Color]::FromArgb(119, 139, 159), ([Windows.Forms.TextFormatFlags]::HorizontalCenter -bor
-                [Windows.Forms.TextFormatFlags]::VerticalCenter -bor [Windows.Forms.TextFormatFlags]::SingleLine))
-        }
-    })
+    $button.Text = $caption
+    Place-Control $button $parent $x $y $width 36
+    [SteadyXR.LayerEditorTheme]::StyleButton($button, $Primary.IsPresent)
     $button.Add_Click($action)
-    $script:form.Controls.Add($button)
     return $button
 }
-$title = Add-Label 'SteadyXR' 22 16 300 36
-$title.Font = New-Object Drawing.Font('Segoe UI Semibold', 22)
-$title.ForeColor = $accent
-$subtitle = Add-Label 'OPENXR LAYERS' 25 58 600 22
-$subtitle.ForeColor = $muted
-$script:runtime = Add-Label '' 25 86 1050 24
-$script:runtime.ForeColor = $muted
-$architecture = New-Object Windows.Forms.ComboBox
-$architecture.Location = New-Object Drawing.Point(25, 121); $architecture.Size = New-Object Drawing.Size(220, 30)
-$architecture.DropDownStyle = 'DropDownList'; $architecture.BackColor = $field; $architecture.ForeColor = $textColor
-$architecture.Items.AddRange(@('64-bit (iRacing)', '32-bit applications'))
-$architecture.SelectedIndex = 0; $script:form.Controls.Add($architecture)
-$script:scopeHint = Add-Label 'Implicit layers: system first, then current user. Restart the game after changes.' 265 125 830 28
+
+# The full surface remains reachable by scrolling on small displays or with larger system fonts.
+$viewport = New-Object Windows.Forms.Panel
+$viewport.Dock = 'Fill'
+$viewport.AutoScroll = $true
+$viewport.AutoScrollMinSize = $script:form.ClientSize
+$script:form.Controls.Add($viewport)
+$shell = Add-Panel $viewport $canvas 0 0 1100 692
+$shell.Dock = 'Fill'
+$header = Add-Panel $shell $chrome 0 0 1100 60 'Top, Left, Right'
+$logoPath = Join-Path (Split-Path $icon -Parent) 'SteadyXR.png'
+if (Test-Path -LiteralPath $logoPath) {
+    $logo = New-Object Windows.Forms.PictureBox
+    $logo.Image = [Drawing.Image]::FromFile($logoPath)
+    $logo.SizeMode = 'Zoom'
+    Place-Control $logo $header 22 14 32 32
+}
+$null = Add-Label $header 'SteadyXR' 62 0 126 60 16 $textColor -Strong
+$null = Add-Panel $header $line 207 17 1 26
+$null = Add-Label $header ([string][char]0x25cf) 230 0 18 60 10 $blue
+$null = Add-Label $header 'Layer editor' 250 0 220 60 12 $textColor -Strong
+$application = Join-Path $versionDirectory 'SteadyXR.exe'
+if (Test-Path -LiteralPath $application -PathType Leaf) {
+    $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($application).ProductVersion
+    if ($productVersion) {
+        $versionLabel = Add-Label $header ('v' + $productVersion) 924 0 152 60 10 $muted
+        $versionLabel.TextAlign = 'MiddleRight'
+        $versionLabel.Anchor = 'Top, Right'
+    }
+}
+$null = Add-Panel $header $line 0 59 1100 1 'Bottom, Left, Right'
+
+$sidebar = Add-Panel $shell $rail 0 60 208 632 'Top, Bottom, Left'
+$null = Add-Panel $sidebar $line 207 0 1 632 'Top, Bottom, Right'
+$null = Add-Label $sidebar 'ARCHITECTURE' 22 17 166 30 9 $muted -Strong
+$architecture = Add-Panel $sidebar $rail 14 54 180 84
+function Add-Architecture([string]$caption, [int]$y) {
+    $choice = New-Object Windows.Forms.RadioButton
+    $choice.Appearance = 'Button'
+    $choice.Text = $caption
+    Place-Control $choice $architecture 0 $y 180 38
+    [SteadyXR.LayerEditorTheme]::StyleButton($choice, $false)
+    return $choice
+}
+$view64 = Add-Architecture '64-bit (iRacing)' 0
+$view32 = Add-Architecture '32-bit applications' 44
+$view64.Checked = $true
+$null = Add-Label $sidebar 'REGISTRATION' 22 158 166 30 9 $muted -Strong
+$script:register = Add-Button $sidebar 'Install / repair SteadyXR' 14 197 180 { Register-OwnLayer }
+$script:admin = Add-Button $sidebar 'Administrator editor...' 14 241 180 { Open-AdminEditor }
+$null = Add-Label $sidebar 'RECOVERY' 22 303 166 30 9 $muted -Strong
+$script:undo = Add-Button $sidebar 'Undo last apply' 14 342 180 { Undo-Plan }
+$script:restore = Add-Button $sidebar 'Restore backup...' 14 386 180 { Restore-Backup }
+
+$null = Add-Label $shell 'OpenXR layers' 232 76 540 46 23 $textColor -Strong
+$script:runtime = Add-Label $shell '' 234 125 834 25 10 $muted
+$script:runtime.Anchor = 'Top, Left, Right'
+
+$registration = Add-Panel $shell $card 232 166 844 272 'Top, Bottom, Left, Right'
+[SteadyXR.LayerEditorTheme]::StyleCard($registration)
+$null = Add-Label $registration 'Registered layers' 18 10 330 36 14 $textColor -Strong
+$script:refresh = Add-Button $registration 'Refresh' 736 11 90 { Read-Layers }
+$script:refresh.Anchor = 'Top, Right'
+$null = Add-Label $registration 'Implicit layers load in order within each scope, system first.' 18 48 780 24 10 $muted
 
 $script:grid = New-Object Windows.Forms.DataGridView
-$script:grid.Location = New-Object Drawing.Point(25, 165)
-$script:grid.Size = New-Object Drawing.Size(1070, 302)
-$script:grid.Anchor = 'Top, Left, Right'
-$script:grid.BackgroundColor = $panel; $script:grid.BorderStyle = 'None'
+Place-Control $script:grid $registration 18 83 808 126 'Top, Bottom, Left, Right'
+$script:grid.AccessibleName = 'Registered OpenXR layers'
+$script:grid.BackgroundColor = $canvas
+$script:grid.BorderStyle = 'None'
 $script:grid.AllowUserToAddRows = $false; $script:grid.AllowUserToDeleteRows = $false
 $script:grid.AllowUserToResizeRows = $false; $script:grid.RowHeadersVisible = $false
 $script:grid.ReadOnly = $true; $script:grid.MultiSelect = $false; $script:grid.SelectionMode = 'FullRowSelect'
 $script:grid.AutoGenerateColumns = $false; $script:grid.EnableHeadersVisualStyles = $false
-$script:grid.ColumnHeadersDefaultCellStyle.BackColor = $field; $script:grid.ColumnHeadersDefaultCellStyle.ForeColor = $textColor
-$script:grid.DefaultCellStyle.BackColor = $panel; $script:grid.DefaultCellStyle.ForeColor = $textColor
-$script:grid.DefaultCellStyle.SelectionBackColor = [Drawing.Color]::FromArgb(32, 84, 96)
-$script:grid.DefaultCellStyle.SelectionForeColor = $textColor
-$script:grid.GridColor = $field; $script:grid.RowTemplate.Height = 32
-foreach ($columnSpec in @(@('Position', 70), @('Layer', 275), @('Status', 280), @('Scope', 150), @('Type', 110))) {
+$script:grid.ColumnHeadersBorderStyle = 'None'
+$script:grid.ColumnHeadersHeightSizeMode = 'DisableResizing'
+$script:grid.ColumnHeadersHeight = Scale-Unit 30
+$script:grid.ColumnHeadersDefaultCellStyle.BackColor = $field
+$script:grid.ColumnHeadersDefaultCellStyle.ForeColor = $muted
+$script:grid.DefaultCellStyle.BackColor = $canvas; $script:grid.DefaultCellStyle.ForeColor = $textColor
+$script:grid.DefaultCellStyle.SelectionBackColor = Get-Color '#223147' ([Drawing.SystemColors]::Highlight)
+$script:grid.DefaultCellStyle.SelectionForeColor = Get-Color '#dbeaff' ([Drawing.SystemColors]::HighlightText)
+$script:grid.DefaultCellStyle.Padding = New-Object Windows.Forms.Padding((Scale-Unit 6), 0, (Scale-Unit 4), 0)
+$script:grid.ColumnHeadersDefaultCellStyle.Padding = $script:grid.DefaultCellStyle.Padding
+$script:grid.CellBorderStyle = 'SingleHorizontal'
+$script:grid.GridColor = $line; $script:grid.RowTemplate.Height = Scale-Unit 32
+foreach ($spec in @(@('Order', 70), @('Layer', 208), @('Status', 226), @('Scope', 149), @('Type', 109))) {
     $column = New-Object Windows.Forms.DataGridViewTextBoxColumn
-    $column.HeaderText = $columnSpec[0]; $column.Width = $columnSpec[1]; $column.SortMode = 'NotSortable'
+    $column.HeaderText = $spec[0]; $column.FillWeight = $spec[1]
+    $column.AutoSizeMode = 'Fill'; $column.SortMode = 'NotSortable'
     $script:grid.Columns.Add($column) | Out-Null
 }
-$script:grid.Columns[1].AutoSizeMode = 'Fill'
-$script:form.Controls.Add($script:grid)
+$script:up = Add-Button $registration 'Move up' 18 222 100 { Move-Layer -1 }
+$script:down = Add-Button $registration 'Move down' 126 222 110 { Move-Layer 1 }
+$script:toggle = Add-Button $registration 'Disable' 249 222 100 { Toggle-Layer }
+$script:remove = Add-Button $registration 'Remove registration' 357 222 165 { Remove-Layer }
+foreach ($button in @($script:up, $script:down, $script:toggle, $script:remove)) { $button.Anchor = 'Bottom, Left' }
 
-$script:toggle = Add-Button 'Disable' 25 481 110 { Toggle-Layer }
-$script:remove = Add-Button 'Remove registration' 146 481 183 { Remove-Layer }
-$script:up = Add-Button 'Move up' 340 481 106 { Move-Layer -1 }
-$script:down = Add-Button 'Move down' 457 481 116 { Move-Layer 1 }
-$script:register = Add-Button 'Register SteadyXR' 585 481 180 { Register-OwnLayer }
-$script:admin = Add-Button 'Administrator editor...' 785 481 220 { Open-AdminEditor }
-$script:detailBox = New-Object Windows.Forms.TextBox
-$script:detailBox.Location = New-Object Drawing.Point(25, 529)
-$script:detailBox.Size = New-Object Drawing.Size(1070, 120)
-$script:detailBox.Multiline = $true; $script:detailBox.ReadOnly = $true; $script:detailBox.ScrollBars = 'Vertical'
-$script:detailBox.BorderStyle = 'FixedSingle'; $script:detailBox.BackColor = $panel; $script:detailBox.ForeColor = $muted
-$script:detailBox.Anchor = 'Top, Left, Right'; $script:form.Controls.Add($script:detailBox)
-$script:status = New-Object Windows.Forms.TextBox
-$script:status.Text = 'Choose a layer to inspect it. No registration changes until you click Apply changes.'
-$script:status.Location = New-Object Drawing.Point(25, 659)
-$script:status.Size = New-Object Drawing.Size(1070, 56)
-$script:status.Multiline = $true; $script:status.ReadOnly = $true; $script:status.ScrollBars = 'Vertical'
-$script:status.BorderStyle = 'None'; $script:status.BackColor = $bg; $script:status.ForeColor = $textColor
-$script:status.Anchor = 'Top, Left, Right'; $script:form.Controls.Add($script:status)
-$script:apply = Add-Button 'Apply changes' 25 726 158 { Apply-Plan }
-$script:apply.BackColor = $accent; $script:apply.ForeColor = $bg
-$script:discard = Add-Button 'Discard changes' 195 726 161 { Discard-Plan }
-$script:refresh = Add-Button 'Refresh' 368 726 110 { Read-Layers }
-$script:undo = Add-Button 'Undo last apply' 490 726 162 { Undo-Plan }
-$script:restore = Add-Button 'Restore backup...' 665 726 175 { Restore-Backup }
-$script:close = Add-Button 'Close' 985 726 110 { $script:form.Close() }
-$script:close.Anchor = 'Top, Right'
+$details = Add-Panel $shell $card 232 450 844 162 'Bottom, Left, Right'
+[SteadyXR.LayerEditorTheme]::StyleCard($details)
+$detailTitle = Add-Label $details 'Layer details' 18 7 808 31 14 $textColor -Strong
+$detailTitle.Anchor = 'Top, Left, Right'
+function Add-Readout($parent, $name, $x, $y, $width, $height, $anchor) {
+    $readout = New-Object Windows.Forms.TextBox
+    $readout.AccessibleName = $name
+    $readout.ReadOnly = $true; $readout.Multiline = $true
+    $readout.BorderStyle = 'None'; $readout.ScrollBars = 'Vertical'
+    $readout.BackColor = $parent.BackColor; $readout.ForeColor = $muted
+    Place-Control $readout $parent $x $y $width $height $anchor
+    return $readout
+}
+$script:detailBox = Add-Readout $details 'Layer details' 18 44 808 109 'Top, Bottom, Left, Right'
+$footer = Add-Panel $shell $chrome 208 624 892 68 'Bottom, Left, Right'
+$null = Add-Panel $footer $line 0 0 892 1 'Top, Left, Right'
+$script:status = Add-Readout $footer 'Editor status' 24 13 456 46 'Top, Left, Right'
+$script:apply = Add-Button $footer 'Apply changes' 499 16 128 { Apply-Plan } -Primary
+$script:discard = Add-Button $footer 'Discard changes' 635 16 137 { Discard-Plan }
+$script:close = Add-Button $footer 'Close' 780 16 88 { $script:form.Close() }
+foreach ($button in @($script:apply, $script:discard, $script:close)) { $button.Anchor = 'Top, Right' }
+
+$script:form.ResumeLayout($true)
+foreach ($control in @($script:form, $viewport, $script:grid, $script:detailBox, $script:status)) {
+    $control.Add_HandleCreated({ [SteadyXR.LayerEditorTheme]::ThemeNative($this) })
+    if ($control.IsHandleCreated) { [SteadyXR.LayerEditorTheme]::ThemeNative($control) }
+}
+$workArea = [Windows.Forms.Screen]::FromControl($script:form).WorkingArea
+$script:form.Size = New-Object Drawing.Size([Math]::Min($script:form.Width, $workArea.Width), [Math]::Min($script:form.Height, $workArea.Height))
 
 function Set-Status([string]$message) { $script:status.Text = $message }
 function Get-Selection {
@@ -425,7 +506,8 @@ function Open-AdminEditor {
     } catch { Set-Status ('Administrator editor was not opened: ' + $_.Exception.Message) }
 }
 $script:grid.Add_SelectionChanged({ Update-Actions })
-$architecture.Add_SelectedIndexChanged({ $script:is64Bit = $architecture.SelectedIndex -eq 0; Read-Layers })
+$view64.Add_CheckedChanged({ if ($view64.Checked) { $script:is64Bit = $true; Read-Layers } })
+$view32.Add_CheckedChanged({ if ($view32.Checked) { $script:is64Bit = $false; Read-Layers } })
 $script:form.Add_FormClosing({
     if ($script:pending -and -not $SelfTest) {
         $answer = [Windows.Forms.MessageBox]::Show('Discard the pending layer changes and close?', 'SteadyXR', 'YesNo', 'Question')
@@ -507,9 +589,9 @@ if ($SelfTest) {
         if ($script:pending) { throw 'Register did not restore the original bundled registration.' }
         Render-Layers 0; Toggle-Layer; Apply-Plan
         $restorePath = $script:lastBackup
-        $architecture.SelectedIndex = 1
+        $view32.Checked = $true
         if ($script:undo.Enabled -or $script:register.Enabled) { throw '64-bit actions leaked into the 32-bit view.' }
-        $architecture.SelectedIndex = 0
+        $view64.Checked = $true
         Stage-Backup $restorePath
         if (-not $script:pending) { throw 'Restore backup did not stage changes.' }
         Apply-Plan
@@ -520,16 +602,29 @@ if ($SelfTest) {
         Render-Layers 3
         if ($script:up.Enabled -or $script:down.Enabled) { throw 'Explicit layers must not offer registry ordering.' }
         Discard-Plan
-        Set-Status 'Choose a layer to inspect it. Changes are staged until you click Apply changes.'
+        Render-Layers 2
+        Move-Layer -1
+        if (-not $script:pending -or $architecture.Enabled) { throw 'A staged move must lock the architecture selector.' }
         # Realize controls offscreen: a never-shown form paints a blank bitmap.
         $script:form.StartPosition = 'Manual'
         $script:form.ShowInTaskbar = $false
         $script:form.Location = New-Object Drawing.Point(([Windows.Forms.SystemInformation]::VirtualScreen.Right + 100), 0)
         $script:form.Show()
         [Windows.Forms.Application]::DoEvents()
-        $image = New-Object Drawing.Bitmap($script:form.Width, $script:form.Height)
-        try { $script:form.DrawToBitmap($image, (New-Object Drawing.Rectangle(0, 0, $image.Width, $image.Height))); $image.Save((Join-Path $TestOutput 'steadyxr-layer-editor.png')) }
+        if ($footer.Right -gt $shell.Width -or $footer.Bottom -gt $shell.Height -or
+            $script:close.Right -gt $footer.Width -or $script:refresh.Right -gt $registration.Width) {
+            throw 'The scaled editor layout left an action outside the client surface.'
+        }
+        # Capture the entire client surface, including content that scrolls on smaller screens.
+        $image = New-Object Drawing.Bitmap($shell.Width, $shell.Height)
+        try { $shell.DrawToBitmap($image, (New-Object Drawing.Rectangle(0, 0, $image.Width, $image.Height))); $image.Save((Join-Path $TestOutput 'steadyxr-layer-editor.png')) }
         finally { $image.Dispose() }
+        $script:form.ClientSize = New-Object Drawing.Size(650, 450)
+        [Windows.Forms.Application]::DoEvents()
+        if (-not $viewport.HorizontalScroll.Visible -or -not $viewport.VerticalScroll.Visible -or
+            $shell.Width -lt $viewport.AutoScrollMinSize.Width -or $shell.Height -lt $viewport.AutoScrollMinSize.Height) {
+            throw 'The layer editor must keep its full content reachable on a small display.'
+        }
         $testPassed = $true
         'PASS: editor staging, ordering, apply, undo, toggle, discard, removal, own registration, backup restore, architecture/type boundaries and original-user SID handoff.'
     } finally {

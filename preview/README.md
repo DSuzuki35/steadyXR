@@ -1,4 +1,4 @@
-# SteadyXR 1.0.0 streamer guide
+# SteadyXR 1.0.1 streamer guide
 
 SteadyXR turns a VR game view into a stabilized stream. It opens two windows. Set up your camera in the dashboard and send **SteadyXR – Stream Output** to your audience. The dashboard, framing guides and status messages stay on your control screen.
 
@@ -8,9 +8,9 @@ SteadyXR turns a VR game view into a stabilized stream. It opens two windows. Se
 
 1. Extract the standalone ZIP into a writable folder. Keep its files together and open **SteadyXR.exe**.
 2. Open **Stream Output** in the sidebar and choose a **Live source**. For an existing game mirror, select **Capture a game window**, click **Refresh windows**, then choose the game under **Game window**. Leave that window open and unminimized.
-3. For the game's original eye image and matching headset poses, choose **OpenXR · pose and gaze**. Under **Settings**, click **Install for all users** or **Upgrade / repair** for an existing registration. Accept the Windows administrator prompt and restart the OpenXR game. Back on **Stream Output**, select the **Eye** you want to broadcast.
-4. Choose **30 FPS**, **60 FPS** or **90 FPS**. Click **Open stream output** and check that the image follows the game. **Frame rate** is a target. **Connection and capture details** shows what SteadyXR is receiving.
-5. Pick a starting look under **Presets…**. **Dan Suzuki** loads a complete 4K setup, including framing and output. After loading it, check your source, eye and output monitor. In OpenXR mode, sit in your normal driving position, look straight ahead with the headset upright and press **Camera → Center camera**.
+3. For the game's original eye image and matching headset poses, choose **OpenXR · pose and gaze**. On a normal launch, SteadyXR offers to install its OpenXR connection if it is missing, or update an outdated connection. In the prompt, choose **Install for all users**, **Update / repair**, or **Later** to continue without changing registration. Window capture works without the layer. To install later, open **Settings** and choose **Install for all users** or **Upgrade / repair**. Accept the Windows administrator prompt and restart the OpenXR game. Back on **Stream Output**, select the **Eye** you want to broadcast.
+4. Choose **30 FPS**, **60 FPS**, **72 FPS** or **90 FPS**. For a 72 Hz headset, use **72 FPS** to match your source. Click **Open stream output** and check that the image follows the game. **Frame rate** caps the available OpenXR source frames. With an ideal steady 72 Hz source, a 60 FPS cap delivers about 60 frames and skips about 12 per second. A 90 FPS cap can also show all 72 but cannot add frames the game did not supply. **Connection and capture details** shows what SteadyXR is receiving.
+5. Pick a starting look from **Choose preset…** at the top right of the dashboard. **Dan Suzuki** loads a complete 4K setup, including framing and output. After loading it, check your source, eye and output monitor. In OpenXR mode, sit in your normal driving position, look straight ahead with the headset upright and press **Camera → Center camera**.
 
 **One PC.** In OBS, add a **Window Capture** source and select **SteadyXR – Stream Output**. Keep the output visible. If your scene shows the dashboard, select the other SteadyXR window. Set up game and microphone audio separately.
 
@@ -91,6 +91,8 @@ Choose an **Aspect ratio** from the list or enter one such as `239:100`. Enter w
 - **Layer order…** opens the OpenXR layer editor. Select an entry to inspect its manifest, library path and registration scope. Changes to enabling, disabling, registering or reordering are staged. Review them, then use **Apply changes** or **Discard changes**. The editor supports verified backups, **Undo last apply** and **Restore backup…**. Apply changes with the game closed. Use **Administrator editor…** for a system-wide entry.
 - **Overlay layers…** selects additional supported composition layers submitted by the game or runtime. **None** is the default. **All supported** includes newly appearing supported overlays. For specific overlays, tick their slots. Choose **Refresh layers** after opening or closing an overlay. Individual selections apply to that game session. Recheck them after restarting. Capturing more layers adds texture copies. Unsupported or already baked-in elements cannot be isolated this way.
 
+![OpenXR layer editor showing registration scope, ordering and staged changes](../docs/images/steadyxr-layer-editor.png)
+
 ### Gaze and effects
 
 Open **Settings → Gaze & effects…**. Values take effect when you leave a numeric field. **Bypass spectator camera** and **Bypass visual effects** let you audition your saved tuning. The optional features start off.
@@ -115,7 +117,9 @@ Director lookahead requires stabilized OpenXR capture. Its 256 MiB texture budge
 
 ## Presets, shortcuts and comparison
 
-Open **Presets…** and choose **Responsive**, **Stream Comfort** or **Strong leveling** to change stabilization tuning and keep the current shot. **Dan Suzuki** loads the saved camera, framing and 4K output setup. For your own complete profile, enter a name and click **Save new**. Use **Load**, **Overwrite selected** or **Delete** for a saved profile. Complete presets include source, eye, framing, effects, output and render-extension settings. A loaded render change takes effect at the next game launch. **Next preset** cycles through tuning presets, saved profiles and Dan Suzuki.
+![Choose preset dropdown in the dashboard header showing all four factory profiles](../docs/images/steadyxr-preset-menu.png)
+
+Open **Choose preset…** in the dashboard header, just left of the version number. Choose **Responsive**, **Stream Comfort** or **Strong leveling** to change stabilization tuning and keep the current shot. You can load a saved profile directly from this list. **Dan Suzuki** loads the saved camera, framing and 4K output setup. To create or edit a complete profile, click **Manage presets…** in the left sidebar. Enter a name and click **Save new**. Use **Load**, **Overwrite selected** or **Delete** for a saved profile. Complete presets include source, eye, framing, effects, output and render-extension settings. A loaded render change takes effect at the next game launch. The **Next preset** shortcut cycles through the available profiles.
 
 ![Presets dialog with factory profiles and saved user presets](../docs/images/steadyxr-presets.png)
 
@@ -127,13 +131,13 @@ Open **Presets…** and choose **Responsive**, **Stream Comfort** or **Strong le
 | **Ctrl+Alt+B** | Start or end the 20-second comparison |
 | **Ctrl+Alt+C** | Learn chat position |
 
-These shortcuts work while the game has focus. **Shortcuts… → Keyboard reference** shows the current set. Choose the **Ctrl+Alt+Shift** alternative if another app already uses the default keys, or turn global hotkeys off.
+These shortcuts work while the game has focus. **Settings → Shortcuts… → Keyboard reference** shows the current set. Choose the **Ctrl+Alt+Shift** alternative if another app already uses the default keys, or turn global hotkeys off.
 
-For wheel or joystick controls, use **Settings → Joystick buttons…** or **Shortcuts… → Assign joystick buttons…**. Choose the **Action** and the **Joystick or wheel**, click **Learn button**, then press the physical button. Available actions also include **Capture full eye**, so you can grab a still during a drive. Use **Refresh** after reconnecting hardware, **Cancel learning** to stop waiting for a press and **Clear assignment** to remove a binding.
+For wheel or joystick controls, use **Settings → Shortcuts… → Assign joystick buttons…**. Choose the **Action** and the **Joystick or wheel**, click **Learn button**, then press the physical button. Available actions also include **Capture full eye**, so you can grab a still during a drive. Use **Refresh** after reconnecting hardware, **Cancel learning** to stop waiting for a press and **Clear assignment** to remove a binding.
 
 ![Joystick shortcuts dialog with action, device and button learning controls](../docs/images/steadyxr-joystick.png)
 
-**Shortcuts…** also lets you choose original, 50/50 split or side by side. Click **Compare** during live output to compare stabilization for 20 seconds. In split or side-by-side mode the stabilized view is on the left. Select **A/B compares visual effects only (same camera framing)** in **Gaze & effects…** to compare your grade with its bypassed image instead. The main action becomes **Effects A/B**. **End A/B** stops the comparison early.
+**Settings → Shortcuts…** also lets you choose original, 50/50 split or side by side. Click **Compare** during live output to compare stabilization for 20 seconds. In split or side-by-side mode the stabilized view is on the left. Select **A/B compares visual effects only (same camera framing)** in **Gaze & effects…** to compare your grade with its bypassed image instead. The main action becomes **Effects A/B**. **End A/B** stops the comparison early.
 
 ## Troubleshooting
 

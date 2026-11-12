@@ -129,16 +129,20 @@ bool RateLimiter::due(std::uint64_t now, unsigned requested) {
     if (fps != rate) {
         fps = rate;
         next_ns = now;
+        // CPU submissions straddle the ideal headset tick. Admit a slightly early
+        // snapshot while continuing to advance the original output cadence.
+        early_ns = std::min<std::uint64_t>(4000000, 1000000000ull / fps / 3);
     }
-    return now >= next_ns;
+    return now >= next_ns || next_ns - now <= early_ns;
 }
 void RateLimiter::published(std::uint64_t now, unsigned requested) {
     due(now, requested);
     const std::uint64_t period = 1000000000ull / fps;
     next_ns += period;
-    // Preserve cadence, but discard missed periods instead of bursting to catch up.
-    if (next_ns <= now)
-        next_ns += ((now - next_ns) / period + 1) * period;
+    // After a stall, discard missed periods. Leave a full new period if the
+    // following slot is already eligible, so a repeated poll cannot publish twice.
+    if (next_ns <= now || next_ns - now <= early_ns)
+        next_ns = now + period;
 }
 void RateLimiter::reset() {
     next_ns = 0;

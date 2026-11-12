@@ -35,6 +35,8 @@ std::filesystem::path registered_dll(const Entry &entry) {
            (legacy_entry(entry) ? legacy_capture_dll : capture_dll);
 }
 bool same_file_contents(const std::filesystem::path &a, const std::filesystem::path &b) {
+    if (same_path(a.wstring(), b.wstring()))
+        return std::ifstream(a, std::ios::binary).is_open();
     std::error_code ec;
     const auto a_size = std::filesystem::file_size(a, ec);
     if (ec)
@@ -101,18 +103,30 @@ LayerRegistryRoots registry_roots(const wchar_t *registry) {
 bool usable(const Entry &entry) {
     return entry.value == 0 && file_present(entry.name) && file_present(registered_dll(entry));
 }
-std::optional<Entry> effective_entry(const LayerRegistryRoots &roots) {
+struct Discovery {
+    std::optional<Entry> effective;
+    bool has_enabled_registration{};
+    LONG error{ERROR_SUCCESS};
+};
+Discovery discover(const LayerRegistryRoots &roots) {
+    Discovery result;
     // Match the loader's discovery order. A later duplicate cannot choose the settings file.
     for (const auto &scope :
          {std::pair{roots.machine_hive, roots.machine_key}, std::pair{roots.user_hive, roots.user_key}}) {
         std::vector<Entry> found;
-        if (read_scope(scope.first, scope.second, found) != ERROR_SUCCESS)
-            return std::nullopt;
-        for (const auto &entry : found)
-            if (usable(entry))
-                return entry;
+        result.error = read_scope(scope.first, scope.second, found);
+        if (result.error != ERROR_SUCCESS)
+            return result;
+        for (const auto &entry : found) {
+            if (entry.value == 0)
+                result.has_enabled_registration = true;
+            if (usable(entry)) {
+                result.effective = entry;
+                return result;
+            }
+        }
     }
-    return std::nullopt;
+    return result;
 }
 LONG write(HKEY key, const std::wstring &name, DWORD value) {
     return RegSetValueExW(key, name.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&value),
@@ -120,7 +134,7 @@ LONG write(HKEY key, const std::wstring &name, DWORD value) {
 }
 } // namespace
 bool layer_installed(const std::wstring &directory, bool any_version, const LayerRegistryRoots &roots) {
-    const auto entry = effective_entry(roots);
+    const auto entry = discover(roots).effective;
     return entry &&
            (any_version || same_path(std::filesystem::path(entry->name).parent_path().wstring(), directory));
 }
@@ -146,18 +160,23 @@ std::optional<std::wstring> compatible_layer_directory(const std::wstring &direc
 }
 std::optional<std::wstring> compatible_layer_settings_path(const std::wstring &directory,
                                                            const LayerRegistryRoots &roots) {
-    const auto entry = effective_entry(roots);
-    if (!entry)
-        return std::nullopt;
-    const auto registered_directory = std::filesystem::path(entry->name).parent_path().lexically_normal();
-    const auto dll = registered_dll(*entry);
-    if (same_file_contents(std::filesystem::path(directory) / capture_dll, dll))
-        return capture_settings_path(registered_directory.wstring());
-    // IPC v4 requires an explicit upgrade from every older capture DLL.
-    return std::nullopt;
+    return inspect_layer_connection(directory, roots).settings_path;
+}
+LayerConnectionInfo inspect_layer_connection(const std::wstring &directory, const LayerRegistryRoots &roots) {
+    const auto found = discover(roots);
+    if (found.error != ERROR_SUCCESS)
+        return {};
+    if (!found.has_enabled_registration)
+        return {LayerConnectionState::missing, std::nullopt};
+    if (found.effective && same_file_contents(std::filesystem::path(directory) / capture_dll,
+                                              registered_dll(*found.effective))) {
+        const auto path = std::filesystem::path(found.effective->name).parent_path().lexically_normal();
+        return {LayerConnectionState::compatible, capture_settings_path(path.wstring())};
+    }
+    return {LayerConnectionState::upgrade_or_repair, std::nullopt};
 }
 std::optional<std::wstring> installed_layer_settings_path(const LayerRegistryRoots &roots) {
-    const auto entry = effective_entry(roots);
+    const auto entry = discover(roots).effective;
     return entry ? std::optional<std::wstring>{capture_settings_path(
                        std::filesystem::path(entry->name).parent_path().wstring())}
                  : std::nullopt;

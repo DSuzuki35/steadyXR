@@ -325,6 +325,8 @@ struct PresetsDialog::Impl {
             return;
         }
         refresh(value);
+        if (callbacks.list_changed)
+            callbacks.list_changed();
         feedback((overwrite ? L"Updated \u201c" : L"Saved \u201c") + value +
                  L"\u201d with all settings, including render settings.");
     }
@@ -352,6 +354,8 @@ struct PresetsDialog::Impl {
         }
         SetWindowTextW(name, L"");
         refresh();
+        if (callbacks.list_changed)
+            callbacks.list_changed();
         feedback(L"Deleted \u201c" + value + L"\u201d. Current preview settings are unchanged.");
     }
     void builtin(BuiltinPreset preset) {

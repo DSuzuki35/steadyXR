@@ -1,6 +1,6 @@
 # SteadyXR licensing and third-party notices
 
-The public SteadyXR 1.0.0 standalone application and OpenXR capture layer use PolyForm Noncommercial 1.0.0 for their original code and assets. Earlier GPL grants remain in force for the code distributed under them. [SteadyXR license](LICENSE) · [GNU GPL version 2](licenses/GPL-2.0.txt)
+The public SteadyXR standalone application and OpenXR capture layer use PolyForm Noncommercial 1.0.0 for their original code and assets. Earlier GPL grants remain in force for the code distributed under them. [SteadyXR license](LICENSE) · [GNU GPL version 2](licenses/GPL-2.0.txt)
 
 Required Notice: Copyright (c) 2026 Dan Suzuki (https://github.com/DSuzuki35/steadyXR)
 

@@ -116,7 +116,7 @@ void sidebar_icon(HDC dc, UINT id, int x, int y, UINT dpi, COLORREF color) {
         circle(7, 3, 14, 10);
         circle(12, 12, 19, 19);
         break;
-    case 135: // Next preset
+    case 153: // Manage presets
         stroke({{3, 8}, {11, 4}, {20, 8}, {11, 12}, {3, 8}});
         stroke({{3, 12}, {11, 16}, {20, 12}});
         stroke({{3, 16}, {11, 20}, {20, 16}});
@@ -716,7 +716,8 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
                 SetTextColor(dc, color);
                 DrawTextW(dc, value, -1, &bounds, align | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             };
-            caption(L"SteadyXR", {65, 0, 191, 64}, heading_, text);
+            caption(L"SteadyXR", {65, 7, 191, 35}, heading_, text);
+            caption(L"by Dan Suzuki", {65, 35, 191, 54}, caption_, muted);
             fill(dc, {207, 20, 208, 44}, hairline);
             rounded(dc, {238, 28, 246, 36}, blue, blue, 8);
             caption(L"Stream Output", {257, 0, 510, 64}, strong_, text);
@@ -726,7 +727,7 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
 #endif
             SetTextCharacterExtra(dc, 1);
             caption(L"WORKSPACE", {28, 86, 192, 113}, caption_, muted);
-            caption(L"PROFILE", {28, 386, 192, 413}, caption_, muted);
+            caption(L"PRESETS", {28, 386, 192, 413}, caption_, muted);
             caption(L"SUPPORT", {28, 496, 192, 523}, caption_, muted);
             SetTextCharacterExtra(dc, 0);
         } else {

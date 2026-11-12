@@ -12,6 +12,12 @@ struct LayerRegistryRoots {
     HKEY user_hive = HKEY_CURRENT_USER;
     const wchar_t *user_key = layer_registry_key;
 };
+enum class LayerConnectionState { unknown, missing, upgrade_or_repair, compatible };
+struct LayerConnectionInfo {
+    LayerConnectionState state{LayerConnectionState::unknown};
+    std::optional<std::wstring> settings_path;
+};
+LayerConnectionInfo inspect_layer_connection(const std::wstring &directory, const LayerRegistryRoots &roots = {});
 // A custom subkey uses only HKCU. The default checks native machine-then-user discovery order.
 bool layer_installed(const std::wstring &directory, bool any_version = false,
                      const wchar_t *registry = layer_registry_key);
