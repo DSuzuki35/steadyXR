@@ -66,4 +66,4 @@ The app and capture layer are built in `build/preview/Release`. The downloadable
 
 ## License
 
-Original SteadyXR standalone code and assets in this public release are source-available under **PolyForm Noncommercial 1.0.0**, the same license used by OpenGrid XR. Earlier license grants remain valid. Third-party components retain their own terms. [License](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md)
+Original SteadyXR standalone code and assets in this public release are source-available under **PolyForm Noncommercial 1.0.0**. Earlier license grants remain valid. Third-party components retain their own terms. [License](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md)

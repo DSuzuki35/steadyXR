@@ -206,20 +206,21 @@ if (Test-Path -LiteralPath $logoPath) {
     $logo.SizeMode = 'Zoom'
     Place-Control $logo $header 22 14 32 32
 }
-$null = Add-Label $header 'SteadyXR' 62 0 126 60 16 $textColor -Strong
+$null = Add-Label $header 'SteadyXR' 62 0 126 58 16 $textColor -Strong
 $null = Add-Panel $header $line 207 17 1 26
-$null = Add-Label $header ([string][char]0x25cf) 230 0 18 60 10 $blue
-$null = Add-Label $header 'Layer editor' 250 0 220 60 12 $textColor -Strong
+$null = Add-Label $header ([string][char]0x25cf) 230 0 18 58 10 $blue
+$null = Add-Label $header 'Layer editor' 250 0 220 58 12 $textColor -Strong
 $application = Join-Path $versionDirectory 'SteadyXR.exe'
 if (Test-Path -LiteralPath $application -PathType Leaf) {
     $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($application).ProductVersion
     if ($productVersion) {
-        $versionLabel = Add-Label $header ('v' + $productVersion) 924 0 152 60 10 $muted
+        $versionLabel = Add-Label $header ('v' + $productVersion) 924 0 152 58 10 $muted
         $versionLabel.TextAlign = 'MiddleRight'
         $versionLabel.Anchor = 'Top, Right'
     }
 }
-$null = Add-Panel $header $line 0 59 1100 1 'Bottom, Left, Right'
+$headerDivider = Add-Panel $header $line 0 0 1100 1
+$headerDivider.Dock = 'Bottom'
 
 $sidebar = Add-Panel $shell $rail 0 60 208 632 'Top, Bottom, Left'
 $null = Add-Panel $sidebar $line 207 0 1 632 'Top, Bottom, Right'
@@ -611,13 +612,26 @@ if ($SelfTest) {
         $script:form.Location = New-Object Drawing.Point(([Windows.Forms.SystemInformation]::VirtualScreen.Right + 100), 0)
         $script:form.Show()
         [Windows.Forms.Application]::DoEvents()
+        foreach ($control in $header.Controls) {
+            if ($control -is [Windows.Forms.Label] -and $control.Bottom -gt $sidebar.Top - (Scale-Unit 1)) {
+                throw "Header label '$($control.Text)' overlaps the divider."
+            }
+        }
         if ($footer.Right -gt $shell.Width -or $footer.Bottom -gt $shell.Height -or
             $script:close.Right -gt $footer.Width -or $script:refresh.Right -gt $registration.Width) {
             throw 'The scaled editor layout left an action outside the client surface.'
         }
         # Capture the entire client surface, including content that scrolls on smaller screens.
         $image = New-Object Drawing.Bitmap($shell.Width, $shell.Height)
-        try { $shell.DrawToBitmap($image, (New-Object Drawing.Rectangle(0, 0, $image.Width, $image.Height))); $image.Save((Join-Path $TestOutput 'steadyxr-layer-editor.png')) }
+        try {
+            $shell.DrawToBitmap($image, (New-Object Drawing.Rectangle(0, 0, $image.Width, $image.Height)))
+            $image.Save((Join-Path $TestOutput 'steadyxr-layer-editor.png'))
+            for ($x = 0; $x -lt $shell.ClientSize.Width; $x++) {
+                if ($image.GetPixel($x, $sidebar.Top - 1).ToArgb() -ne $line.ToArgb()) {
+                    throw "Header divider is interrupted at column $x."
+                }
+            }
+        }
         finally { $image.Dispose() }
         $script:form.ClientSize = New-Object Drawing.Size(650, 450)
         [Windows.Forms.Application]::DoEvents()
