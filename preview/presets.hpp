@@ -8,7 +8,9 @@
 #include <vector>
 
 namespace vrst::preview {
-enum class BuiltinPreset { natural, stream_comfort, strong_leveling, dan_suzuki };
+enum class BuiltinPreset { natural, stream_comfort, strong_leveling, dan_suzuki, dan_no_motion };
+inline constexpr wchar_t dan_motion_name[] = L"Dan Suzuki (Motion)";
+inline constexpr wchar_t dan_no_motion_name[] = L"Dan Suzuki (No Motion)";
 
 // Snapshots are opaque INI bytes, preserving every section and future setting.
 class PresetStore {
@@ -39,7 +41,8 @@ class PresetsDialog {
         strong_id,
         status_id,
         close_id,
-        dan_id
+        dan_id,
+        dan_no_motion_id
     };
     struct Callbacks {
         std::function<std::string()> capture;

@@ -43,6 +43,28 @@ int main() {
     try {
         {
             Options tuning;
+            tuning.crop = 40;
+            tuning.smoothing = 0;
+            tuning.separate_smoothing = true;
+            auto correction = [&](Vec3 axis) {
+                FrameStabilizer camera;
+                camera.update(frame(1), tuning);
+                const auto output = camera.update(oriented_frame(2, axis_angle(axis, .05)), tuning);
+                check(output.valid, "axis test needs valid camera output");
+                return angle_between(output.warp.correction, {});
+            };
+            tuning.horizontal_smoothing = 100;
+            tuning.vertical_smoothing = 0;
+            check(correction({0, 1, 0}) > .04 && correction({1, 0, 0}) < 1e-6,
+                  "horizontal smoothing must leave pitch free");
+            std::swap(tuning.horizontal_smoothing, tuning.vertical_smoothing);
+            check(correction({1, 0, 0}) > .04 && correction({0, 1, 0}) < 1e-6,
+                  "vertical smoothing must leave yaw free");
+            tuning.separate_smoothing = false;
+            check(correction({1, 0, 0}) < 1e-6, "simple smoothing must ignore saved axis values");
+        }
+        {
+            Options tuning;
             tuning.smoothing = 0;
             tuning.crop = 40;
             tuning.mirror = false;

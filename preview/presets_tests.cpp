@@ -172,6 +172,8 @@ int main() {
                   "failed apply is reported instead of a successful load");
             apply_allowed = true;
             for (const auto &entry : {std::pair{PresetsDialog::natural_id, BuiltinPreset::natural},
+                                      std::pair{PresetsDialog::dan_id, BuiltinPreset::dan_suzuki},
+                                      std::pair{PresetsDialog::dan_no_motion_id, BuiltinPreset::dan_no_motion},
                                       std::pair{PresetsDialog::comfort_id, BuiltinPreset::stream_comfort},
                                       std::pair{PresetsDialog::strong_id, BuiltinPreset::strong_leveling}}) {
                 command(entry.first);

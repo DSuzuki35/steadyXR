@@ -124,7 +124,7 @@ Composition FrameStabilizer::update(const Frame &frame, const Options &options, 
             director_.reset();
         }
     }
-    history_.set_smoothing(options.smoothing);
+    history_.set_smoothing(options.motion_settings());
     if (frame.sequence != previous_.sequence || history_.size() == 0) {
         Pose pose;
         pose.session = frame.session;

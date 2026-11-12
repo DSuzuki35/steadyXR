@@ -79,6 +79,21 @@ int main() {
               "final image framing supplies correction room before motion limiting");
     }
     auto s = config();
+    for (bool horizontal : {true, false}) {
+        auto settings = s;
+        settings.smoothing = 0;
+        settings.motion.separate_axes = true;
+        settings.motion.yaw = horizontal ? 100 : 0;
+        settings.motion.pitch = horizontal ? 0 : 100;
+        ImageStabilizer camera;
+        camera.process(frame(), step, settings);
+        const auto moved = camera.process(frame(2.4, -1.3), step * 2, settings);
+        check(moved.status == ImageStatus::tracking &&
+                  (horizontal ? moved.correction.x > 2 && moved.correction.y == 0
+                              : moved.correction.y < -1 && moved.correction.x == 0),
+              horizontal ? "window smoothing can correct horizontal movement alone"
+                         : "window smoothing can correct vertical movement alone");
+    }
     ImageStabilizer tracker;
     auto r = tracker.process(frame(), step, s);
     check(r.status == ImageStatus::warming && r.correction.x == 0, "first frame warms with identity");

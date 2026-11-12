@@ -362,7 +362,7 @@ struct PresetsDialog::Impl {
         if (!callbacks.builtin)
             return;
         callbacks.builtin(preset);
-        if (preset != BuiltinPreset::dan_suzuki)
+        if (preset != BuiltinPreset::dan_suzuki && preset != BuiltinPreset::dan_no_motion)
             feedback(L"Camera tuning applied.");
     }
     void create() {
@@ -383,11 +383,12 @@ struct PresetsDialog::Impl {
             return;
         theme->titlebar(window);
         child(L"STATIC", L"Factory presets", 0, 24, 22, 696, 30, 0, true);
-        child(L"BUTTON", L"Dan Suzuki", BS_PUSHBUTTON, 24, 73, 160, 39, dan_id);
-        child(L"BUTTON", L"Responsive", BS_PUSHBUTTON, 202, 73, 160, 39, natural_id);
-        child(L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 380, 73, 160, 39, comfort_id);
-        child(L"BUTTON", L"Strong leveling", BS_PUSHBUTTON, 558, 73, 162, 39, strong_id);
-        child(L"STATIC", L"Dan Suzuki includes the saved camera, framing and 4K output settings.", 0, 24, 137, 696, 48);
+        child(L"BUTTON", dan_motion_name, BS_PUSHBUTTON, 24, 64, 220, 39, dan_id);
+        child(L"BUTTON", dan_no_motion_name, BS_PUSHBUTTON, 256, 64, 220, 39, dan_no_motion_id);
+        child(L"STATIC", L"Both Dan Suzuki presets include framing and 4K output.", 0, 24, 111, 696, 28);
+        child(L"BUTTON", L"Responsive", BS_PUSHBUTTON, 24, 151, 180, 39, natural_id);
+        child(L"BUTTON", L"Stream Comfort", BS_PUSHBUTTON, 216, 151, 180, 39, comfort_id);
+        child(L"BUTTON", L"Strong leveling", BS_PUSHBUTTON, 408, 151, 180, 39, strong_id);
         child(L"STATIC", L"YOUR COMPLETE PRESETS", 0, 24, 220, 696, 26, 0, true);
         child(L"STATIC",
               L"Save all settings, including source, output, eye profiles and extra render area.\r\n"
@@ -459,6 +460,9 @@ struct PresetsDialog::Impl {
                 return 0;
             case dan_id:
                 self->builtin(BuiltinPreset::dan_suzuki);
+                return 0;
+            case dan_no_motion_id:
+                self->builtin(BuiltinPreset::dan_no_motion);
                 return 0;
             case natural_id:
                 self->builtin(BuiltinPreset::natural);

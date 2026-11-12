@@ -47,7 +47,8 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               compact_status_id = 137, overlays_id = 138, spectator_id = 139, learn_chat_id = 140,
               capture_still_id = 141, pitch_id = 144,
               vertical_id = 145, horizontal_id = 146, edit_still_id = 147, coffee_id = 148,
-              affiliate_id = 149, joystick_id = 150, framing_card_id = 151, status_light_id = 152, manage_presets_id = 153;
+              affiliate_id = 149, joystick_id = 150, framing_card_id = 151, status_light_id = 152, manage_presets_id = 153,
+              separate_smoothing_id = 154, yaw_smoothing_id = 155, pitch_smoothing_id = 156, tutorial_id = 157;
 constexpr int hotkeys_default_id = 2100, hotkeys_alternate_id = 2101, hotkeys_off_id = 2102;
 constexpr int navigation_id = 1500;
 constexpr std::array<unsigned, 4> frame_rates{30, 60, 72, 90};
@@ -142,6 +143,7 @@ struct App {
         compact_status{}, comparison{}, status_detail{}, status_light{}, pitch{}, pitch_label{}, horizontal{},
         horizontal_label{}, framing_card{}, card_caption{}, card_resolution{}, card_aspect{}, card_rate{};
     std::uint64_t card_revision{};
+    HWND yaw_smoothing{}, yaw_smoothing_label{}, pitch_smoothing{}, pitch_smoothing_label{};
     double card_source_aspect{};
     HFONT font{};
     Theme theme;
@@ -151,6 +153,13 @@ struct App {
     std::wstring footer_state, footer_detail, still_status_text, comparison_text, diagnostics_text;
     COLORREF light_color{RGB(155, 162, 173)};
     ShortcutController shortcuts;
+    void show_smoothing_controls() {
+        const bool camera = selected_page == 1;
+        for (auto h : {smooth, smooth_label})
+            ShowWindow(h, camera && !options.separate_smoothing ? SW_SHOW : SW_HIDE);
+        for (auto h : {yaw_smoothing, yaw_smoothing_label, pitch_smoothing, pitch_smoothing_label})
+            ShowWindow(h, camera && options.separate_smoothing ? SW_SHOW : SW_HIDE);
+    }
     void show_page(unsigned selected) {
         if (selected >= std::size(control_pages))
             return;
@@ -169,6 +178,8 @@ struct App {
                 InvalidateRect(tab, nullptr, FALSE);
             }
         }
+        if (selected == 1)
+            show_smoothing_controls();
     }
     AdvancedSettings advanced;
     PresetsDialog presets;
@@ -357,7 +368,8 @@ struct App {
             {L"builtin:strong", L"Strong leveling", BuiltinPreset::strong_leveling}};
         for (const auto &name : names)
             choices.push_back({L"saved:" + name, name, std::nullopt});
-        choices.push_back({L"builtin:dan", L"Dan Suzuki", BuiltinPreset::dan_suzuki});
+        choices.push_back({L"builtin:dan", dan_motion_name, BuiltinPreset::dan_suzuki});
+        choices.push_back({L"builtin:dan-no-motion", dan_no_motion_name, BuiltinPreset::dan_no_motion});
         const auto list = GetDlgItem(controls, presets_id);
         preset_choices = std::move(choices);
         SendMessageW(list, CB_RESETCONTENT, 0, 0);
@@ -556,6 +568,9 @@ struct App {
         write(L"FPS", rate);
         write(L"Mode", window_mode ? 0 : 1);
         write(L"SmoothingTenths", int(options.smoothing * 10 + .5));
+        write(L"SeparateSmoothing", options.separate_smoothing);
+        write(L"HorizontalSmoothingTenths", int(std::lround(options.horizontal_smoothing * 10)));
+        write(L"VerticalSmoothingTenths", int(std::lround(options.vertical_smoothing * 10)));
         write(L"CropTenths", int(options.crop * 10 + .5));
         write(L"CropLeftTenths", int(options.crop_left * 10 + .5));
         write(L"CropRightTenths", int(options.crop_right * 10 + .5));
@@ -610,6 +625,10 @@ struct App {
         options.smoothing = value(L"Smoothing", 40, 0, 100);
         options.crop = value(L"Crop", 10, 0, int(framing_crop_max));
         options.smoothing = value(L"SmoothingTenths", int(options.smoothing * 10), 0, 1000) / 10.;
+        const int common = int(std::lround(options.smoothing * 10));
+        options.separate_smoothing = value(L"SeparateSmoothing", 0, 0, 1) != 0;
+        options.horizontal_smoothing = value(L"HorizontalSmoothingTenths", common, 0, 1000) / 10.;
+        options.vertical_smoothing = value(L"VerticalSmoothingTenths", common, 0, 1000) / 10.;
         options.crop = value(L"CropTenths", int(options.crop * 10), 0, int(framing_crop_max * 10)) / 10.;
         options.crop_left = value(L"CropLeftTenths", 0, 0, 450) / 10.;
         options.crop_right = value(L"CropRightTenths", 0, 0, 450) / 10.;
@@ -867,6 +886,8 @@ struct App {
     };
     static constexpr SliderBinding slider_bindings[]{
         {smooth_id, &Options::smoothing, &App::smooth_label, L"Smoothing: "},
+        {yaw_smoothing_id, &Options::horizontal_smoothing, &App::yaw_smoothing_label, L"Horizontal smoothing: "},
+        {pitch_smoothing_id, &Options::vertical_smoothing, &App::pitch_smoothing_label, L"Vertical smoothing: "},
         {horizon_id, &Options::horizon_lock, &App::horizon_label, L"Horizon lock: "},
         {pitch_id, &Options::pitch_lock, &App::pitch_label, L"Vertical steadiness: "},
         {crop_id, &Options::crop, &App::crop_label, L"Crop reserve   ", true},
@@ -879,6 +900,9 @@ struct App {
     }
     void set_tuning(const Options &tuning) {
         options.smoothing = tuning.smoothing;
+        options.separate_smoothing = tuning.separate_smoothing;
+        options.horizontal_smoothing = tuning.horizontal_smoothing;
+        options.vertical_smoothing = tuning.vertical_smoothing;
         options.crop = tuning.crop;
         options.horizon_lock = tuning.horizon_lock;
         options.pitch_lock = tuning.pitch_lock;
@@ -892,6 +916,7 @@ struct App {
         options.stabilize = tuning.stabilize;
         set_framing_sliders();
         SendMessageW(smooth, TBM_SETPOS, TRUE, LPARAM(options.smoothing * 10 + .5));
+        sync_axis_controls();
         SendMessageW(horizon, TBM_SETPOS, TRUE, LPARAM(options.horizon_lock * 10 + .5));
         SendMessageW(pitch, TBM_SETPOS, TRUE, LPARAM(std::lround(options.pitch_lock * 10)));
         SendMessageW(mirror_limit, TBM_SETPOS, TRUE, LPARAM(options.mirror_limit * 10 + .5));
@@ -900,6 +925,12 @@ struct App {
         SendMessageW(adaptive_horizon, BM_SETCHECK, options.adaptive_horizon ? BST_CHECKED : BST_UNCHECKED,
                      0);
         SendMessageW(bypass, BM_SETCHECK, options.stabilize ? BST_UNCHECKED : BST_CHECKED, 0);
+    }
+    void sync_axis_controls() {
+        CheckDlgButton(controls, separate_smoothing_id, options.separate_smoothing ? BST_CHECKED : BST_UNCHECKED);
+        SendMessageW(yaw_smoothing, TBM_SETPOS, TRUE, LPARAM(std::lround(options.horizontal_smoothing * 10)));
+        SendMessageW(pitch_smoothing, TBM_SETPOS, TRUE, LPARAM(std::lround(options.vertical_smoothing * 10)));
+        show_smoothing_controls();
     }
     void apply_framing(const Options &draft) {
         options.crop = draft.crop;
@@ -992,15 +1023,17 @@ struct App {
     }
     void builtin(BuiltinPreset preset) {
         cancel_comparison();
-        if (preset == BuiltinPreset::dan_suzuki) {
-            const auto resource = FindResourceW(nullptr, MAKEINTRESOURCEW(201), RT_RCDATA);
+        if (preset == BuiltinPreset::dan_suzuki || preset == BuiltinPreset::dan_no_motion) {
+            const bool motion = preset == BuiltinPreset::dan_suzuki;
+            const auto name = motion ? dan_motion_name : dan_no_motion_name;
+            const auto resource = FindResourceW(nullptr, MAKEINTRESOURCEW(motion ? 201 : 202), RT_RCDATA);
             const auto loaded = resource ? LoadResource(nullptr, resource) : nullptr;
             const auto bytes = loaded ? static_cast<const char *>(LockResource(loaded)) : nullptr;
             if (bytes && apply_snapshot(std::string(bytes, SizeofResource(nullptr, resource)))) {
-                preset_cursor = L"builtin:dan";
-                setup_message = L"Preset: Dan Suzuki";
+                preset_cursor = motion ? L"builtin:dan" : L"builtin:dan-no-motion";
+                setup_message = std::wstring(L"Preset: ") + name;
             } else {
-                setup_message = L"Could not load the Dan Suzuki preset.";
+                setup_message = std::wstring(L"Could not load ") + name + L".";
             }
             update_status();
             return;
@@ -1024,6 +1057,8 @@ struct App {
             tuning.mirror_limit = strong ? 12 : 10;
             tuning.mirror_softness = strong ? 75 : 60;
         }
+        tuning.separate_smoothing = false;
+        tuning.horizontal_smoothing = tuning.vertical_smoothing = tuning.smoothing;
         set_tuning(tuning);
         labels();
         save();
@@ -1381,6 +1416,10 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         for (const auto &slider : App::slider_bindings) {
             if (id != slider.id || app->options.*slider.value == value)
                 continue;
+            // Keep untouched axes linked to the single slider until tuned individually.
+            if (id == smooth_id && app->options.horizontal_smoothing == app->options.smoothing &&
+                app->options.vertical_smoothing == app->options.smoothing)
+                app->options.horizontal_smoothing = app->options.vertical_smoothing = value;
             app->options.*slider.value = value;
             app->update_slider_label(slider);
             if (slider.frames_image)
@@ -1407,9 +1446,11 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             app->shortcuts.open();
             return 0;
         case coffee_id:
-        case affiliate_id: {
-            const auto link = LOWORD(w) == coffee_id ? L"https://buymeacoffee.com/dansuzuki"
-                                                     : L"https://dansuzuki.com/discounts/";
+        case affiliate_id:
+        case tutorial_id: {
+            const auto link = LOWORD(w) == tutorial_id ? L"https://youtu.be/kNgVMJ82mQU"
+                            : LOWORD(w) == coffee_id ? L"https://buymeacoffee.com/dansuzuki"
+                                                    : L"https://dansuzuki.com/discounts/";
             if (INT_PTR(ShellExecuteW(window, L"open", link, nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
                 app->setup_message = L"Could not open the link in your browser.";
                 app->update_status();
@@ -1540,6 +1581,10 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             break;
         case bypass_id:
             app->options.stabilize = SendMessageW(app->bypass, BM_GETCHECK, 0, 0) != BST_CHECKED;
+            break;
+        case separate_smoothing_id:
+            app->options.separate_smoothing = IsDlgButtonChecked(window, separate_smoothing_id) == BST_CHECKED;
+            app->sync_axis_controls();
             break;
         case adaptive_horizon_id:
             app->options.adaptive_horizon =
@@ -1766,6 +1811,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         const auto description = note(page, descriptions[page], 240, 155, 580, 34);
         SetPropW(description, L"SteadyXRSurface", reinterpret_cast<HANDLE>(1));
     }
+    add(-1, L"BUTTON", L"Tutorial", BS_PUSHBUTTON, 820, 15, 104, 34, tutorial_id);
     add(-1, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 940, 19, 184, 220, presets_id);
     const auto manage = add(-1, L"BUTTON", L"Manage presets…", BS_PUSHBUTTON, 16, 424, 176, 40, manage_presets_id);
     SetPropW(manage, L"SteadyXRSidebar", reinterpret_cast<HANDLE>(1));
@@ -1819,18 +1865,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SendMessageW(h, TBM_SETPAGESIZE, 0, 10);
         return h;
     };
-    state.bypass = add(1, L"BUTTON", L"Bypass stabilization", BS_AUTOCHECKBOX, 260, 257, 540, 24, bypass_id);
+    state.bypass = add(1, L"BUTTON", L"Bypass stabilization", BS_AUTOCHECKBOX, 260, 254, 254, 28, bypass_id);
+    add(1, L"BUTTON", L"Advanced smoothing", BS_AUTOCHECKBOX, 544, 254, 256, 28, separate_smoothing_id);
     SendMessageW(state.bypass, BM_SETCHECK, state.options.stabilize ? BST_UNCHECKED : BST_CHECKED, 0);
-    state.smooth = slider(1, smooth_id, 260, 314, 254, state.options.smoothing, 1000, state.smooth_label);
+    state.smooth = slider(1, smooth_id, 260, 302, 540, state.options.smoothing, 1000, state.smooth_label);
+    state.yaw_smoothing = slider(1, yaw_smoothing_id, 260, 302, 254, state.options.horizontal_smoothing, 1000, state.yaw_smoothing_label);
+    state.pitch_smoothing = slider(1, pitch_smoothing_id, 544, 302, 256, state.options.vertical_smoothing, 1000, state.pitch_smoothing_label);
     state.horizon =
-        slider(1, horizon_id, 544, 314, 256, state.options.horizon_lock, 1000, state.horizon_label);
-    note(1, L"Smooth small movements. Higher values add more delay.", 260, 381, 254, 46);
+        slider(1, horizon_id, 260, 404, 254, state.options.horizon_lock, 1000, state.horizon_label);
+    note(1, L"Higher smoothing makes the stream camera follow more slowly.", 260, 365, 540, 30);
     state.adaptive_horizon =
-        add(1, L"BUTTON", L"Adaptive roll leveling", BS_AUTOCHECKBOX, 544, 377, 256, 32, adaptive_horizon_id);
+        add(1, L"BUTTON", L"Adaptive roll leveling", BS_AUTOCHECKBOX, 260, 474, 254, 32, adaptive_horizon_id);
     SendMessageW(state.adaptive_horizon, BM_SETCHECK,
                  state.options.adaptive_horizon ? BST_CHECKED : BST_UNCHECKED, 0);
-    state.pitch = slider(1, pitch_id, 260, 438, 254, state.options.pitch_lock, 1000, state.pitch_label);
-    add(1, L"BUTTON", L"Center camera", BS_PUSHBUTTON, 544, 458, 256, 38, reset_id);
+    state.pitch = slider(1, pitch_id, 544, 404, 256, state.options.pitch_lock, 1000, state.pitch_label);
+    add(1, L"BUTTON", L"Center camera", BS_PUSHBUTTON, 544, 472, 256, 36, reset_id);
     note(1, L"Look straight ahead with your headset upright, then center the camera to set the vertical reference.", 260, 525, 540, 48);
 
     state.crop = slider(2, crop_id, 260, 257, 254, state.options.crop, int(framing_crop_max * 10), state.crop_label);
@@ -2084,7 +2133,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         WritePrivateProfileStringW(L"Preview", L"SmoothingTenths", L"630", legacy.ini.c_str());
         legacy.read();
         const bool legacy_ok = !legacy.options.spectator.natural_enabled &&
-                               legacy.options.spectator.gaze_enabled && legacy.options.smoothing == 63;
+                               legacy.options.spectator.gaze_enabled && legacy.options.smoothing == 63 &&
+                               !legacy.options.separate_smoothing && legacy.options.horizontal_smoothing == 63 &&
+                               legacy.options.vertical_smoothing == 63;
         DeleteFileW(legacy.ini.c_str());
         trace << "legacy-natural-disabled=" << legacy_ok << '\n';
         const auto selected_navigation = [](HWND panel, int first, unsigned count, unsigned selected) {
@@ -2852,6 +2903,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SendMessageW(state.controls, WM_HOTKEY, next_preset_id, 0);
         preset_shortcuts_ok = preset_shortcuts_ok && state.preset_cursor == L"builtin:dan" && !state.compare_until;
         SendMessageW(state.controls, WM_HOTKEY, next_preset_id, 0);
+        preset_shortcuts_ok = preset_shortcuts_ok && state.preset_cursor == L"builtin:dan-no-motion" &&
+                              state.options.smoothing == 40 && state.options.mirror_limit == 10;
+        SendMessageW(state.controls, WM_HOTKEY, next_preset_id, 0);
         preset_shortcuts_ok = preset_shortcuts_ok && !state.compare_until && state.options.smoothing == 25 &&
                               state.options.horizon_lock == 25 && state.options.vertical_offset == -35.;
         SendMessageW(state.controls, WM_HOTKEY, next_preset_id, 0);
@@ -2885,10 +2939,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         preset_ok = IsWindowVisible(preset_panel) && preset_ok;
         ShowWindow(preset_panel, SW_HIDE);
         // Exercise the shipped preset through its normal dialog action.
+        preset_ok = select_from_list(dan_no_motion_name) && state.options.smoothing == 40 &&
+                    state.options.mirror && state.options.mirror_limit == 10 && state.options.output_width == 3840 &&
+                    !state.options.separate_smoothing && state.options.crop_right == 32.8 && preset_ok;
         SendMessageW(preset_panel, WM_COMMAND, PresetsDialog::dan_id, 0);
         preset_ok = preset_ok && state.preset_cursor == L"builtin:dan" && state.options.smoothing == 82.5 &&
                     state.options.pitch_lock == 3.3 && state.options.output_width == 3840 &&
-                    state.options.crop_right == 32.8 && state.options.mirror;
+                    state.options.crop_right == 32.8 && state.options.mirror && state.options.mirror_limit == 29.3;
         if (stored_snapshot)
             preset_ok = state.apply_snapshot(*stored_snapshot) && preset_ok;
         // An unchanged registered 0.6.0 layer still reads its own settings file.
@@ -2944,6 +3001,33 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         const auto before_final_navigation = state.snapshot();
         const wchar_t *main_pages[]{L"stream-output", L"camera", L"framing", L"settings"};
         ShowWindow(state.controls, SW_SHOWNOACTIVATE);
+        {
+            state.show_page(1);
+            const auto original = state.options;
+            SendDlgItemMessageW(state.controls, separate_smoothing_id, BM_CLICK, 0, 0);
+            bool axes_ok = state.options.separate_smoothing && !visible_control(state.smooth) &&
+                           visible_control(state.yaw_smoothing) && visible_control(state.pitch_smoothing);
+            auto drag = [&](HWND bar, int tenths) {
+                SendMessageW(bar, TBM_SETPOS, TRUE, tenths);
+                SendMessageW(state.controls, WM_HSCROLL, TB_THUMBTRACK, LPARAM(bar));
+            };
+            drag(state.yaw_smoothing, 278);
+            drag(state.pitch_smoothing, 836);
+            const auto saved_axes = state.snapshot();
+            SendDlgItemMessageW(state.controls, separate_smoothing_id, BM_CLICK, 0, 0);
+            axes_ok = axes_ok && !state.options.separate_smoothing && visible_control(state.smooth) &&
+                      !visible_control(state.yaw_smoothing) && state.options.smoothing == original.smoothing;
+            state.builtin(BuiltinPreset::stream_comfort);
+            axes_ok = axes_ok && state.apply_snapshot(saved_axes) && state.options.separate_smoothing &&
+                      state.options.horizontal_smoothing == 27.8 && state.options.vertical_smoothing == 83.6 &&
+                      SendMessageW(state.pitch_smoothing, TBM_GETPOS, 0, 0) == 836;
+            RedrawWindow(state.controls, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            axes_ok = save_controls(state.controls, state.directory + L"\\preview-camera-advanced-test.bmp") && axes_ok;
+            state.set_tuning(original);
+            state.labels();
+            trace << "independent-smoothing-controls-and-preset=" << axes_ok << '\n';
+            okay = axes_ok && okay;
+        }
         for (unsigned p = 0; p < std::size(main_pages); ++p) {
             state.show_page(p);
             okay = controls_fit(state.controls) && okay;

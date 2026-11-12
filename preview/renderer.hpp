@@ -19,6 +19,18 @@ struct Options {
     bool compare_effects{}; // Persisted comparison scope; compare_original activates it transiently.
     OverlaySelection overlays{};
     double smoothing{40}, crop{10};
+    bool separate_smoothing{};
+    double horizontal_smoothing{40}, vertical_smoothing{40};
+    MotionSettings motion_settings() const {
+        MotionSettings motion;
+        motion.amount = motion.roll = smoothing;
+        motion.separate_axes = separate_smoothing;
+        if (separate_smoothing) {
+            motion.yaw = horizontal_smoothing;
+            motion.pitch = vertical_smoothing;
+        }
+        return motion;
+    }
     bool mirror{true}, stabilize{true};
     bool compare_original{}; // Transient A/B bypass; keep framing and continue motion history.
     unsigned compare_mode{}; // 0 original, 1 same-framing split, 2 fitted side-by-side; inactive normally.

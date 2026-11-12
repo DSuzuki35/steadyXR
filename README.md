@@ -4,15 +4,15 @@
 
 SteadyXR is a standalone Windows app. It takes an OpenXR eye image or an existing game window, smooths the camera movement, and opens a clean **Stream Output** window. You choose what stays in frame.
 
-**[Download SteadyXR 1.0.1 for Windows x64](https://github.com/DSuzuki35/steadyXR/releases/download/v1.0.1/SteadyXR-1.0.1-Standalone-Windows-x64.zip)** · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.0.1)
+**[Download SteadyXR 1.0.2 for Windows x64](https://github.com/DSuzuki35/steadyXR/releases/download/v1.0.2/SteadyXR-1.0.2-Standalone-Windows-x64.zip)** · [Watch Dan’s tutorial](https://youtu.be/kNgVMJ82mQU) · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.0.2)
 
-![SteadyXR 1.0.1 dashboard with stream source, eye selection and a framing monitor](docs/images/steadyxr-dashboard.png)
+![SteadyXR dashboard with stream source, eye selection and a framing monitor](docs/images/steadyxr-dashboard.png)
 
 ## Go live
 
 1. Extract the whole ZIP and start **SteadyXR.exe**.
 2. On **Stream Output**, choose your source. For head-pose stabilization, choose **OpenXR**. If SteadyXR offers to install or update its OpenXR connection on startup, accept, then restart the game. You can also install it later from **Settings**. To capture a game mirror, choose **Capture a game window** and select its window.
-3. Choose **Dan Suzuki** from **Choose preset…** in the top-right corner of the dashboard to try my 4K setup. Under **Camera**, look straight ahead with your headset upright and click **Center camera**.
+3. Under **Choose preset…**, pick **Dan Suzuki (Motion)** for a motion rig or **Dan Suzuki (No Motion)** for a stationary rig. Both load my 4K setup. Under **Camera**, look straight ahead with your headset upright and click **Center camera**.
 4. Open the output. Use the setup that matches your stream.
 
 | Your setup | Where the picture goes |
@@ -38,6 +38,7 @@ For normal streams, I recommend **Camera → Smoothing**. When **Director → En
 | --- | --- |
 | Understand how headset motion becomes a steady shot | [How stabilization works](preview/README.md#how-stabilization-works) |
 | Smooth head movement or level the horizon | [Camera, adaptive leveling and centering](preview/README.md#camera) |
+| Keep mirror checks responsive while softening up-and-down movement | [Advanced smoothing](preview/README.md#advanced-smoothing) |
 | Change crop, mirror edges or request more rendered scenery | [Framing, render extensions and their GPU cost](preview/README.md#framing) |
 | Set the output resolution, aspect ratio or fullscreen display | [Settings and output](preview/README.md#settings-and-output) |
 | Configure OpenXR capture, extra overlays, eye tracking or visual effects | [Connection, layers and overlays](preview/README.md#connection-layers-and-overlays) · [Gaze and effects](preview/README.md#gaze-and-effects) |

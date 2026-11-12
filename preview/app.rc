@@ -1,7 +1,8 @@
 #include <windows.h>
 #include "steadyxr_version.h"
 101 ICON "assets/SteadyXR.ico"
-201 RCDATA "assets/dan-suzuki.ini"
+201 RCDATA "dan-motion.ini"
+202 RCDATA "dan-no-motion.ini"
 STEADYXR_LAYER_SETUP DIALOGEX 0, 0, 285, 118
 STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "SteadyXR OpenXR setup"

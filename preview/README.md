@@ -1,4 +1,4 @@
-# SteadyXR 1.0.1 streamer guide
+# SteadyXR 1.0.2 streamer guide
 
 SteadyXR turns a VR game view into a stabilized stream. It opens two windows. Set up your camera in the dashboard and send **SteadyXR – Stream Output** to your audience. The dashboard, framing guides and status messages stay on your control screen.
 
@@ -6,11 +6,13 @@ SteadyXR turns a VR game view into a stabilized stream. It opens two windows. Se
 
 ## Set up your first stream
 
+You can also open the **Tutorial** button at the top of the dashboard to follow along on YouTube. [Watch Dan’s SteadyXR tutorial](https://youtu.be/kNgVMJ82mQU)
+
 1. Extract the standalone ZIP into a writable folder. Keep its files together and open **SteadyXR.exe**.
 2. Open **Stream Output** in the sidebar and choose a **Live source**. For an existing game mirror, select **Capture a game window**, click **Refresh windows**, then choose the game under **Game window**. Leave that window open and unminimized.
 3. For the game's original eye image and matching headset poses, choose **OpenXR · pose and gaze**. On a normal launch, SteadyXR offers to install its OpenXR connection if it is missing, or update an outdated connection. In the prompt, choose **Install for all users**, **Update / repair**, or **Later** to continue without changing registration. Window capture works without the layer. To install later, open **Settings** and choose **Install for all users** or **Upgrade / repair**. Accept the Windows administrator prompt and restart the OpenXR game. Back on **Stream Output**, select the **Eye** you want to broadcast.
 4. Choose **30 FPS**, **60 FPS**, **72 FPS** or **90 FPS**. For a 72 Hz headset, use **72 FPS** to match your source. Click **Open stream output** and check that the image follows the game. **Frame rate** caps the available OpenXR source frames. With an ideal steady 72 Hz source, a 60 FPS cap delivers about 60 frames and skips about 12 per second. A 90 FPS cap can also show all 72 but cannot add frames the game did not supply. **Connection and capture details** shows what SteadyXR is receiving.
-5. Pick a starting look from **Choose preset…** at the top right of the dashboard. **Dan Suzuki** loads a complete 4K setup, including framing and output. After loading it, check your source, eye and output monitor. In OpenXR mode, sit in your normal driving position, look straight ahead with the headset upright and press **Camera → Center camera**.
+5. Pick a starting look from **Choose preset…** at the top right of the dashboard. Choose **Dan Suzuki (Motion)** for a motion rig or **Dan Suzuki (No Motion)** for a stationary rig. Both include Dan’s framing and 4K output settings. After loading it, check your source, eye and output monitor. In OpenXR mode, sit in your normal driving position, look straight ahead with the headset upright and press **Camera → Center camera**.
 
 **One PC.** In OBS, add a **Window Capture** source and select **SteadyXR – Stream Output**. Keep the output visible. If your scene shows the dashboard, select the other SteadyXR window. Set up game and microphone audio separately.
 
@@ -48,6 +50,14 @@ Gyroflow uses a similar idea for camera footage, using gyroscope data to measure
 Horizon lock, adaptive leveling, vertical steadiness and centering use OpenXR pose data. These adjustments affect Stream Output. The game controls the view in your headset.
 
 For a normal stream, Dan recommends starting with **Smoothing** here. The **Director** page described below adds delayed OpenXR lookahead and optional crop controls.
+
+### Advanced smoothing
+
+On **Camera**, check **Advanced smoothing** to adjust **Horizontal smoothing** and **Vertical smoothing** independently. For example, keep horizontal low for quick mirror checks and raise vertical to soften small nods. With OpenXR these sliders control yaw and pitch. With a captured game window they control horizontal and vertical image motion.
+
+Uncheck **Advanced smoothing** to return to the single slider. Roll uses the single slider’s value in both modes. **Horizon lock** controls how strongly the stream levels a head tilt. Custom presets save the mode and both axis values. Existing presets start with the single slider.
+
+![Camera page with independent horizontal and vertical smoothing sliders](../docs/images/steadyxr-camera-advanced.png)
 
 ## Framing
 
@@ -123,9 +133,9 @@ Director lookahead requires stabilized OpenXR capture. Its 256 MiB texture budge
 
 ## Presets, shortcuts and comparison
 
-![Choose preset dropdown in the dashboard header showing all four factory profiles](../docs/images/steadyxr-preset-menu.png)
+![Choose preset dropdown in the dashboard header showing both Dan Suzuki profiles](../docs/images/steadyxr-preset-menu.png)
 
-Open **Choose preset…** in the dashboard header, just left of the version number. Choose **Responsive**, **Stream Comfort** or **Strong leveling** to change stabilization tuning and keep the current shot. You can load a saved profile directly from this list. **Dan Suzuki** loads the saved camera, framing and 4K output setup. To create or edit a complete profile, click **Manage presets…** in the left sidebar. Enter a name and click **Save new**. Use **Load**, **Overwrite selected** or **Delete** for a saved profile. Complete presets include source, eye, framing, effects, output and render-extension settings. A loaded render change takes effect at the next game launch. The **Next preset** shortcut cycles through the available profiles.
+Open **Choose preset…** in the dashboard header, just left of the version number. Choose **Responsive**, **Stream Comfort** or **Strong leveling** to change stabilization tuning and keep the current shot. You can load a saved profile directly from this list. **Dan Suzuki (Motion)** is Dan’s original 4K motion-rig setup with 82.5% smoothing and a 29.3% mirror limit. **Dan Suzuki (No Motion)** uses the same shot with 40% smoothing and a 10% mirror limit. To create or edit a complete profile, click **Manage presets…** in the left sidebar. Enter a name and click **Save new**. Use **Load**, **Overwrite selected** or **Delete** for a saved profile. Complete presets include source, eye, framing, effects, output and render-extension settings. A loaded render change takes effect at the next game launch. The **Next preset** shortcut cycles through the available profiles.
 
 ![Presets dialog with factory profiles and saved user presets](../docs/images/steadyxr-presets.png)
 

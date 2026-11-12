@@ -798,6 +798,7 @@ bool Renderer::consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, c
             r.context->Unmap(p.staging.Get(), 0);
             ImageSettings settings;
             settings.smoothing = options.smoothing;
+            settings.motion = options.motion_settings();
             r.image_result = r.image_stabilizer.process(gray, p.time_ns, settings);
             std::swap(r.local[0], p.full);
             std::swap(r.srv[0], p.view);
