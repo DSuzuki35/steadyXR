@@ -17,7 +17,6 @@
 #include "visual_settings_io.hpp"
 #include "window_capture.hpp"
 #include "framing_editor.hpp"
-#include "monitor_widget.hpp"
 #include "steadyxr_version.h"
 #include "shortcuts.hpp"
 #include "release_update.hpp"
@@ -131,7 +130,7 @@ struct App {
         horizon_label{}, mirror_limit{}, mirror_limit_label{}, aspect{}, output_width{}, output_height{},
         auto_fullscreen{}, monitor{}, adaptive_horizon{}, mirror_softness{}, mirror_softness_label{},
         compact_status{}, comparison{}, status_detail{}, status_light{}, pitch{}, pitch_label{}, horizontal{},
-        horizontal_label{}, card_resolution{}, card_aspect{}, card_rate{};
+        horizontal_label{}, framing_card{}, card_caption{}, card_resolution{}, card_aspect{}, card_rate{};
     std::uint64_t card_revision{};
     double card_source_aspect{};
     HFONT font{};
@@ -139,7 +138,6 @@ struct App {
     std::vector<HWND> control_pages[4];
     unsigned selected_page{};
     FramingEditor framing;
-    MonitorWidget monitor_widget;
     std::wstring footer_state, footer_detail;
     COLORREF light_color{RGB(155, 162, 173)};
     ShortcutController shortcuts;
@@ -802,6 +800,17 @@ struct App {
         dirty = true;
         return true;
     }
+    void set_framing_sliders() {
+        SendMessageW(crop, TBM_SETPOS, TRUE, LPARAM(options.crop * 10 + .5));
+        SendMessageW(vertical, TBM_SETPOS, TRUE, LPARAM(std::lround(options.vertical_offset * 10)));
+        SendMessageW(horizontal, TBM_SETPOS, TRUE, LPARAM(std::lround(options.horizontal_offset * 10)));
+    }
+    void framing_labels() {
+        SetWindowTextW(crop_label, (L"Crop reserve   " + decimal(options.crop) + L" %").c_str());
+        SetWindowTextW(vertical_label, (L"Vertical framing   " + decimal(options.vertical_offset) + L" %").c_str());
+        SetWindowTextW(horizontal_label,
+                       (L"Horizontal framing   " + decimal(options.horizontal_offset) + L" %").c_str());
+    }
     void set_tuning(const Options &tuning) {
         options.smoothing = tuning.smoothing;
         options.crop = tuning.crop;
@@ -815,12 +824,10 @@ struct App {
         options.mirror_stretch = tuning.mirror_stretch;
         advanced.refresh_live_controls();
         options.stabilize = tuning.stabilize;
+        set_framing_sliders();
         SendMessageW(smooth, TBM_SETPOS, TRUE, LPARAM(options.smoothing * 10 + .5));
-        SendMessageW(crop, TBM_SETPOS, TRUE, LPARAM(options.crop * 10 + .5));
         SendMessageW(horizon, TBM_SETPOS, TRUE, LPARAM(options.horizon_lock * 10 + .5));
         SendMessageW(pitch, TBM_SETPOS, TRUE, LPARAM(std::lround(options.pitch_lock * 10)));
-        SendMessageW(vertical, TBM_SETPOS, TRUE, LPARAM(std::lround(options.vertical_offset * 10)));
-        SendMessageW(horizontal, TBM_SETPOS, TRUE, LPARAM(std::lround(options.horizontal_offset * 10)));
         SendMessageW(mirror_limit, TBM_SETPOS, TRUE, LPARAM(options.mirror_limit * 10 + .5));
         SendMessageW(mirror_softness, TBM_SETPOS, TRUE, LPARAM(options.mirror_softness * 10 + .5));
         SendMessageW(mirror, BM_SETCHECK, options.mirror ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -834,8 +841,9 @@ struct App {
         options.vertical_offset = draft.vertical_offset;
         options.crop_left = options.crop_right = options.crop_top = options.crop_bottom = 0;
         options.edge_reserve[0] = options.edge_reserve[1] = {};
-        set_tuning(options);
-        labels();
+        set_framing_sliders();
+        framing_labels();
+        InvalidateRect(framing_card, nullptr, FALSE);
         queue_save();
         dirty = true;
     }
@@ -956,11 +964,11 @@ struct App {
         update_status();
     }
     void refresh_card() {
-        if (!monitor_widget.window())
+        if (!framing_card)
             return;
         const auto still = framing.has_still() ? framing.still_description()
             : std::wstring(window_mode ? L"Window" : selected_eye ? L"Right eye" : L"Left eye") + L"  ·  Crop guide";
-        monitor_widget.set_caption(still);
+        SetWindowTextW(card_caption, still.c_str());
         SetWindowTextW(card_resolution, (std::to_wstring(options.output_width) + L" × " +
                                         std::to_wstring(options.output_height)).c_str());
         SetWindowTextW(card_aspect, (std::to_wstring(aspect_numerator) + L":" +
@@ -968,12 +976,12 @@ struct App {
         SetWindowTextW(card_rate, (std::to_wstring(rate) + L" FPS").c_str());
         card_revision = framing.still_revision();
         card_source_aspect = renderer.source_aspect();
-        monitor_widget.invalidate();
+        InvalidateRect(framing_card, nullptr, FALSE);
     }
     void labels() {
+        framing_labels();
         refresh_card();
         SetWindowTextW(smooth_label, (L"Smoothing: " + decimal(options.smoothing) + L" %").c_str());
-        SetWindowTextW(crop_label, (L"Crop reserve   " + decimal(options.crop) + L" %").c_str());
         SetWindowTextW(pause, paused ? L"Resume output" : L"Pause output");
         EnableWindow(source, window_mode);
         EnableWindow(GetDlgItem(controls, refresh_id), window_mode);
@@ -983,11 +991,8 @@ struct App {
         EnableWindow(GetDlgItem(controls, remove_id), !connection_process);
         SetWindowTextW(GetDlgItem(controls, setup_id),
                        registered(true) ? L"Upgrade / repair" : L"Install for all users");
-        SetWindowTextW(vertical_label, (L"Vertical framing   " + decimal(options.vertical_offset) + L" %").c_str());
         SetWindowTextW(horizon_label, (L"Horizon lock: " + decimal(options.horizon_lock) + L" %").c_str());
         SetWindowTextW(pitch_label, (L"Vertical steadiness: " + decimal(options.pitch_lock) + L" %").c_str());
-        SetWindowTextW(horizontal_label,
-                       (L"Horizontal framing   " + decimal(options.horizontal_offset) + L" %").c_str());
         SetWindowTextW(mirror_limit_label,
                        (L"Mirror limit: " + decimal(options.mirror_limit) + L" %").c_str());
         SetWindowTextW(mirror_softness_label,
@@ -1797,11 +1802,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.card_resolution = metric(L"Resolution", 482);
     state.card_aspect = metric(L"Aspect ratio", 514);
     state.card_rate = metric(L"Frame rate", 546);
-    const auto layout_file = self_test ? std::filesystem::path(state.ini + L".layout.ini")
-        : std::filesystem::path(state.directory) / L"SteadyXR-ui.ini";
-    if (!state.monitor_widget.create(state.controls, state.theme, layout_file, [&](HDC dc, RECT rect) {
-            state.framing.paint_card(dc, rect, state.options, state.renderer.source_aspect(), state.selected_eye);
-        }, framing_card_id)) {
+    state.framing.initialize(state.controls, state.theme, state.renderer,
+                             [&] { return state.options; },
+                             [&](const Options &framing) { state.apply_framing(framing); },
+                             [&] { return !state.waiting(GetTickCount64()); });
+    auto card_title = rail(L"Framing monitor", 0, 864, 120, 324, 30);
+    state.theme.control(card_title, L"STATIC", true);
+    state.card_caption = rail(L"Crop guide", 0, 864, 355, 324, 20);
+    SetPropW(state.card_caption, L"SteadyXRMuted", reinterpret_cast<HANDLE>(1));
+    const auto crop_hint = rail(L"Drag inside to move · Drag a corner to resize", 0, 864, 378, 330, 22);
+    SetPropW(crop_hint, L"SteadyXRMuted", reinterpret_cast<HANDLE>(1));
+    state.framing_card = state.framing.create_monitor({864, 160, 1188, 348}, framing_card_id);
+    if (!state.framing_card) {
         MessageBoxW(state.controls, L"Could not create the framing monitor.", L"SteadyXR", MB_ICONERROR);
         return 1;
     }
@@ -1853,10 +1865,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.refresh_sources();
     state.labels();
     state.renderer.attach(state.output);
-    state.framing.initialize(state.controls, state.theme, state.renderer,
-                             [&] { return state.options; },
-                             [&](const Options &framing) { state.apply_framing(framing); },
-                             [&] { return !state.waiting(GetTickCount64()); });
     state.register_hotkeys();
     if (verify_window) {
         // Explicit diagnostic mode: capture only the auto-selected iRacing

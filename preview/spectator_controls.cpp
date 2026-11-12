@@ -294,7 +294,7 @@ struct SpectatorControls::Impl {
             L"changes.",
             L"A consistent color grade for the viewer. These adjustments do not react to brightness "
             L"changes.",
-            L"Delay for smoother camera motion, cover exposed edges, or vary framing with car speed."};
+            L"Active lookahead replaces normal smoothing. Dan recommends Camera → Smoothing for most streams."};
         for (int p = 0; p < int(std::size(pages)); ++p) {
             const auto tab =
                 child(L"BUTTON", tabs[p], BS_AUTORADIOBUTTON | BS_PUSHLIKE | (p == 0 ? WS_GROUP : 0),

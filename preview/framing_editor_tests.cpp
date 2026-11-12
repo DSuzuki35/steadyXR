@@ -1,5 +1,7 @@
 #include "framing_editor.hpp"
+#include "framing_card.hpp"
 #include <commctrl.h>
+#include <string_view>
 #include <iostream>
 #include <stdexcept>
 
@@ -29,13 +31,15 @@ HWND editor_window(HWND owner) {
         reinterpret_cast<LPARAM>(&lookup));
     return lookup.found;
 }
-COLORREF card_pixel(const FramingEditor &editor, const Options &options, double aspect, int eye, LONG x,
-                    LONG y) {
+COLORREF card_pixel(FramingEditor &editor, LONG x, LONG y) {
+    const auto monitor = editor.create_monitor({0, 0, 300, 300}, 17);
+    check(monitor != nullptr, "create dashboard for paint test");
     const auto screen = GetDC(nullptr);
     const auto dc = CreateCompatibleDC(screen);
     const auto image = CreateCompatibleBitmap(screen, 300, 300);
     const auto previous = SelectObject(dc, image);
-    editor.paint_card(dc, {0, 0, 300, 300}, options, aspect, eye);
+    SendMessageW(monitor, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+    DestroyWindow(monitor);
     const auto color = GetPixel(dc, x, y);
     SelectObject(dc, previous);
     DeleteObject(image);
@@ -43,8 +47,53 @@ COLORREF card_pixel(const FramingEditor &editor, const Options &options, double 
     ReleaseDC(nullptr, screen);
     return color;
 }
+void monitor_gestures(HWND owner, FramingEditor &framing, Options &options, double aspect) {
+    const RECT card{12, 20, 336, 208};
+    const auto monitor = framing.create_monitor(card, 17);
+    check(monitor != nullptr, "create embedded dashboard crop canvas");
+    RECT client{};
+    GetClientRect(monitor, &client);
+    const auto image = framing_canvas_image(client, aspect, true);
+    auto crop = [&] { return framing_crop_rect(image, aspect, options, options.eye); };
+    auto gesture = [&](POINT at, int dx, int dy) {
+        SendMessageW(monitor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(at.x, at.y));
+        SendMessageW(monitor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(at.x + dx, at.y + dy));
+        SendMessageW(monitor, WM_LBUTTONUP, 0, MAKELPARAM(at.x + dx, at.y + dy));
+        check(GetCapture() != monitor, "release the pointer after a dashboard gesture");
+    };
+    options.crop = 35;
+    options.horizontal_offset = options.vertical_offset = 0;
+    const auto initial = crop();
+    gesture({1, 1}, 18, 12);
+    auto result = crop();
+    check(EqualRect(&initial, &result), "dashboard padding ignores dragging");
+    gesture({(initial.left + initial.right) / 2, (initial.top + initial.bottom) / 2}, 9, 8);
+    result = crop();
+    check(result.left == initial.left + 9 && result.top == initial.top + 8 &&
+          result.right == initial.right + 9 && result.bottom == initial.bottom + 8,
+          "dragging inside immediately moves the stream framing");
+    for (bool right : {false, true})
+        for (bool bottom : {false, true}) {
+            options.crop = 35;
+            options.horizontal_offset = options.vertical_offset = 0;
+            const auto before = crop();
+            gesture({right ? before.right - 1 : before.left, bottom ? before.bottom - 1 : before.top},
+                    right ? -13 : 13, bottom ? -8 : 8);
+            const auto after = crop();
+            check(after.right - after.left < before.right - before.left &&
+                  after.bottom - after.top < before.bottom - before.top, "each blue corner resizes the crop");
+            check((right ? before.left == after.left : before.right == after.right) &&
+                  (bottom ? before.top == after.top : before.bottom == after.bottom),
+                  "opposite crop corner stays anchored");
+        }
+    RECT location{};
+    GetWindowRect(monitor, &location);
+    MapWindowPoints(nullptr, owner, reinterpret_cast<POINT *>(&location), 2);
+    check(EqualRect(&location, &card), "the canvas retains its dashboard bounds");
+    DestroyWindow(monitor);
+}
 } // namespace
-int main() {
+int main(int argc, char **argv) {
     try {
         INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES};
         InitCommonControlsEx(&controls);
@@ -54,7 +103,6 @@ int main() {
         Theme theme;
         theme.initialize();
         Renderer renderer;
-        check(renderer.attach_offscreen(), "create renderer");
         Options options;
         bool applied{};
         FramingEditor framing;
@@ -64,20 +112,29 @@ int main() {
                 options = fresh;
                 applied = true;
             });
+        if (argc == 2 && std::string_view(argv[1]) == "--monitor") {
+            monitor_gestures(owner, framing, options, 1.);
+            check(applied && !framing.has_still(), "dashboard editing works offline");
+            DestroyWindow(owner);
+            std::cout << "Dashboard crop movement and four-corner resize passed\n";
+            return 0;
+        }
+        check(renderer.attach_offscreen(), "create renderer");
         framing.capture();
         check(framing.status().find(L"No live image") != std::wstring::npos, "missing source feedback");
-        check(renderer.demo(1), "provide a selected eye");
-        Options geometry;
-        geometry.aspect = 1;
-        geometry.crop = 20;
-        geometry.horizontal_offset = -100;
-        const auto left_border = card_pixel(framing, geometry, 1., 0, 6, 150);
-        geometry.horizontal_offset = 100;
-        const auto shifted = card_pixel(framing, geometry, 1., 0, 6, 150);
+        const Options original = options;
+        options.aspect = 1;
+        options.crop = 20;
+        options.horizontal_offset = -100;
+        const auto left_border = card_pixel(framing, 6, 150);
+        options.horizontal_offset = 100;
+        const auto shifted = card_pixel(framing, 6, 150);
         check(GetBValue(left_border) > GetRValue(left_border) + 100 && shifted != left_border,
               "schematic visibly moves the output rectangle to the selected source boundary");
         check(!framing.has_still() && framing.still_revision() == 0 && framing.still_description().empty(),
               "painting a framing card never captures a screenshot");
+        options = original;
+        check(renderer.demo(1), "provide a selected eye");
         framing.capture();
         renderer.source_changed();
         const auto deadline = GetTickCount64() + 5000;
@@ -88,7 +145,7 @@ int main() {
         check(framing.status().find(L"Screenshot captured") != std::wstring::npos,
               "background screenshot completed");
         check(!editor_window(owner), "shortcut leaves editor closed");
-        const auto card_focus = card_pixel(framing, options, 2.5, 1, 150, 150);
+        const auto card_focus = card_pixel(framing, 150, 150);
         check(framing.has_still() && framing.still_revision() == 1 &&
                   framing.still_description() == L"Left eye · Peripheral + focus" &&
                   GetGValue(card_focus) > 200 && GetRValue(card_focus) < 150,
@@ -137,8 +194,9 @@ int main() {
         }
         check(framing.still_revision() == 2 && framing.still_description() == L"Right eye",
               "new screenshot publishes its revision and captured eye together");
-        check(card_pixel(framing, options, 1, 1, 150, 150) != card_focus,
+        check(card_pixel(framing, 150, 150) != card_focus,
               "card replaces its cached bitmap even when image dimensions are unchanged");
+        monitor_gestures(owner, framing, options, renderer.source_aspect());
         DestroyWindow(owner);
         std::cout << "Background screenshot, source loss, framing sliders, apply and reopen passed\n";
         return 0;

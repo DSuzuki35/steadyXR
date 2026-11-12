@@ -705,6 +705,7 @@ bool Theme::message(HWND window, UINT message, WPARAM w, LPARAM l, LRESULT &resu
             fill(dc, {208, 628, r.right, 629}, hairline);
 
             rounded(dc, {240, 196, 820, 590}, card, hairline, 20);
+            rounded(dc, {844, 104, 1208, 404}, card, hairline, 20);
             rounded(dc, {844, 422, 1208, 590}, card, hairline, 20);
 
             DrawIconEx(dc, 23, 16, icon, 32, 32, 0, nullptr, DI_NORMAL);

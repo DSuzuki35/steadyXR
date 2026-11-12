@@ -38,7 +38,7 @@ void grid(HDC dc, RECT image, RECT crop) {
     RestoreDC(dc, saved);
     outline(dc, image, RGB(60, 69, 80));
 }
-void guides(HDC dc, RECT crop, bool editable) {
+void guides(HDC dc, RECT crop) {
     const LONG w = crop.right - crop.left, h = crop.bottom - crop.top;
     // Skip fine guides on highly zoomed or tiny selected regions.
     if (w >= 32 && h >= 20) {
@@ -54,23 +54,13 @@ void guides(HDC dc, RECT crop, bool editable) {
         }
     }
     outline(dc, crop, frame_blue);
-    const LONG length = std::clamp(std::min(w, h) / 6, 1L, 8L);
     for (bool right : {false, true})
         for (bool bottom : {false, true}) {
             const LONG x = right ? crop.right - 1 : crop.left;
             const LONG y = bottom ? crop.bottom - 1 : crop.top;
-            if (editable) {
-                RECT grip{x - 3, y - 3, x + 4, y + 4};
-                fill(dc, grip, corner_blue);
-                outline(dc, grip, RGB(31, 54, 86));
-            } else {
-                const LONG left = right ? x - length + 1 : x, top = bottom ? y - length + 1 : y;
-                const LONG line = std::min(2L, length);
-                fill(dc, {left, bottom ? y - line + 1 : y, left + length, bottom ? y + 1 : y + line},
-                     corner_blue);
-                fill(dc, {right ? x - line + 1 : x, top, right ? x + 1 : x + line, top + length},
-                     corner_blue);
-            }
+            RECT grip{x - 3, y - 3, x + 4, y + 4};
+            fill(dc, grip, corner_blue);
+            outline(dc, grip, RGB(31, 54, 86));
         }
 }
 struct Bitmap {
@@ -113,6 +103,12 @@ RECT framing_image_rect(RECT area, double aspect) {
     const LONG x = area.left + (width - w) / 2, y = area.top + (height - h) / 2;
     return {x, y, x + w, y + h};
 }
+RECT framing_canvas_image(RECT bounds, double aspect, bool dashboard) {
+    if (dashboard && bounds.right - bounds.left > 16 && bounds.bottom - bounds.top > 16)
+        InflateRect(&bounds, -6, -6);
+    return framing_image_rect(bounds, aspect);
+}
+
 RECT framing_crop_rect(RECT image, double aspect, const Options &options, unsigned eye) {
     const auto r = crop_from_options(aspect, options, eye);
     const LONG w = image.right - image.left, h = image.bottom - image.top;
@@ -159,7 +155,7 @@ struct FramingCard::Cache {
 FramingCard::FramingCard() : cache_(new Cache) {}
 FramingCard::~FramingCard() = default;
 void FramingCard::paint(HDC dc, RECT bounds, const FramingStill &still, std::uint64_t revision,
-                        const Options &options, double aspect, unsigned eye, bool editable) {
+                        const Options &options, double aspect, unsigned eye, bool dashboard) {
     if (!dc || IsRectEmpty(&bounds))
         return;
     const auto saved = SaveDC(dc);
@@ -170,10 +166,7 @@ void FramingCard::paint(HDC dc, RECT bounds, const FramingStill &still, std::uin
         eye = still.eye;
     } else
         aspect = crop_detail::source_aspect(aspect);
-    RECT available = bounds;
-    if (!editable && available.right - available.left > 16 && available.bottom - available.top > 16)
-        InflateRect(&available, -6, -6);
-    const RECT image = framing_image_rect(available, aspect);
+    const RECT image = framing_canvas_image(bounds, aspect, dashboard);
     const RECT crop = framing_crop_rect(image, aspect, options, eye);
     const LONG w = image.right - image.left, h = image.bottom - image.top;
     POINT px[]{{image.left, image.top}, {image.right, image.bottom}};
@@ -190,8 +183,8 @@ void FramingCard::paint(HDC dc, RECT bounds, const FramingStill &still, std::uin
         RestoreDC(dc, cropped);
     } else
         grid(dc, image, crop);
-    guides(dc, crop, editable);
-    if (!editable)
+    guides(dc, crop);
+    if (dashboard)
         outline(dc, bounds, RGB(53, 60, 69));
     RestoreDC(dc, saved);
 }

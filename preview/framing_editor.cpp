@@ -25,7 +25,11 @@ struct FramingEditor::Impl {
     std::function<bool()> can_capture;
     Options draft;
     FramingStill still;
-    bool pending{}, moving{};
+    bool pending{}, moved{};
+    HWND drag_window{};
+    double drag_aspect{};
+    RECT drag_image{};
+    unsigned drag_eye{};
     std::optional<CropHandle> handle;
     POINT start{};
     FramingRegion drag_region{};
@@ -87,7 +91,7 @@ struct FramingEditor::Impl {
         pending = false;
         if (result == StillStatus::ready) {
             ++revision;
-            if (window && GetCapture() == canvas)
+            if (drag_window && GetCapture() == drag_window)
                 ReleaseCapture();
             status(std::wstring(still.window_source ? L"Window"
                                 : still.eye         ? L"Right eye"
@@ -97,19 +101,26 @@ struct FramingEditor::Impl {
             status(L"Screenshot transfer failed. Capture again when the source is ready.");
         refresh();
     }
-    RECT image_rect() const {
+    double source_aspect() const {
+        return crop_detail::source_aspect(still.pixels ? still.source_aspect : renderer->source_aspect());
+    }
+    unsigned source_eye(const Options &options) const {
+        return still.pixels ? still.eye : options.eye;
+    }
+    bool dashboard(HWND w) const { return GetParent(w) == owner; }
+    RECT image_rect(HWND w) const {
         RECT area{};
-        GetClientRect(canvas, &area);
-        return framing_image_rect(area, still.source_aspect);
+        GetClientRect(w, &area);
+        return framing_canvas_image(area, source_aspect(), dashboard(w));
     }
-    RECT crop_rect(RECT image) const {
-        return framing_crop_rect(image, still.source_aspect, draft, still.eye);
-    }
-    void paint(HDC dc) {
+    void paint(HWND w, HDC dc) {
         RECT bounds{};
-        GetClientRect(canvas, &bounds);
-        if (still.pixels) {
-            editor_card.paint(dc, bounds, still, revision, draft, still.source_aspect, still.eye, true);
+        GetClientRect(w, &bounds);
+        if (dashboard(w) || still.pixels) {
+            const bool live = dashboard(w);
+            const auto settings = live ? current() : draft;
+            auto &card = live ? main_card : editor_card;
+            card.paint(dc, bounds, still, revision, settings, source_aspect(), source_eye(settings), live);
             return;
         }
         fill(dc, bounds, RGB(15, 18, 23));
@@ -119,31 +130,50 @@ struct FramingEditor::Impl {
         DrawTextW(dc, L"No screenshot yet", -1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         SelectObject(dc, font);
     }
-    bool hit(POINT point, std::optional<CropHandle> &corner) const {
+    bool hit(HWND w, POINT point, std::optional<CropHandle> &corner) const {
         corner.reset();
-        if (!still.pixels)
+        if (!dashboard(w) && !still.pixels)
             return false;
-        auto crop = crop_rect(image_rect());
-        const int grip = MulDiv(9, GetDpiForWindow(canvas), 96);
+        const RECT image = image_rect(w);
+        if (IsRectEmpty(&image))
+            return false;
+        const auto settings = dashboard(w) ? current() : draft;
+        const auto crop = framing_crop_rect(image, source_aspect(), settings, source_eye(settings));
+        const int grip = MulDiv(7, GetDpiForWindow(w), 96);
         const bool left = std::abs(point.x - crop.left) <= grip,
                    right = std::abs(point.x - crop.right) <= grip;
         const bool top = std::abs(point.y - crop.top) <= grip,
                    bottom = std::abs(point.y - crop.bottom) <= grip;
         if ((left || right) && (top || bottom)) {
-            corner = left ? (top ? CropHandle::top_left : CropHandle::bottom_left)
-                          : (top ? CropHandle::top_right : CropHandle::bottom_right);
+            const bool nearest_left = std::abs(point.x - crop.left) <= std::abs(point.x - crop.right);
+            const bool nearest_top = std::abs(point.y - crop.top) <= std::abs(point.y - crop.bottom);
+            // Keep an interior move target even when the crop is only a few pixels across.
+            if (PtInRect(&crop, point) &&
+                std::abs(2 * point.x - crop.left - crop.right) <= (crop.right - crop.left) / 3 &&
+                std::abs(2 * point.y - crop.top - crop.bottom) <= (crop.bottom - crop.top) / 3)
+                return true;
+            corner = nearest_left ? (nearest_top ? CropHandle::top_left : CropHandle::bottom_left)
+                                  : (nearest_top ? CropHandle::top_right : CropHandle::bottom_right);
             return true;
         }
         return PtInRect(&crop, point);
     }
-    void drag(POINT point) {
-        const auto image = image_rect();
-        const auto dx = double(point.x - start.x) / (image.right - image.left);
-        const auto dy = double(point.y - start.y) / (image.bottom - image.top);
-        const auto r = handle ? resize_crop(drag_region, *handle, dx, dy, still.source_aspect, draft.aspect)
-                              : move_crop(drag_region, dx, dy);
-        crop_to_options(r, still.source_aspect, draft, still.eye);
-        refresh();
+    void drag(HWND w, POINT point) {
+        if (!moved && point.x == start.x && point.y == start.y)
+            return;
+        moved = true;
+        auto settings = dashboard(w) ? current() : draft;
+        const auto dx = double(point.x - start.x) / (drag_image.right - drag_image.left);
+        const auto dy = double(point.y - start.y) / (drag_image.bottom - drag_image.top);
+        const auto region = handle ? resize_crop(drag_region, *handle, dx, dy, drag_aspect, settings.aspect)
+                                   : move_crop(drag_region, dx, dy);
+        crop_to_options(region, drag_aspect, settings, drag_eye);
+        if (dashboard(w)) {
+            apply(settings);
+        } else {
+            draft = settings;
+            refresh();
+        }
     }
     static Impl *instance(HWND w, UINT m, LPARAM l) {
         if (m == WM_NCCREATE)
@@ -161,42 +191,52 @@ struct FramingEditor::Impl {
         case WM_ERASEBKGND:
             return 1;
         case WM_PRINTCLIENT:
-            p->paint(reinterpret_cast<HDC>(a));
+            p->paint(w, reinterpret_cast<HDC>(a));
             return 0;
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             const auto dc = BeginPaint(w, &ps);
-            p->paint(dc);
+            p->paint(w, dc);
             EndPaint(w, &ps);
             return 0;
         }
         case WM_LBUTTONDOWN:
-            if (p->hit(point, p->handle)) {
-                p->moving = true;
-                p->start = point;
-                p->drag_region = crop_from_options(p->still.source_aspect, p->draft, p->still.eye);
+            if (p->hit(w, point, p->handle)) {
+                const auto settings = p->dashboard(w) ? p->current() : p->draft;
                 SetCapture(w);
+                p->drag_window = w;
+                p->moved = false;
+                p->drag_image = p->image_rect(w);
+                p->drag_aspect = p->source_aspect();
+                p->drag_eye = p->source_eye(settings);
+                p->start = point;
+                p->drag_region = crop_from_options(p->drag_aspect, settings, p->drag_eye);
             }
             return 0;
         case WM_MOUSEMOVE:
-            if (p->moving)
-                p->drag(point);
+            if (p->drag_window == w)
+                p->drag(w, point);
             return 0;
         case WM_LBUTTONUP:
-            if (p->moving) {
-                p->drag(point);
+            if (p->drag_window == w) {
+                p->drag(w, point);
                 ReleaseCapture();
             }
             return 0;
+        case WM_CANCELMODE:
+            if (GetCapture() == w)
+                ReleaseCapture();
+            return 0;
         case WM_CAPTURECHANGED:
-            p->moving = false;
+            if (p->drag_window == w)
+                p->drag_window = nullptr;
             return 0;
         case WM_SETCURSOR: {
             POINT at{};
             GetCursorPos(&at);
             ScreenToClient(w, &at);
             std::optional<CropHandle> corner;
-            if (p->hit(at, corner)) {
+            if (p->hit(w, at, corner)) {
                 const auto cursor = !corner ? IDC_SIZEALL
                                     : (*corner == CropHandle::top_left || *corner == CropHandle::bottom_right)
                                         ? IDC_SIZENWSE
@@ -262,13 +302,22 @@ struct FramingEditor::Impl {
         theme->control(hwnd, kind, heading);
         return hwnd;
     }
-    bool create() {
+    HWND create_canvas(HWND parent, RECT bounds, int id) {
         WNDCLASSW wc{};
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         wc.lpfnWndProc = canvas_proc;
         wc.lpszClassName = L"SteadyXRFramingCanvas";
         RegisterClassW(&wc);
+        return CreateWindowExW(0, wc.lpszClassName, L"Full eye and stream crop",
+                               WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, bounds.left, bounds.top,
+                               bounds.right - bounds.left, bounds.bottom - bounds.top, parent,
+                               reinterpret_cast<HMENU>(INT_PTR(id)), wc.hInstance, this);
+    }
+    bool create() {
+        WNDCLASSW wc{};
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         wc.lpfnWndProc = proc;
         wc.lpszClassName = L"SteadyXRFramingEditor";
         RegisterClassW(&wc);
@@ -283,9 +332,7 @@ struct FramingEditor::Impl {
             return false;
         theme->titlebar(window);
         child(L"STATIC", L"Full-eye screenshot", 0, 24, 20, 450, 34, 0, true);
-        canvas =
-            CreateWindowExW(0, L"SteadyXRFramingCanvas", L"Full eye and stream crop", WS_CHILD | WS_VISIBLE,
-                            24, 66, 532, 390, window, nullptr, wc.hInstance, this);
+        canvas = create_canvas(window, {24, 66, 556, 456}, 0);
         child(L"STATIC", L"Stream framing", 0, 582, 20, 274, 34, 0, true);
         for (unsigned i = 0; i < 3; ++i) {
             const int y = 72 + int(i) * 72;
@@ -327,6 +374,9 @@ void FramingEditor::initialize(HWND owner, Theme &theme, Renderer &renderer, std
     impl_->apply = std::move(apply);
     impl_->can_capture = std::move(can_capture);
 }
+HWND FramingEditor::create_monitor(RECT bounds, int id) {
+    return impl_->create_canvas(impl_->owner, bounds, id);
+}
 void FramingEditor::open() {
     auto &p = *impl_;
     if (!p.renderer || (!p.window && !p.create()))
@@ -359,11 +409,6 @@ bool FramingEditor::route(MSG &msg) {
 }
 const std::wstring &FramingEditor::status() const {
     return impl_->message;
-}
-void FramingEditor::paint_card(HDC dc, RECT target, const Options &options, double source_aspect,
-                               int selected_eye) const {
-    impl_->main_card.paint(dc, target, impl_->still, impl_->revision, options, source_aspect,
-                           unsigned(std::clamp(selected_eye, 0, 1)));
 }
 bool FramingEditor::has_still() const {
     return impl_->still.pixels != nullptr;
