@@ -28,6 +28,12 @@ The status light is green for a live feed, amber while waiting, gray when paused
 
 ## Camera
 
+### How stabilization works
+
+Each OpenXR eye image comes with the pose the game used to render it. SteadyXR reads the orientation from that pose and smooths it over time to choose where the stream camera should point. It then uses the difference between the two orientations and the eye’s field of view to sample the original image from that steadier direction. Quick head shakes soften, while a sustained look into a corner still turns the stream camera. **Crop reserve** leaves extra pixels around the shot for that correction.
+
+Gyroflow uses a similar idea for camera footage, using gyroscope data to measure rotation. SteadyXR gets its rotation directly from the game’s OpenXR frames. When you choose **Capture a game window**, it estimates movement from successive images instead. [How Gyroflow uses motion data](https://gyroflow.xyz/)
+
 ![Camera page with smoothing, horizon lock, vertical steadiness and centering](../docs/images/steadyxr-camera.png)
 
 | Control | How to use it |
@@ -39,7 +45,7 @@ The status light is green for a live feed, amber while waiting, gray when paused
 | **Vertical steadiness** | Reduce vertical camera movement from pitching your head relative to your centered reference. Start at zero if you want viewers to follow glances at the dash. |
 | **Center camera** | With your headset upright and eyes forward, set the stream's reference. Use it again after changing seating position or recentering in the simulator. |
 
-Horizon lock, adaptive leveling, vertical steadiness and centering use OpenXR pose data. A window source offers image-based smoothing. Stabilizing the stream leaves the headset camera under the game's control.
+Horizon lock, adaptive leveling, vertical steadiness and centering use OpenXR pose data. These adjustments affect Stream Output. The game controls the view in your headset.
 
 For a normal stream, Dan recommends starting with **Smoothing** here. The **Director** page described below adds delayed OpenXR lookahead and optional crop controls.
 

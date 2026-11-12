@@ -36,6 +36,7 @@ For normal streams, I recommend **Camera → Smoothing**. When **Director → En
 
 | I want to… | Where to go |
 | --- | --- |
+| Understand how headset motion becomes a steady shot | [How stabilization works](preview/README.md#how-stabilization-works) |
 | Smooth head movement or level the horizon | [Camera, adaptive leveling and centering](preview/README.md#camera) |
 | Change crop, mirror edges or request more rendered scenery | [Framing, render extensions and their GPU cost](preview/README.md#framing) |
 | Set the output resolution, aspect ratio or fullscreen display | [Settings and output](preview/README.md#settings-and-output) |
