@@ -10,6 +10,7 @@
 #endif
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <cwchar>
 #include <mutex>
 #include <sstream>
@@ -196,8 +197,193 @@ BOOL CALLBACK enumerate(HWND window, LPARAM parameter) {
     result.push_back({window, std::move(title), pid});
     return TRUE;
 }
+
+// Desktop Duplication has no WGC recording border. Acquire and cross-adapter
+// readback are both polled with zero wait, on the same UI thread as the renderer.
+struct DesktopCapture {
+    ComPtr<IDXGIOutputDuplication> duplication;
+    ComPtr<ID3D11Device> capture_device, render_device;
+    ComPtr<ID3D11DeviceContext> capture_context, render_context;
+    ComPtr<ID3D11Texture2D> output, staging;
+    ComPtr<ID3D11ShaderResourceView> cursor;
+    MonitorFrameInfo info{};
+    DXGI_OUTDUPL_POINTER_SHAPE_INFO shape{};
+    bool pointer_visible{}, transfer_pending{};
+    std::uint64_t stamp{};
+
+    HRESULT start(ID3D11Device *device, HMONITOR monitor) {
+        ComPtr<IDXGIDevice> dxgi;
+        ComPtr<IDXGIAdapter> render_adapter;
+        DXGI_ADAPTER_DESC render_desc{};
+        HRESULT hr = device->QueryInterface(IID_PPV_ARGS(&dxgi));
+        if (FAILED(hr) || FAILED(hr = dxgi->GetAdapter(&render_adapter)) ||
+            FAILED(hr = render_adapter->GetDesc(&render_desc)))
+            return hr;
+        ComPtr<IDXGIFactory1> factory;
+        if (FAILED(hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+            return hr;
+        for (UINT i = 0;; ++i) {
+            ComPtr<IDXGIAdapter1> adapter;
+            if (FAILED(hr = factory->EnumAdapters1(i, &adapter)))
+                return hr;
+            for (UINT j = 0;; ++j) {
+                ComPtr<IDXGIOutput> candidate;
+                hr = adapter->EnumOutputs(j, &candidate);
+                if (hr == DXGI_ERROR_NOT_FOUND)
+                    break;
+                DXGI_OUTPUT_DESC desc{};
+                if (FAILED(hr) || FAILED(hr = candidate->GetDesc(&desc)))
+                    return hr;
+                if (desc.Monitor != monitor || !desc.AttachedToDesktop)
+                    continue;
+                DXGI_ADAPTER_DESC1 adapter_desc{};
+                if (FAILED(hr = adapter->GetDesc1(&adapter_desc)))
+                    return hr;
+                render_device = device;
+                device->GetImmediateContext(&render_context);
+                if (adapter_desc.AdapterLuid.LowPart == render_desc.AdapterLuid.LowPart &&
+                    adapter_desc.AdapterLuid.HighPart == render_desc.AdapterLuid.HighPart) {
+                    capture_device = render_device;
+                    capture_context = render_context;
+                } else {
+                    hr = D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+                                           D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+                                           &capture_device, nullptr, &capture_context);
+                    if (FAILED(hr))
+                        return hr;
+                }
+                ComPtr<IDXGIOutput1> selected;
+                if (FAILED(hr = candidate.As(&selected)) ||
+                    FAILED(hr = selected->DuplicateOutput(capture_device.Get(), &duplication)))
+                    return hr;
+                DXGI_OUTDUPL_DESC mode{};
+                duplication->GetDesc(&mode);
+                info.rotation = mode.Rotation;
+                return S_OK;
+            }
+        }
+    }
+    HRESULT update_pointer(const DXGI_OUTDUPL_FRAME_INFO &frame) {
+        if (frame.LastMouseUpdateTime.QuadPart) {
+            info.pointer = frame.PointerPosition.Position;
+            pointer_visible = frame.PointerPosition.Visible != FALSE;
+        }
+        if (frame.PointerShapeBufferSize) {
+            std::vector<BYTE> bytes(frame.PointerShapeBufferSize);
+            UINT required{};
+            HRESULT hr =
+                duplication->GetFramePointerShape(UINT(bytes.size()), bytes.data(), &required, &shape);
+            if (FAILED(hr))
+                return hr;
+            const bool mono = shape.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME;
+            const UINT height = mono ? shape.Height / 2 : shape.Height;
+            if (!shape.Width || !height || shape.Width > 16384 || height > 16384 ||
+                std::uint64_t(shape.Pitch) * shape.Height > bytes.size() ||
+                (mono ? (shape.Width + 7) / 8 : shape.Width * 4) > shape.Pitch)
+                return E_UNEXPECTED;
+            D3D11_TEXTURE2D_DESC d{};
+            d.Width = shape.Width;
+            d.Height = height;
+            d.ArraySize = d.MipLevels = d.SampleDesc.Count = 1;
+            d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            d.Usage = D3D11_USAGE_IMMUTABLE;
+            D3D11_SUBRESOURCE_DATA data{bytes.data(), shape.Pitch, 0};
+            std::vector<std::uint32_t> mask;
+            if (mono) {
+                mask.resize(std::size_t(d.Width) * height);
+                for (UINT y = 0; y < height; ++y) {
+                    const auto *and_row = bytes.data() + std::size_t(y) * shape.Pitch;
+                    const auto *xor_row = and_row + std::size_t(height) * shape.Pitch;
+                    for (UINT x = 0; x < d.Width; ++x) {
+                        const auto bit = 0x80u >> (x % 8);
+                        mask[std::size_t(y) * d.Width + x] = (and_row[x / 8] & bit ? 0xff000000u : 0) |
+                                                             (xor_row[x / 8] & bit ? 0x00ffffffu : 0);
+                    }
+                }
+                data = {mask.data(), d.Width * 4, 0};
+            }
+            ComPtr<ID3D11Texture2D> bitmap;
+            cursor.Reset();
+            if (FAILED(hr = render_device->CreateTexture2D(&d, &data, &bitmap)) ||
+                FAILED(hr = render_device->CreateShaderResourceView(bitmap.Get(), nullptr, &cursor)) ||
+                FAILED(hr = output->SetPrivateDataInterface(monitor_pointer_guid, cursor.Get())))
+                return hr;
+            info.pointer_width = d.Width;
+            info.pointer_height = d.Height;
+        }
+        info.pointer_type = pointer_visible && cursor ? shape.Type : 0;
+        return output->SetPrivateData(monitor_info_guid, sizeof(info), &info);
+    }
+    HRESULT copy_frame(IDXGIResource *resource, const DXGI_OUTDUPL_FRAME_INFO &frame) {
+        ComPtr<ID3D11Texture2D> source;
+        HRESULT hr = resource->QueryInterface(IID_PPV_ARGS(&source));
+        if (FAILED(hr))
+            return hr;
+        if (!output) {
+            D3D11_TEXTURE2D_DESC d{};
+            source->GetDesc(&d);
+            d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            d.Usage = D3D11_USAGE_DEFAULT;
+            d.CPUAccessFlags = d.MiscFlags = 0;
+            if (FAILED(hr = render_device->CreateTexture2D(&d, nullptr, &output)))
+                return hr;
+            if (capture_device.Get() != render_device.Get()) {
+                d.Usage = D3D11_USAGE_STAGING;
+                d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                d.BindFlags = 0;
+                if (FAILED(hr = capture_device->CreateTexture2D(&d, nullptr, &staging)))
+                    return hr;
+            }
+        }
+        if (FAILED(hr = update_pointer(frame)))
+            return hr;
+        // A pointer-only update changes metadata and reuses the last desktop pixels.
+        if (frame.LastPresentTime.QuadPart || !stamp) {
+            capture_context->CopyResource(staging ? staging.Get() : output.Get(), source.Get());
+            transfer_pending = staging != nullptr;
+            if (transfer_pending)
+                capture_context->Flush();
+        }
+        LARGE_INTEGER frequency{}, now{};
+        QueryPerformanceFrequency(&frequency);
+        QueryPerformanceCounter(&now);
+        stamp = std::uint64_t(double(now.QuadPart) * 1.e9 / double(frequency.QuadPart));
+        return S_OK;
+    }
+    HRESULT poll() {
+        if (!transfer_pending) {
+            DXGI_OUTDUPL_FRAME_INFO frame{};
+            ComPtr<IDXGIResource> source;
+            HRESULT hr = duplication->AcquireNextFrame(0, &frame, &source);
+            if (hr == DXGI_ERROR_WAIT_TIMEOUT)
+                return S_FALSE;
+            if (FAILED(hr))
+                return hr;
+            hr = copy_frame(source.Get(), frame);
+            source.Reset();
+            const HRESULT released = duplication->ReleaseFrame();
+            if (FAILED(hr) || FAILED(released))
+                return FAILED(hr) ? hr : released;
+        }
+        if (transfer_pending) {
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            HRESULT hr =
+                capture_context->Map(staging.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+            if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+                return S_FALSE;
+            if (FAILED(hr))
+                return hr;
+            render_context->UpdateSubresource(output.Get(), 0, nullptr, mapped.pData, mapped.RowPitch, 0);
+            capture_context->Unmap(staging.Get(), 0);
+            transfer_pending = false;
+        }
+        return render_device->GetDeviceRemovedReason();
+    }
+};
 } // namespace
 struct WindowCapture::Impl {
+    std::unique_ptr<DesktopCapture> desktop;
     bool apartment{}, active{}, suspended{}, restarting{};
     HWND window{};
     DWORD process{};
@@ -252,6 +438,7 @@ struct WindowCapture::Impl {
         }).detach();
     }
     void stop() {
+        desktop.reset();
         active = false;
         suspended = false;
         restarting = false;
@@ -305,6 +492,20 @@ struct WindowCapture::Impl {
 };
 WindowCapture::WindowCapture() : impl_(std::make_unique<Impl>()) {}
 WindowCapture::~WindowCapture() = default;
+bool WindowCapture::start_monitor(ID3D11Device *device, HMONITOR monitor) {
+    auto &p = *impl_;
+    stop();
+    if (!device || !monitor) {
+        p.error = L"Select a connected display";
+        return false;
+    }
+    p.desktop = std::make_unique<DesktopCapture>();
+    const HRESULT hr = p.desktop->start(device, monitor);
+    if (FAILED(hr))
+        return p.fail(L"Start borderless desktop duplication on selected display", hr);
+    p.active = true;
+    return true;
+}
 bool WindowCapture::start(ID3D11Device *device, HWND window) {
     auto &p = *impl_;
     p.stop();
@@ -385,6 +586,16 @@ bool WindowCapture::poll(ComPtr<ID3D11Texture2D> &texture, std::uint64_t &time_n
     time_ns = 0;
     if (!p.active)
         return false;
+    if (p.desktop) {
+        const HRESULT hr = p.desktop->poll();
+        if (FAILED(hr))
+            return p.fail(L"Read selected display with desktop duplication", hr);
+        if (hr == S_FALSE)
+            return false;
+        texture = p.desktop->output;
+        time_ns = p.desktop->stamp;
+        return true;
+    }
     DWORD process{};
     GetWindowThreadProcessId(p.window, &process);
     if (!IsWindow(p.window) || process != p.process) {

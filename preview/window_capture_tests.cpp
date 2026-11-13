@@ -260,6 +260,44 @@ int main(int argc, char **argv) {
     CHECK(capture.running());
     std::fputs("WGC: initial frame and client crop\n", stderr);
     auto first = await_frame(capture, device.Get(), window);
+    // Exercise both direct GPU capture and a render device on another adapter.
+    // Inspect metadata only; never read, save or log desktop pixels in the test.
+    ComPtr<ID3D11Device> warp;
+    CHECK(
+        SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                    nullptr, 0, D3D11_SDK_VERSION, &warp, nullptr, nullptr)));
+    for (auto *destination : {device.Get(), warp.Get()}) {
+        WindowCapture monitor;
+        CHECK(!monitor.start_monitor(destination, nullptr));
+        const auto display = MonitorFromWindow(window, MONITOR_DEFAULTTONULL);
+        MONITORINFO info{sizeof(info)};
+        CHECK(GetMonitorInfoW(display, &info));
+        CHECK(monitor.start_monitor(destination, display));
+        ComPtr<ID3D11Texture2D> frame;
+        std::uint64_t stamp{};
+        const auto deadline = GetTickCount64() + 5000;
+        while (!monitor.poll(frame, stamp) && GetTickCount64() < deadline) {
+            pump();
+            Sleep(5);
+        }
+        CHECK(frame && stamp && capture.running());
+        D3D11_TEXTURE2D_DESC desc{};
+        frame->GetDesc(&desc);
+        ComPtr<ID3D11Device> owner;
+        frame->GetDevice(&owner);
+        CHECK(owner.Get() == destination);
+        MonitorFrameInfo orientation;
+        UINT size = sizeof(orientation);
+        CHECK(SUCCEEDED(frame->GetPrivateData(monitor_info_guid, &size, &orientation)));
+        if (orientation.rotation == DXGI_MODE_ROTATION_ROTATE90 ||
+            orientation.rotation == DXGI_MODE_ROTATION_ROTATE270)
+            std::swap(desc.Width, desc.Height);
+        CHECK(desc.Width == UINT(info.rcMonitor.right - info.rcMonitor.left));
+        CHECK(desc.Height == UINT(info.rcMonitor.bottom - info.rcMonitor.top));
+        CHECK(desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
+        monitor.stop();
+        CHECK(!monitor.running() && !monitor.poll(frame, stamp) && !frame && stamp == 0);
+    }
     auto listed = WindowCapture::windows();
     CHECK(std::any_of(listed.begin(), listed.end(),
                       [&](const CaptureWindow &w) { return w.handle == window; }));
@@ -346,5 +384,5 @@ int main(int argc, char **argv) {
     CHECK(!IsWindow(legacy));
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
     std::puts("PASS: WGC owned-window GPU capture; exact client crop; resize; minimize/resume; stop/restart; "
-              "closed window; candidate filtering");
+              "closed window; candidate filtering; borderless desktop duplication, direct and cross-adapter");
 }

@@ -115,6 +115,7 @@ class Renderer {
     std::uint64_t output_generation() const;
     bool consume(Channel &channel, bool require_consumer = false);
     bool source_frame(Frame &) const; // Current OpenXR metadata for the source status.
+    std::uint32_t producer_pid() const;
     ID3D11Device *device() const;
     bool consume_window(ID3D11Texture2D *texture, std::uint64_t time_ns, const Options &);
     double source_aspect() const;
@@ -124,6 +125,10 @@ class Renderer {
     void source_changed();
     bool demo(double seconds, bool quad = true, unsigned eye = 0);
     bool draw(const Options &, bool present = true, const wchar_t *waiting_text = nullptr);
+    // Pass nullptr to redraw the retained desktop after a resize or repaint.
+    bool draw_monitor(ID3D11Texture2D *, unsigned output_width, unsigned output_height, bool present = true);
+    void clear_monitor();
+    void reset_lookahead();
     void reset();
     void reset_horizon();
     void learn_chat();

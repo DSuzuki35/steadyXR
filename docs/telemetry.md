@@ -1,4 +1,4 @@
-# Optional speed telemetry
+# Speed framing and in-car capture
 
 SteadyXR's speed framing reads the local player's speed from iRacing or the
 native Le Mans Ultimate shared-memory interface. Enable it in the viewer camera
@@ -6,13 +6,21 @@ controls. Automatic selection prefers valid iRacing telemetry; a game can also
 be selected explicitly. No additional telemetry plugin is installed or enabled,
 and no game, runtime, registry, or plugin configuration is changed.
 
-The reader runs on the capture consumer thread only when speed framing is
-enabled. It samples at most 20 times per second and retries unavailable mappings
-at most once per second per game. It starts accepting speed only after observing
-source time advance, and expires a reading after 500 ms without source progress.
+Speed framing and in-car capture each poll telemetry only while enabled. Each
+reader samples at most 20 times per second and retries unavailable mappings at
+most once per second per game. Speed framing accepts a reading after observing
+source time advance and expires it after 500 ms without further progress.
 Disconnected, paused, off-track, malformed, or contended data returns an invalid
 reading so the camera can ease back to its ordinary framing. Disabling the
-feature closes the mappings.
+feature closes its mappings.
+
+In-car capture checks the game that produced the OpenXR frames. It accepts
+OpenXR only when that simulator reports the local driver in the car and its
+telemetry advances. A stopped car qualifies. Menus, missing telemetry, an
+unsupported producer and expired data select the configured fallback. A brief
+LMU lock miss preserves a confirmed cockpit until its original 500 ms freshness
+deadline. An explicit exit takes effect on the next poll. The speed-framing
+game selection is independent.
 
 The capture consumer must be on the same Windows computer/session as the game
 for these named mappings to be available. They are not transported through a
@@ -25,6 +33,11 @@ parses the published IRSDK v1/v2 byte layout, discovers `Speed`, `IsOnTrack`,
 `SessionState`, `SessionNum`, and `SessionTime` in the variable descriptors, and
 selects the newest data-buffer tick. Speed is converted from metres per second
 to kilometres per hour; reverse speed uses its magnitude.
+
+For in-car capture, the reader uses the SDK's `IsOnTrack` flag for the local
+driver and checks `IsGarageVisible` for the garage screen. It confirms that the
+session time and buffer tick advance. This check works while parked and requires
+no speed data. [IRSDK variable descriptions](https://github.com/kutu/pyirsdk/blob/master/vars.txt)
 
 Metadata, scalar types, counts, names, offsets, session state, and numerical
 values are checked before use. After copying the selected fields, the reader
@@ -64,6 +77,14 @@ player's three local-velocity components, converted from metres per second.
 Freshness follows that vehicle's elapsed session time. No foreign pointers
 embedded in the shared memory are dereferenced.
 
+In-car capture checks application location (main UI, loading, monitor or on
+track), realtime scoring, session phase and player vehicle availability. It
+matches the telemetry vehicle ID to the scoring vehicle ID, checks
+`mIsPlayer` and requires `mControl` to designate the local driver. Scoring
+and telemetry can list cars in different orders. Pause, monitor, spectator,
+AI, remote and replay states all select the fallback. The shared-memory
+interface exposes driver participation but omits the active camera angle.
+
 The SDK header prohibits redistribution, so it is not included in this source
 or delivery. Numeric layout facts were obtained by compiling a local
 `sizeof`/`offsetof` probe against the original installed headers, without
@@ -75,6 +96,9 @@ modifying or copying them into the project:
 | Application options-location byte | 96 |
 | Scoring block | 1632 |
 | Scoring session / vehicle count / phase / realtime, within scoring | 64 / 104 / 108 / 115 |
+| Scoring vehicle array, within scoring | 560 |
+| Scoring vehicle stride | 584 |
+| ID / is player / control, within scoring vehicle | 0 / 196 / 197 |
 | Telemetry block | 128464 |
 | Active vehicles / player index / has vehicle, within telemetry | 0 / 1 / 2 |
 | Vehicle array, within telemetry | 4 |
@@ -102,7 +126,9 @@ isolated Windows named mappings. It covers dynamic iRacing variable positions,
 buffer rotation and tick wrap, torn snapshots, invalid bounds/types/states,
 player selection, 20 Hz polling, one-second reconnect attempts, 500 ms expiry,
 source/session changes, LMU lock contention/release/wake behavior, missing native
-objects, and mapping cleanup. Tests neither attach to real game mappings nor
+objects, and mapping cleanup. In-car fixtures cover a stationary driver, a
+moving unoccupied car, menus, pause, replay, producer changes, mismatched
+vehicle IDs, and cockpit expiry during sustained lock contention. Tests neither attach to real game mappings nor
 require a running game.
 
 The test translation unit includes `speed_telemetry.cpp` to reach the internal

@@ -5,7 +5,7 @@
 #include <cstring>
 #include <array>
 #include <cmath>
-#include <algorithm>
+#include <optional>
 
 namespace vrst::preview {
 namespace speed_detail {
@@ -18,11 +18,13 @@ struct Bytes {
         return true;
     }
 };
+enum class Signal { speed, cockpit };
 struct Snapshot {
     bool valid{};
     double kph{}, time{};
     std::uint64_t session{};
     std::uint32_t tick{};
+    CockpitState cockpit{CockpitState::unknown};
 };
 constexpr std::uint64_t poll_interval_ms = 50;
 constexpr std::uint64_t reconnect_interval_ms = 1000;
@@ -42,7 +44,7 @@ bool valid_speed(double metres_per_second) {
 // Independent byte reader for the published IRSDK v1/v2 ABI. No vendor code is
 // included; layout/protocol references and LMU SDK provenance are in
 // docs/telemetry.md. The SDK publishes fixed metadata and up to four data rows.
-template <class View> Snapshot read_iracing(const View &view) {
+template <class View> Snapshot read_iracing(const View &view, Signal signal = Signal::speed) {
     std::array<std::int32_t, 28> before{}, after{};
     if (!view.copy(0, before.data(), sizeof(before))) return {};
     if ((before[0] != 1 && before[0] != 2) || !(before[1] & 1) ||
@@ -63,7 +65,7 @@ template <class View> Snapshot read_iracing(const View &view) {
         if (static_cast<std::int32_t>(candidate - current) > 0) newest = i;
     }
 
-    constexpr const char *names[]{"Speed", "IsOnTrack", "SessionState", "SessionNum", "SessionTime"};
+    const char *names[]{signal == Signal::speed ? "Speed" : "IsGarageVisible", "IsOnTrack", "SessionState", "SessionNum", "SessionTime"};
     constexpr int widths[]{1, 1, 4, 4, 4, 8};
     std::array<int, 5> offsets{}, types{}, entries{};
     entries.fill(-1);
@@ -86,13 +88,16 @@ template <class View> Snapshot read_iracing(const View &view) {
         }
     }
     for (int entry : entries) if (entry < 0) return {};
-    if ((types[0] != 4 && types[0] != 5) || types[1] != 1 ||
+    const bool type_ok = signal == Signal::speed ? types[0] == 4 || types[0] == 5 : types[0] == 1;
+    if (!type_ok || types[1] != 1 ||
         types[2] != 2 || types[3] != 2 || types[4] != 5) return {};
     const auto row = static_cast<std::size_t>(before[13 + newest * 4]);
     double speed{}, time{};
-    unsigned char on_track{};
+    unsigned char on_track{}, garage_visible{};
     std::int32_t state{}, session{};
-    if (types[0] == 4) {
+    if (signal == Signal::cockpit) {
+        if (!field(view, row + offsets[0], garage_visible)) return {};
+    } else if (types[0] == 4) {
         float value{};
         if (!field(view, row + offsets[0], value)) return {};
         speed = value;
@@ -112,10 +117,16 @@ template <class View> Snapshot read_iracing(const View &view) {
         std::memcmp(before.data(), after.data(), 40) != 0 ||
         before[12 + newest * 4] != after[12 + newest * 4] ||
         before[13 + newest * 4] != after[13 + newest * 4]) return {};
-    if (on_track != 1 || state < 1 || state > 6 || session < 0 || !valid_speed(speed) ||
+    if (signal == Signal::cockpit && on_track <= 1 && garage_visible <= 1 &&
+        (!on_track || garage_visible)) {
+        Snapshot menu{};
+        menu.cockpit = CockpitState::outside;
+        return menu;
+    }
+    if (garage_visible > 1 || on_track != 1 || state < 1 || state > 6 || session < 0 || !valid_speed(speed) ||
         !std::isfinite(time) || time < 0) return {};
     return {true, std::abs(speed) * 3.6, time, static_cast<std::uint64_t>(session),
-            static_cast<std::uint32_t>(before[12 + newest * 4])};
+            static_cast<std::uint32_t>(before[12 + newest * 4]), CockpitState::inside};
 }
 
 // Measured with sizeof/offsetof against the installed 2026 Studio 397 SDK,
@@ -126,7 +137,25 @@ constexpr std::size_t lmu_layout_bytes = 324824;
 constexpr std::size_t lmu_scoring = 1632;
 constexpr std::size_t lmu_telemetry = 128464;
 constexpr std::size_t lmu_vehicle_stride = 1888;
-Snapshot read_lmu(const Bytes &view) {
+// Scoring and telemetry have separate vehicle arrays. Resolve the telemetry
+// player's slot ID in the scoring array before accepting local driver control.
+CockpitState lmu_player_control(const Bytes &view, int vehicles, int player_id) {
+    constexpr std::size_t scoring_vehicles = lmu_scoring + 560;
+    constexpr std::size_t scoring_stride = 584;
+    for (int i = 0; i < vehicles; ++i) {
+        const auto entry = scoring_vehicles + i * scoring_stride;
+        std::int32_t id{};
+        unsigned char is_player{};
+        std::int8_t control{};
+        if (!field(view, entry, id)) return CockpitState::unknown;
+        if (id != player_id) continue;
+        if (!field(view, entry + 196, is_player) || !field(view, entry + 197, control) ||
+            is_player > 1 || control < -1 || control > 3) return CockpitState::unknown;
+        return is_player && control == 0 ? CockpitState::inside : CockpitState::outside;
+    }
+    return CockpitState::unknown;
+}
+Snapshot read_lmu(const Bytes &view, Signal signal = Signal::speed) {
     if (view.size < lmu_layout_bytes) return {};
     unsigned char location{}, active{}, player{}, has_player{}, phase{}, realtime{};
     std::int32_t session{}, vehicles{};
@@ -134,6 +163,12 @@ Snapshot read_lmu(const Bytes &view) {
         !field(view, lmu_telemetry + 1, player) || !field(view, lmu_telemetry + 2, has_player) ||
         !field(view, lmu_scoring + 64, session) || !field(view, lmu_scoring + 104, vehicles) ||
         !field(view, lmu_scoring + 108, phase) || !field(view, lmu_scoring + 115, realtime)) return {};
+    if (signal == Signal::cockpit && (location < 3 ||
+        (location == 3 && (realtime == 0 || phase == 0 || phase == 9 || has_player == 0)))) {
+        Snapshot menu{};
+        menu.cockpit = CockpitState::outside;
+        return menu;
+    }
     if (location != 3 || active < 1 || active > 104 || player >= active || has_player != 1 ||
         vehicles < 1 || vehicles > 104 || session < 0 || session > 13 ||
         phase < 1 || phase > 8 || realtime != 1) return {};
@@ -141,14 +176,18 @@ Snapshot read_lmu(const Bytes &view) {
     if (!contains(view.size, entry, lmu_vehicle_stride)) return {};
     std::int32_t id{};
     double time{}, velocity[3]{};
-    if (!field(view, entry, id) || !field(view, entry + 12, time) ||
-        !view.copy(entry + 184, velocity, sizeof(velocity))) return {};
+    if (!field(view, entry, id) || !field(view, entry + 12, time)) return {};
     if (id < 0 || !std::isfinite(time) || time < 0) return {};
+    const auto identity = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(id)) << 16) |
+                          (static_cast<std::uint64_t>(session) << 8) | player;
+    if (signal == Signal::cockpit) {
+        const auto cockpit = lmu_player_control(view, vehicles, id);
+        return {cockpit == CockpitState::inside, 0, time, identity, 0, cockpit};
+    }
+    if (!view.copy(entry + 184, velocity, sizeof(velocity))) return {};
     for (double value : velocity) if (!valid_speed(value)) return {};
     const double speed = std::sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1] + velocity[2] * velocity[2]);
     if (!valid_speed(speed)) return {};
-    const auto identity = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(id)) << 16) |
-                          (static_cast<std::uint64_t>(session) << 8) | player;
     return {true, speed * 3.6, time, identity, 0};
 }
 struct MappingNames {
@@ -225,7 +264,7 @@ public:
     }
     void reset() { close(); next_attempt_ = 0; }
     std::uint64_t fresh_at() const { return last_progress_; }
-    SpeedReading sample(std::uint64_t now) {
+    Snapshot sample(std::uint64_t now, Signal signal) {
         // A gap between capture calls must not revive an expired connection by
         // treating its next tick as progress from a previously valid session.
         if (data_.base() && now - last_progress_ >= stale_ms) close();
@@ -246,16 +285,28 @@ public:
         }
         Snapshot snapshot{};
         if (game_ == SpeedGame::iracing) {
-            snapshot = read_iracing(data_.bytes());
+            snapshot = read_iracing(data_.bytes(), signal);
         } else {
             // The guard ends before math/freshness processing or any other work.
             LmuLock guard(lock_.base(), event_);
-            if (guard.owned()) snapshot = read_lmu(data_.bytes());
+            if (guard.owned()) {
+                snapshot = read_lmu(data_.bytes(), signal);
+            } else if (signal == Signal::cockpit) {
+                // No observation on this poll. Keep the last confirmed state
+                // only within the original freshness window.
+                return confirmed_ || last_.cockpit == CockpitState::outside ? last_ : Snapshot{};
+            }
         }
         if (!snapshot.valid) {
             observed_ = confirmed_ = false;
+            if (signal == Signal::cockpit && snapshot.cockpit == CockpitState::outside) {
+                // Menus can stop the simulation clock. A coherent outside sample
+                // is enough to keep this mapping open, but never admits VR.
+                last_progress_ = now;
+            }
+            if (signal == Signal::cockpit) last_ = snapshot;
             if (now - last_progress_ >= stale_ms) close();
-            return {};
+            return snapshot;
         }
         if (!observed_ || snapshot.session != last_.session || snapshot.time < last_.time) {
             observed_ = true;
@@ -270,7 +321,7 @@ public:
         }
         last_ = snapshot;
         if (now - last_progress_ >= stale_ms) { close(); return {}; }
-        return confirmed_ ? SpeedReading{true, snapshot.kph, game_} : SpeedReading{};
+        return confirmed_ ? snapshot : Snapshot{};
     }
 private:
     SpeedGame game_;
@@ -297,14 +348,20 @@ public:
         next_poll_ = now + poll_interval_ms;
         cached_ = {};
         if (selection != SpeedGame::lmu) {
-            cached_ = iracing_.sample(now);
-            if (cached_.valid) fresh_at_ = iracing_.fresh_at();
+            const auto snapshot = iracing_.sample(now, Signal::speed);
+            if (snapshot.valid) {
+                cached_ = {true, snapshot.kph, SpeedGame::iracing};
+                fresh_at_ = iracing_.fresh_at();
+            }
         }
         if (selection != SpeedGame::iracing) {
             // Poll both in automatic mode so a disconnected game can fall back
             // immediately to an already-confirmed, advancing second source.
-            auto lmu = lmu_.sample(now);
-            if (!cached_.valid && lmu.valid) { cached_ = lmu; fresh_at_ = lmu_.fresh_at(); }
+            const auto snapshot = lmu_.sample(now, Signal::speed);
+            if (!cached_.valid && snapshot.valid) {
+                cached_ = {true, snapshot.kph, SpeedGame::lmu};
+                fresh_at_ = lmu_.fresh_at();
+            }
         }
         return cached_;
     }
@@ -319,12 +376,53 @@ private:
     SpeedReading cached_{};
     std::uint64_t next_poll_{}, fresh_at_{};
 };
+class CockpitPoller {
+public:
+    explicit CockpitPoller(MappingNames names = {}) : names_(names) {}
+    CockpitState sample(SpeedGame producer, std::uint64_t now) {
+        if (producer != game_) {
+            reset();
+            if (producer != SpeedGame::iracing && producer != SpeedGame::lmu)
+                return CockpitState::unknown;
+            source_.emplace(producer, names_);
+            game_ = producer;
+        }
+        if (!source_) return CockpitState::unknown;
+        if (now >= next_poll_) {
+            next_poll_ = now + poll_interval_ms;
+            state_ = source_->sample(now, Signal::cockpit).cockpit;
+        }
+        if (now - source_->fresh_at() >= stale_ms) return CockpitState::unknown;
+        return state_;
+    }
+    void reset() {
+        source_.reset();
+        state_ = CockpitState::unknown;
+        game_ = SpeedGame::automatic;
+        next_poll_ = 0;
+    }
+private:
+    MappingNames names_;
+    std::optional<Source> source_;
+    SpeedGame game_{SpeedGame::automatic};
+    CockpitState state_{CockpitState::unknown};
+    std::uint64_t next_poll_{};
+};
 } // namespace speed_detail
-struct SpeedTelemetry::Impl { speed_detail::Poller poller; };
+struct SpeedTelemetry::Impl {
+    speed_detail::Poller poller;
+    speed_detail::CockpitPoller cockpit_poller;
+};
 SpeedTelemetry::SpeedTelemetry() : impl_(std::make_unique<Impl>()) {}
 SpeedTelemetry::~SpeedTelemetry() = default;
 SpeedReading SpeedTelemetry::sample(SpeedGame selection) {
     return impl_->poller.sample(selection, GetTickCount64());
 }
-void SpeedTelemetry::reset() { impl_->poller.reset(); }
+CockpitState SpeedTelemetry::cockpit(SpeedGame producer) {
+    return impl_->cockpit_poller.sample(producer, GetTickCount64());
+}
+void SpeedTelemetry::reset() {
+    impl_->poller.reset();
+    impl_->cockpit_poller.reset();
+}
 } // namespace vrst::preview

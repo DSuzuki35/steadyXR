@@ -1,6 +1,7 @@
 #include "renderer.hpp"
 #include "frame_buffer.hpp"
 #include "speed_telemetry.hpp"
+#include "window_capture.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -108,6 +109,25 @@ float4 PS(Varying v):SV_TARGET {
  return float4(color.rgb,1);
 }
 float4 Downsample(Varying v):SV_TARGET { return contextImage.Sample(linearClamp,v.uv); }
+float4 Monitor(Varying v):SV_TARGET {
+ float2 uv=v.uv;
+ if(imageMode.x==2) uv=float2(v.uv.y,1-v.uv.x);
+ if(imageMode.x==3) uv=1-v.uv;
+ if(imageMode.x==4) uv=float2(1-v.uv.y,v.uv.x);
+ float3 color=contextImage.Sample(linearClamp,uv).rgb;
+ int2 at=int2(floor(v.uv*imageMode.yz))-int2(mirrorStyle.xy);
+ if(imageMode.w>0 && all(at>=0) && all(at<int2(mirrorStyle.zw))) {
+   float4 cursor=focusImage.Load(int3(at,0));
+   if(imageMode.w==2) color=lerp(color,cursor.rgb,cursor.a);
+   else {
+     // Mono encodes AND in alpha and XOR in RGB. Masked color uses
+     // alpha 0 for replacement and 255 for bitwise XOR.
+     uint3 bg=(uint3)round(color*255);
+     color=((cursor.a>.5 ? bg : uint3(0,0,0)) ^ (uint3)round(cursor.rgb*255))/255.;
+   }
+ }
+ return float4(color,1);
+}
 float4 VisualComposite(Varying v):SV_TARGET {
  bool original=comparison.x>.5 && v.uv.x>=.5;
  if(comparison.x>1.5) {
@@ -328,6 +348,10 @@ struct Renderer::Impl {
     ComPtr<ID3D11RenderTargetView> target;
     ComPtr<ID3D11Texture2D> output;
     ComPtr<ID3D11RenderTargetView> output_target;
+    ComPtr<ID3D11RenderTargetView> monitor_target;
+    ComPtr<ID3D11PixelShader> monitor_shader;
+    ComPtr<ID3D11Texture2D> monitor_frame;
+    ComPtr<ID3D11ShaderResourceView> monitor_view;
     ComPtr<ID3D11ShaderResourceView> output_view;
     ComPtr<IDXGIKeyedMutex> output_mutex;
     std::uint64_t output_handle{}, output_generation{};
@@ -348,15 +372,15 @@ struct Renderer::Impl {
     ComPtr<ID3D11BlendState> overlay_blend;
     ComPtr<ID3D11Buffer> constants;
     ComPtr<ID3D11SamplerState> sampler;
-    void draw_eye(ID3D11RenderTargetView *target_view, const D3D11_VIEWPORT &viewport,
-                  ID3D11Buffer *params, ID3D11ShaderResourceView *peripheral,
-                  ID3D11ShaderResourceView *focus) {
+    void draw_eye(ID3D11RenderTargetView *target_view, const D3D11_VIEWPORT &viewport, ID3D11Buffer *params,
+                  ID3D11ShaderResourceView *peripheral, ID3D11ShaderResourceView *focus,
+                  ID3D11PixelShader *pixel_shader = nullptr) {
         context->RSSetViewports(1, &viewport);
         context->OMSetRenderTargets(1, &target_view, nullptr);
         context->IASetInputLayout(nullptr);
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->VSSetShader(vs.Get(), nullptr, 0);
-        context->PSSetShader(ps.Get(), nullptr, 0);
+        context->PSSetShader(pixel_shader ? pixel_shader : ps.Get(), nullptr, 0);
         context->PSSetConstantBuffers(0, 1, &params);
         auto *sample = sampler.Get();
         context->PSSetSamplers(0, 1, &sample);
@@ -455,6 +479,7 @@ struct Renderer::Impl {
         if (context)
             context->OMSetRenderTargets(0, nullptr, nullptr);
         output_view.Reset();
+        monitor_target.Reset();
         output_target.Reset();
         output_mutex.Reset();
         output.Reset();
@@ -482,6 +507,10 @@ struct Renderer::Impl {
         window_mode = false;
         last_window_time = 0;
         downsample.Reset();
+        monitor_target.Reset();
+        monitor_shader.Reset();
+        monitor_frame.Reset();
+        monitor_view.Reset();
         overlay_shader.Reset();
         overlay_blend.Reset();
         target.Reset();
@@ -639,13 +668,13 @@ struct Renderer::Impl {
         height = h;
         return true;
     }
-    bool resize_output(const Options &options) {
-        unsigned w = std::clamp(options.output_width, 320u, 7680u),
-                 h = std::clamp(options.output_height, 180u, 4320u);
+    bool resize_output(unsigned requested_width, unsigned requested_height) {
+        unsigned w = std::clamp(requested_width, 320u, 7680u), h = std::clamp(requested_height, 180u, 4320u);
         if (output && w == output_width && h == output_height)
             return true;
         context->OMSetRenderTargets(0, nullptr, nullptr);
         output_view.Reset();
+        monitor_target.Reset();
         output_target.Reset();
         output_mutex.Reset();
         output_handle = 0;
@@ -686,6 +715,67 @@ struct Renderer::Impl {
         }
         output_width = w;
         output_height = h;
+        return true;
+    }
+    bool begin_output(OutputWrite &writer, unsigned request_width, unsigned request_height) {
+        if (!device || (!offscreen && (!swap || !resize())) || !resize_output(request_width, request_height))
+            return false;
+        writer.mutex = output_mutex;
+        writer.context = context;
+        if (writer.mutex) {
+            const HRESULT hr = writer.mutex->AcquireSync(0, 0);
+            if (hr != S_OK) {
+                if (hr == WAIT_ABANDONED)
+                    discard_output();
+                return hr == WAIT_TIMEOUT ? false : fail(L"Acquire offscreen output", hr);
+            }
+            writer.acquired = true;
+        }
+        return true;
+    }
+    bool finish_output(OutputWrite &writer, bool present, const float (&clear)[4], bool retry_busy = false) {
+        if (offscreen) {
+            context->OMSetRenderTargets(0, nullptr, nullptr);
+            const HRESULT removed = device->GetDeviceRemovedReason();
+            if (FAILED(removed))
+                return fail(L"Render offscreen output", removed);
+            const HRESULT hr = writer.release(1);
+            if (FAILED(hr))
+                return fail(L"Publish offscreen output", hr);
+            error.clear();
+            return true;
+        }
+        // Present the complete requested-resolution canvas without distorting it
+        // when the physical client area has a different aspect ratio.
+        context->ClearRenderTargetView(target.Get(), clear);
+        auto *rt = target.Get();
+        context->OMSetRenderTargets(1, &rt, nullptr);
+        const float scale = std::min(float(width) / output_width, float(height) / output_height);
+        D3D11_VIEWPORT fitted{(width - output_width * scale) / 2,
+                              (height - output_height * scale) / 2,
+                              output_width * scale,
+                              output_height * scale,
+                              0,
+                              1};
+        context->RSSetViewports(1, &fitted);
+        context->IASetInputLayout(nullptr);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vs.Get(), nullptr, 0);
+        context->PSSetShader(downsample.Get(), nullptr, 0);
+        auto *sample = sampler.Get();
+        context->PSSetSamplers(0, 1, &sample);
+        auto *view = output_view.Get();
+        context->PSSetShaderResources(0, 1, &view);
+        context->Draw(3, 0);
+        ID3D11ShaderResourceView *empty{};
+        context->PSSetShaderResources(0, 1, &empty);
+        if (present) {
+            const HRESULT hr = swap->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+            if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+                return !retry_busy;
+            if (FAILED(hr))
+                return fail(L"Present preview", hr);
+        }
         return true;
     }
     bool make_waiting(const wchar_t *label) {
@@ -1069,6 +1159,9 @@ bool Renderer::source_frame(Frame &frame) const {
     frame = r.frame;
     return true;
 }
+std::uint32_t Renderer::producer_pid() const {
+    return !impl_->window_mode && impl_->frame.view_count ? impl_->frame.producer_pid : 0;
+}
 bool Renderer::attach_offscreen(const LUID *adapter) {
     impl_->window = nullptr;
     impl_->offscreen = true;
@@ -1334,20 +1427,100 @@ bool Renderer::demo(double seconds, bool quad, unsigned eye) {
     return true;
 }
 
+void Renderer::clear_monitor() {
+    impl_->monitor_view.Reset();
+    impl_->monitor_frame.Reset();
+}
+void Renderer::reset_lookahead() {
+    impl_->frame_buffer.reset();
+    impl_->stabilizer.reset_director();
+    impl_->image_director.reset();
+    impl_->director_status = {};
+}
+bool Renderer::draw_monitor(ID3D11Texture2D *texture, unsigned width, unsigned height, bool present) {
+    auto &r = *impl_;
+    if (!r.device)
+        return false;
+    if (texture && texture != r.monitor_frame.Get()) {
+        ComPtr<ID3D11Device> owner;
+        texture->GetDevice(&owner);
+        if (owner.Get() != r.device.Get())
+            return r.fail(L"Monitor frame is on the wrong GPU");
+        ComPtr<ID3D11ShaderResourceView> view;
+        HRESULT hr = r.device->CreateShaderResourceView(texture, nullptr, &view);
+        if (FAILED(hr))
+            return r.fail(L"Monitor texture view", hr);
+        r.monitor_frame = texture;
+        r.monitor_view = view;
+    }
+    if (!r.monitor_frame)
+        return false;
+    OutputWrite writer;
+    if (!r.begin_output(writer, width, height))
+        return false;
+    if (!r.monitor_shader) {
+        ComPtr<ID3DBlob> blob;
+        HRESULT hr = D3DCompile(shader, sizeof(shader) - 1, nullptr, nullptr, nullptr, "Monitor", "ps_5_0",
+                                D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, nullptr);
+        if (FAILED(hr) ||
+            FAILED(hr = r.device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr,
+                                                    &r.monitor_shader)))
+            return r.fail(L"Monitor shader", hr);
+    }
+    if (!r.monitor_target) {
+        D3D11_RENDER_TARGET_VIEW_DESC rt{};
+        rt.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // Desktop BGRA already contains encoded SDR values.
+        rt.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        const HRESULT hr = r.device->CreateRenderTargetView(r.output.Get(), &rt, &r.monitor_target);
+        if (FAILED(hr))
+            return r.fail(L"Monitor output target", hr);
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    r.monitor_frame->GetDesc(&desc);
+    MonitorFrameInfo info;
+    UINT size = sizeof(info);
+    r.monitor_frame->GetPrivateData(monitor_info_guid, &size, &info);
+    if (info.rotation == DXGI_MODE_ROTATION_ROTATE90 || info.rotation == DXGI_MODE_ROTATION_ROTATE270)
+        std::swap(desc.Width, desc.Height);
+    ComPtr<ID3D11ShaderResourceView> cursor;
+    if (info.pointer_type) {
+        size = sizeof(ID3D11ShaderResourceView *);
+        r.monitor_frame->GetPrivateData(monitor_pointer_guid, &size, cursor.GetAddressOf());
+    }
+    Params params{};
+    params.image_mode[0] = float(info.rotation);
+    params.image_mode[1] = float(desc.Width);
+    params.image_mode[2] = float(desc.Height);
+    params.image_mode[3] = cursor ? float(info.pointer_type) : 0.f;
+    params.mirror_style[0] = float(info.pointer.x);
+    params.mirror_style[1] = float(info.pointer.y);
+    params.mirror_style[2] = float(info.pointer_width);
+    params.mirror_style[3] = float(info.pointer_height);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    const HRESULT hr = r.context->Map(r.constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    if (FAILED(hr))
+        return r.fail(L"Monitor shader parameters", hr);
+    std::memcpy(mapped.pData, &params, sizeof(params));
+    r.context->Unmap(r.constants.Get(), 0);
+    const float black[4]{0, 0, 0, 1};
+    r.context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+    r.context->ClearRenderTargetView(r.monitor_target.Get(), black);
+    const float scale = std::min(float(r.output_width) / desc.Width, float(r.output_height) / desc.Height);
+    D3D11_VIEWPORT fitted{(r.output_width - desc.Width * scale) / 2,
+                          (r.output_height - desc.Height * scale) / 2,
+                          desc.Width * scale,
+                          desc.Height * scale,
+                          0,
+                          1};
+    r.draw_eye(r.monitor_target.Get(), fitted, r.constants.Get(), r.monitor_view.Get(), cursor.Get(),
+               r.monitor_shader.Get());
+    return r.finish_output(writer, present, black, true);
+}
 bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting_text) {
     auto &r = *impl_;
-    if (!r.device || (!r.offscreen && (!r.swap || !r.resize())) || !r.resize_output(options))
+    OutputWrite writer;
+    if (!r.begin_output(writer, options.output_width, options.output_height))
         return false;
-    OutputWrite writer{r.output_mutex, r.context};
-    if (writer.mutex) {
-        const HRESULT hr = writer.mutex->AcquireSync(0, 0);
-        if (hr != S_OK) {
-            if (hr == WAIT_ABANDONED)
-                r.discard_output();
-            return hr == WAIT_TIMEOUT ? false : r.fail(L"Acquire offscreen output", hr);
-        }
-        writer.acquired = true;
-    }
     const auto director = sanitize_director_settings(options.director);
     const bool active_source = r.frame.view_count && !waiting_text;
     SpeedReading speed;
@@ -1659,47 +1832,7 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
             r.context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
         }
     }
-    if (r.offscreen) {
-        r.context->OMSetRenderTargets(0, nullptr, nullptr);
-        const HRESULT removed = r.device->GetDeviceRemovedReason();
-        if (FAILED(removed))
-            return r.fail(L"Render offscreen output", removed);
-        const HRESULT hr = writer.release(1);
-        if (FAILED(hr))
-            return r.fail(L"Publish offscreen output", hr);
-        r.error.clear();
-        return true;
-    }
-    // Present the complete requested-resolution canvas without distorting it
-    // when the physical client area has a different aspect ratio.
-    r.context->ClearRenderTargetView(r.target.Get(), clear);
-    auto *rt = r.target.Get();
-    r.context->OMSetRenderTargets(1, &rt, nullptr);
-    const float scale = std::min(float(r.width) / r.output_width, float(r.height) / r.output_height);
-    D3D11_VIEWPORT fitted{(r.width - r.output_width * scale) / 2,
-                          (r.height - r.output_height * scale) / 2,
-                          r.output_width * scale,
-                          r.output_height * scale,
-                          0,
-                          1};
-    r.context->RSSetViewports(1, &fitted);
-    r.context->IASetInputLayout(nullptr);
-    r.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    r.context->VSSetShader(r.vs.Get(), nullptr, 0);
-    r.context->PSSetShader(r.downsample.Get(), nullptr, 0);
-    auto *sample = r.sampler.Get();
-    r.context->PSSetSamplers(0, 1, &sample);
-    auto *view = r.output_view.Get();
-    r.context->PSSetShaderResources(0, 1, &view);
-    r.context->Draw(3, 0);
-    ID3D11ShaderResourceView *empty{};
-    r.context->PSSetShaderResources(0, 1, &empty);
-    if (present) {
-        const HRESULT hr = r.swap->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
-        if (FAILED(hr) && hr != DXGI_ERROR_WAS_STILL_DRAWING)
-            return r.fail(L"Present preview", hr);
-    }
-    return true;
+    return r.finish_output(writer, present, clear);
 }
 
 bool Renderer::readback(std::vector<std::uint32_t> &pixels, unsigned &width, unsigned &height) {

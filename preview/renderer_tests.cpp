@@ -1,5 +1,6 @@
 #include "renderer.hpp"
 #include "source_status.hpp"
+#include "window_capture.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -86,6 +87,84 @@ void abandon_output(OutputReader &reader, std::uint64_t handle) {
     reader.device.Reset();
     const HRESULT abandoned = probe.mutex->AcquireSync(0, 0);
     require(abandoned == WAIT_ABANDONED, "destroyed owner must abandon the native output mutex");
+}
+
+void monitor_clone_tests() {
+    Renderer renderer;
+    require(renderer.attach_offscreen() && renderer.demo(0), "monitor clone XR fixture");
+    Options options;
+    options.output_width = 480;
+    options.output_height = 240;
+    options.crop = 30;
+    std::vector<std::uint32_t> xr, pixels;
+    unsigned width{}, height{};
+    require(renderer.draw(options) && renderer.readback(xr, width, height), "retained XR reference");
+    const auto xr_sequence = renderer.sequence();
+
+    // Distinct non-primary desktop colors catch swapped channels and double gamma.
+    const std::uint32_t pattern[4]{0xff123456, 0xffc42b61, 0xff0485af, 0xff8c1063};
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = desc.Height = 2;
+    desc.ArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data{pattern, 8, 0};
+    ComPtr<ID3D11Texture2D> frame;
+    require(SUCCEEDED(renderer.device()->CreateTexture2D(&desc, &data, &frame)), "synthetic monitor image");
+    require(!renderer.draw_monitor(nullptr, 480, 240), "missing clone cannot draw an XR frame");
+    require(renderer.draw_monitor(frame.Get(), 480, 240), "first monitor draw");
+    require(!renderer.draw_monitor(nullptr, 480, 240), "clone respects offscreen reader ownership");
+    require(renderer.readback(pixels, width, height), "monitor clone readback");
+    const auto at = [&](unsigned x, unsigned y) { return pixels[y * width + x]; };
+    require(at(119, 120) == 0xff000000 && at(360, 120) == 0xff000000 && at(120, 0) == 0xff563412 &&
+                at(359, 0) == 0xff612bc4 && at(120, 239) == 0xffaf8504 && at(359, 239) == 0xff63108c,
+            "unchanged full monitor color, orientation and pillarbox fit");
+    MonitorFrameInfo info;
+    for (const auto &rotation : {std::pair{DXGI_MODE_ROTATION_ROTATE90, 0xffaf8504u},
+                                 std::pair{DXGI_MODE_ROTATION_ROTATE180, 0xff63108cu},
+                                 std::pair{DXGI_MODE_ROTATION_ROTATE270, 0xff612bc4u}}) {
+        info.rotation = rotation.first;
+        require(SUCCEEDED(frame->SetPrivateData(monitor_info_guid, sizeof(info), &info)) &&
+                    renderer.draw_monitor(frame.Get(), 480, 240) &&
+                    renderer.readback(pixels, width, height) && at(120, 0) == rotation.second,
+                "rotated desktop corners");
+    }
+    info.rotation = DXGI_MODE_ROTATION_IDENTITY;
+    info.pointer = {1, 1};
+    info.pointer_width = info.pointer_height = 1;
+    std::uint32_t pointer_pixel = 0xffffffffu;
+    desc.Width = desc.Height = 1;
+    data = {&pointer_pixel, 4, 0};
+    ComPtr<ID3D11Texture2D> pointer;
+    ComPtr<ID3D11ShaderResourceView> pointer_view;
+    require(
+        SUCCEEDED(renderer.device()->CreateTexture2D(&desc, &data, &pointer)) &&
+            SUCCEEDED(renderer.device()->CreateShaderResourceView(pointer.Get(), nullptr, &pointer_view)) &&
+            SUCCEEDED(frame->SetPrivateDataInterface(monitor_pointer_guid, pointer_view.Get())),
+        "separate DXGI pointer image");
+    for (const auto &cursor : {std::pair{DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR, 0xffffffffu},
+                               std::pair{DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR, 0xff9cef73u},
+                               std::pair{DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME, 0xff9cef73u}}) {
+        info.pointer_type = cursor.first;
+        require(SUCCEEDED(frame->SetPrivateData(monitor_info_guid, sizeof(info), &info)) &&
+                    renderer.draw_monitor(frame.Get(), 480, 240) &&
+                    renderer.readback(pixels, width, height) && at(120, 0) == 0xff563412 &&
+                    at(359, 239) == cursor.second,
+                "hardware cursor color and XOR masks apply only at its display position");
+    }
+    info.pointer_type = 0;
+    require(SUCCEEDED(frame->SetPrivateData(monitor_info_guid, sizeof(info), &info)),
+            "hide hardware pointer");
+    frame.Reset();
+    require(renderer.draw_monitor(nullptr, 320, 400) && renderer.readback(pixels, width, height) &&
+                width == 320 && height == 400 && at(0, 39) == 0xff000000 && at(0, 40) == 0xff563412 &&
+                at(319, 359) == 0xff63108c && at(319, 360) == 0xff000000,
+            "retained monitor resizes to letterbox fit");
+    renderer.clear_monitor();
+    require(!renderer.draw_monitor(nullptr, 480, 240) && renderer.has_frame() &&
+                renderer.sequence() == xr_sequence && renderer.draw(options) &&
+                renderer.readback(pixels, width, height) && pixels == xr,
+            "clearing monitor clone restores independent XR source");
 }
 
 template <class T> void offscreen_tests() {
@@ -729,6 +808,7 @@ int main(int argc, char **argv) {
         quad_source_tests();
         visual_host_tests();
         overlay_tests();
+        monitor_clone_tests();
         offscreen_tests<Renderer>();
         WNDCLASSW wc{};
         wc.lpfnWndProc = DefWindowProcW;

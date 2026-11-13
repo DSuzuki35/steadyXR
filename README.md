@@ -4,7 +4,7 @@
 
 SteadyXR is a standalone Windows app. It takes an OpenXR eye image or an existing game window, smooths the camera movement, and opens a clean **Stream Output** window. You choose what stays in frame.
 
-**[Download SteadyXR 1.0.2 for Windows x64](https://github.com/DSuzuki35/steadyXR/releases/download/v1.0.2/SteadyXR-1.0.2-Standalone-Windows-x64.zip)** · [Watch Dan’s tutorial](https://youtu.be/kNgVMJ82mQU) · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.0.2)
+**[Download SteadyXR 1.0.3 for Windows x64](https://github.com/DSuzuki35/steadyXR/releases/download/v1.0.3/SteadyXR-1.0.3-Standalone-Windows-x64.zip)** · [Watch Dan’s tutorial](https://youtu.be/kNgVMJ82mQU) · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.0.3)
 
 ![SteadyXR dashboard with stream source, eye selection and a framing monitor](docs/images/steadyxr-dashboard.png)
 
@@ -21,6 +21,8 @@ SteadyXR is a standalone Windows app. It takes an OpenXR eye image or an existin
 | **Dual PC** | In SteadyXR **Settings → Output monitor**, select the display connected to your capture card. Put Stream Output fullscreen there with **F11**. On the streaming PC, use the capture card as your video source. |
 
 For a 72 Hz headset, choose **72 FPS** to match a steady 72-frame OpenXR source. A **60 FPS** cap skips about 12 source frames each second. A **90 FPS** cap can also show all 72, since the source sets the upper limit.
+
+For a dual-PC stream, SteadyXR can clone your main monitor for the menus and switch to the VR eye when you enter the car in iRacing or Le Mans Ultimate. [Set up OpenXR fallback](preview/README.md#show-the-menu-between-drives)
 
 ## Frame a lap
 

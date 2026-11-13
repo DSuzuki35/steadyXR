@@ -1,5 +1,11 @@
 # SteadyXR changelog
 
+## 1.0.3
+
+- Choose what viewers see when OpenXR frames stop. Open **Stream Output → OpenXR fallback…** to keep the waiting screen, hide the output window until frames return, or clone a monitor.
+- In iRacing and Le Mans Ultimate, enable **Use fallback outside the car** to show the game menu on your main display and switch back to VR when you enter the car. A stationary car in the pits still counts.
+- Monitor cloning uses Windows Desktop Duplication without a yellow capture border. SteadyXR releases the monitor capture when VR output resumes.
+
 ## 1.0.2
 
 - Added **Advanced smoothing** with independent horizontal and vertical controls, as requested by **Coltangent**. Enable it under **Camera** for OpenXR or window capture. Custom presets remember both values.

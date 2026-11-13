@@ -33,14 +33,14 @@ Fixture iracing() {
     Fixture f(4096);
     f.put<int>(0, 2); f.put<int>(4, 1); f.put<int>(8, 60);
     f.put<int>(12, 1); f.put<int>(16, 32); f.put<int>(20, 128);
-    f.put<int>(24, 5); f.put<int>(28, 256);
+    f.put<int>(24, 6); f.put<int>(28, 256);
     f.put<int>(32, 2); f.put<int>(36, 128);
     f.put<unsigned>(48, 100); f.put<int>(52, 2048);
     f.put<unsigned>(64, 99); f.put<int>(68, 2304);
-    const char *names[]{"SessionTime", "IsOnTrack", "SessionNum", "Speed", "SessionState"};
-    const int types[]{5, 1, 2, 4, 2};
-    const int offsets[]{64, 7, 96, 24, 32};
-    for (std::size_t i = 0; i < 5; ++i) {
+    const char *names[]{"SessionTime", "IsOnTrack", "SessionNum", "Speed", "SessionState", "IsGarageVisible"};
+    const int types[]{5, 1, 2, 4, 2, 1};
+    const int offsets[]{64, 7, 96, 24, 32, 8};
+    for (std::size_t i = 0; i < 6; ++i) {
         const auto entry = 256 + i * 144;
         f.put<int>(entry, types[i]); f.put<int>(entry + 4, offsets[i]);
         f.put<int>(entry + 8, 1);
@@ -61,6 +61,11 @@ Fixture lmu() {
     f.put<unsigned char>(1632 + 108, 5); f.put<unsigned char>(1632 + 115, 1);
     f.put<unsigned char>(128464, 3); f.put<unsigned char>(128465, 2);
     f.put<unsigned char>(128466, 1);
+    // Scoring and telemetry have intentionally different player indices.
+    const auto score = 1632 + 560 + 584;
+    f.put<int>(score, 42);
+    f.put<unsigned char>(score + 196, 1);
+    f.put<signed char>(score + 197, 0);
     const auto player = 128468 + 2 * 1888;
     f.put<int>(player, 42); f.put<double>(player + 12, 20.0);
     f.put<double>(player + 184, 3.0); f.put<double>(player + 192, 0.0);
@@ -273,6 +278,94 @@ void lmu_and_switch_tests() {
     if (event) CloseHandle(event);
 }
 
+void cockpit_tests() {
+    TestNames n(L"-cockpit");
+    TestMapping ir(n.ir.c_str(), 4096), lm(n.lm.c_str(), 324824), lock(n.lock.c_str(), 8);
+    ir.set(iracing());
+    lm.set(lmu());
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, n.event.c_str());
+    CockpitPoller gate(n.names());
+    using State = CockpitState;
+    auto ir_state = [&](unsigned now) { return gate.sample(SpeedGame::iracing, now); };
+    auto lm_state = [&](unsigned now) { return gate.sample(SpeedGame::lmu, now); };
+
+    check(gate.sample(SpeedGame::automatic, 1000) == State::unknown, "unknown OpenXR game cannot inherit live simulator telemetry");
+    check(ir_state(1000) == State::unknown, "cockpit gate requires fresh progress on connection");
+    advance_ir(ir, 101, 20.05, 0.f);
+    check(ir_state(1050) == State::inside, "stationary iRacing driver in car passes cockpit gate");
+    ir.put<unsigned char>(2056, 1);
+    check(ir_state(1100) == State::outside, "iRacing garage screen overrides player physics immediately");
+    ir.put<unsigned char>(2056, 0);
+    ir.put<unsigned char>(2055, 0);
+    advance_ir(ir, 102, 20.1, 40.f);
+    check(ir_state(1150) == State::outside, "iRacing monitor with moving vehicle is outside");
+    ir.put<unsigned char>(2055, 1);
+    check(ir_state(1200) == State::unknown, "returning driver requires a fresh in-car baseline");
+    advance_ir(ir, 103, 20.15, std::numeric_limits<float>::quiet_NaN());
+    check(ir_state(1250) == State::inside, "iRacing occupancy is independent of speed field contents");
+    check(ir_state(1749) == State::inside && ir_state(1750) == State::unknown,
+          "frozen iRacing telemetry expires even while OpenXR keeps submitting frames");
+    gate.reset();
+    check(ir_state(1751) == State::unknown, "a reset cannot reuse the last producer's cockpit state");
+    advance_ir(ir, 104, 20.2, 0.f);
+    check(ir_state(1801) == State::inside, "fresh iRacing telemetry reopens a stopped driver's cockpit");
+    ir.put<int>(4, 0);
+    check(ir_state(1851) == State::unknown, "disconnected iRacing cannot retain a confirmed cockpit");
+    gate.reset();
+
+    constexpr auto player = 128468 + 2 * 1888;
+    constexpr auto score = 1632 + 560 + 584;
+    lm.put<double>(player + 184, 0.0);
+    lm.put<double>(player + 200, 0.0);
+    check(lm_state(2301) == State::unknown, "producer change starts an independent LMU baseline");
+    lm.put<double>(player + 12, 20.05);
+    check(lm_state(2351) == State::inside, "stationary LMU local driver passes cockpit gate");
+    lock.put<LONG>(4, 1);
+    check(lm_state(2401) == State::inside, "single LMU lock miss retains a confirmed cockpit");
+    check(lm_state(2850) == State::inside, "LMU contention within original freshness window holds state");
+    check(lm_state(2851) == State::unknown, "cached cockpit expires at 500 ms despite continuing contention");
+    lock.put<LONG>(4, 0);
+    check(lm_state(3351) == State::unknown, "LMU stale reconnect starts with a fresh baseline");
+    lm.put<double>(player + 12, 20.1);
+    check(lm_state(3401) == State::inside, "fresh telemetry recovers the cockpit after contention");
+    lm.put<unsigned char>(1747, 0);
+    check(lm_state(3451) == State::outside, "LMU monitor overrides previously fresh cockpit");
+    lm.put<unsigned char>(1747, 1);
+    for (unsigned char location = 0; location <= 2; ++location) {
+        lm.put<unsigned char>(96, location);
+        check(lm_state(3501 + location * 50) == State::outside, "LMU UI, loading and monitor use fallback");
+    }
+    lm.put<unsigned char>(96, 3);
+    lm.put<unsigned char>(1740, 9);
+    check(lm_state(3651) == State::outside, "LMU pause overrides stale player telemetry");
+    lm.put<unsigned char>(1740, 5);
+    lm.put<unsigned char>(128466, 0);
+    check(lm_state(3701) == State::outside, "LMU spectator without a vehicle is outside");
+    lm.put<unsigned char>(128466, 1);
+    lm.put<signed char>(score + 197, 3);
+    check(lm_state(3751) == State::outside, "LMU replay controller cannot confirm driver");
+    lm.put<signed char>(score + 197, 2);
+    check(lm_state(3801) == State::outside, "LMU remote driver cannot confirm cockpit");
+    lm.put<int>(score, 41);
+    check(lm_state(3851) == State::unknown, "LMU no matching scoring vehicle cannot confirm cockpit");
+    check(gate.sample(SpeedGame::automatic, 3852) == State::unknown, "unsupported producer clears previous game");
+    gate.reset();
+    lm.put<unsigned char>(96, 1);
+    for (unsigned now = 4000; now <= 6000; now += 100)
+        check(lm_state(now) == State::outside, "stationary menu remains outside while telemetry time is frozen");
+    lock.put<LONG>(4, 1);
+    check(lm_state(6050) == State::outside, "brief lock contention keeps the last menu observation");
+    lock.put<LONG>(4, 0);
+    lm.put<unsigned char>(96, 3);
+    lm.put<int>(score, 42);
+    lm.put<signed char>(score + 197, 0);
+    check(lm_state(6100) == State::unknown, "leaving a long menu needs a new in-car baseline");
+    lm.put<double>(player + 12, 20.15);
+    check(lm_state(6150) == State::inside, "next fresh in-car reading recovers immediately after a long menu");
+    gate.reset();
+    if (event) CloseHandle(event);
+}
+
 void unavailable_lmu_and_destruction_tests() {
     TestNames n(L"-no-lock");
     {
@@ -311,6 +404,7 @@ int main() {
     parser_tests();
     lifecycle_tests();
     retry_and_release_tests();
+    cockpit_tests();
     lmu_and_switch_tests();
     unavailable_lmu_and_destruction_tests();
     return failures ? 1 : 0;

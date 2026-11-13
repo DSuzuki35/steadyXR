@@ -6,6 +6,9 @@
 #include "crop_geometry.hpp"
 #include "director_settings_io.hpp"
 #include "overlays.hpp"
+#include "monitor_fallback.hpp"
+#include "output_fallback_settings.hpp"
+#include "speed_telemetry.hpp"
 #include "presets.hpp"
 #include "render_settings.hpp"
 #include "renderer.hpp"
@@ -48,7 +51,8 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               capture_still_id = 141, pitch_id = 144,
               vertical_id = 145, horizontal_id = 146, edit_still_id = 147, coffee_id = 148,
               affiliate_id = 149, joystick_id = 150, framing_card_id = 151, status_light_id = 152, manage_presets_id = 153,
-              separate_smoothing_id = 154, yaw_smoothing_id = 155, pitch_smoothing_id = 156, tutorial_id = 157;
+              separate_smoothing_id = 154, yaw_smoothing_id = 155, pitch_smoothing_id = 156, tutorial_id = 157,
+              fallback_id = 158;
 constexpr int hotkeys_default_id = 2100, hotkeys_alternate_id = 2101, hotkeys_off_id = 2102;
 constexpr int navigation_id = 1500;
 constexpr std::array<unsigned, 4> frame_rates{30, 60, 72, 90};
@@ -190,6 +194,16 @@ struct App {
     bool connection_enable{};
     Channel channel;
     Renderer renderer;
+    MonitorFallback monitor_fallback{renderer};
+    OutputFallbackSettings fallback_settings;
+    OutputFallbackDialog fallback_dialog;
+    SpeedTelemetry cockpit_telemetry;
+    DWORD cockpit_pid{};
+    SpeedGame cockpit_game{SpeedGame::automatic};
+    CockpitState cockpit_state{CockpitState::unknown};
+    std::uint64_t next_cockpit_check{};
+    bool auto_hidden{}, cloning{}, cockpit_wait{}, fallback_active{}, paused_clone{};
+    std::wstring fallback_ini;
     WindowCapture capture;
     std::vector<CaptureWindow> sources;
     HWND source_window{};
@@ -442,12 +456,14 @@ struct App {
         layer_editor_process = execute.hProcess;
     }
     bool waiting(std::uint64_t now) const {
-        return expired || capture_conflict || !renderer.has_frame() ||
+        return expired || capture_conflict || cockpit_wait || !renderer.has_frame() ||
                (!paused && last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000);
     }
     const wchar_t *waiting_text() const {
         return expired          ? L"Build expired. Please install a newer SteadyXR build."
                : capture_conflict ? L"Another capture app is using the OpenXR connection."
+               : cockpit_wait     ? cockpit_state == CockpitState::outside ? L"Waiting for cockpit…"
+                                                                          : L"Waiting for cockpit telemetry…"
                : window_mode      ? L"Waiting for window capture…"
                                   : L"Waiting for OpenXR capture…";
     }
@@ -673,10 +689,71 @@ struct App {
             rate = 60;
     }
     bool active() const {
-        return !expired && !paused && IsWindowVisible(output) && !IsIconic(output);
+        return !expired && !paused && (auto_hidden || IsWindowVisible(output)) && !IsIconic(output);
+    }
+    void reset_cockpit() {
+        cockpit_telemetry.reset();
+        cockpit_pid = 0;
+        cockpit_game = SpeedGame::automatic;
+        cockpit_state = CockpitState::unknown;
+        cockpit_wait = false;
+        next_cockpit_check = 0;
+    }
+    void poll_cockpit(std::uint64_t now) {
+        if (!fallback_settings.cockpit_only || window_mode || demo || !active() || !last_received_ms ||
+            (now >= last_received_ms && now - last_received_ms >= 2000)) {
+            if (cockpit_pid)
+                reset_cockpit();
+            return;
+        }
+        const auto pid = renderer.producer_pid();
+        if (pid != cockpit_pid) {
+            reset_cockpit();
+            cockpit_pid = pid;
+            const auto name = std::filesystem::path(executable_path(pid)).filename().wstring();
+            if (!_wcsicmp(name.c_str(), L"Le Mans Ultimate.exe"))
+                cockpit_game = SpeedGame::lmu;
+            else if (!_wcsnicmp(name.c_str(), L"iRacingSim", 10))
+                cockpit_game = SpeedGame::iracing;
+        }
+        if (cockpit_game == SpeedGame::automatic || now < next_cockpit_check)
+            return;
+        next_cockpit_check = now + 50;
+        cockpit_state = cockpit_telemetry.cockpit(cockpit_game);
+        cockpit_wait = cockpit_state != CockpitState::inside;
+    }
+    void route_output(std::uint64_t now) {
+        poll_cockpit(now);
+        // A user-closed/minimized output stays closed. An automatically hidden
+        // one keeps requesting XR frames so it can restore itself on the first frame.
+        const bool fallback = !window_mode && !demo && active() && waiting(now);
+        if (fallback != fallback_active) {
+            fallback_active = fallback;
+            renderer.reset_lookahead();
+            dirty = true;
+        }
+        const bool use_clone = fallback && fallback_settings.mode == FallbackMode::monitor;
+        const bool hide = fallback && fallback_settings.mode == FallbackMode::hide;
+        if (cloning != use_clone) {
+            if (cloning)
+                monitor_fallback.stop();
+            cloning = use_clone;
+            dirty = true;
+        }
+        // Preserve a paused automatic hide until resumed, or until the user
+        // switches source/policy or explicitly reopens the output.
+        if (auto_hidden && paused && !window_mode && !demo && fallback_settings.mode == FallbackMode::hide)
+            return;
+        if (auto_hidden != hide) {
+            auto_hidden = hide;
+            ShowWindow(output, hide ? SW_HIDE : SW_SHOWNOACTIVATE);
+            dirty = true;
+        }
     }
     void restart_source() {
         cancel_comparison();
+        paused_clone = false;
+        reset_cockpit();
         capture.stop();
         renderer.source_changed();
         last_capture_start = last_received_ms = 0;
@@ -1118,6 +1195,9 @@ struct App {
         const bool live = !expired && !capture_conflict && !paused && !hidden && renderer.has_frame() && !stale;
         const auto headline = expired ? std::wstring(L"Build expired")
             : capture_conflict ? std::wstring(feed) + L" in use"
+            : cloning ? std::wstring(monitor_fallback.has_picture() ? L"Monitor clone" : L"Waiting for monitor")
+            : auto_hidden ? std::wstring(L"Output auto-hidden")
+            : cockpit_wait ? std::wstring(L"Waiting for cockpit")
             : paused ? std::wstring(L"Output paused")
             : hidden ? std::wstring(L"Output hidden")
             : live ? std::wstring(feed) + L" connected" : std::wstring(L"Waiting for ") + feed;
@@ -1133,10 +1213,12 @@ struct App {
         Frame captured_source{};
         const bool has_source = !demo && !window_mode && renderer.source_frame(captured_source);
         const bool fresh_source = has_source && active() && last_received_ms && !stale && !capture_conflict;
-        auto detail = view;
-        if (live && fps_value > 0)
+        auto detail = cloning || auto_hidden || cockpit_wait
+            ? std::wstring(cockpit_wait ? (cockpit_state == CockpitState::outside ? L"Outside cockpit" : L"Cockpit telemetry unavailable") : L"No OpenXR frames")
+            : view;
+        if (live && fps_value > 0 && !cloning && !cockpit_wait)
             detail += L"  ·  " + std::to_wstring(fps_value) + L" FPS";
-        if (fresh_source)
+        if (fresh_source && !cloning && !cockpit_wait)
             detail += L"  ·  " + source_view_summary(captured_source);
         if (detail != footer_detail) {
             footer_detail = detail;
@@ -1145,7 +1227,8 @@ struct App {
         if (headline != footer_state) {
             footer_state = headline;
             SetWindowTextW(compact_status, headline.c_str());
-            light_color = expired || capture_conflict ? RGB(241, 133, 116) : live ? RGB(75, 203, 139)
+            const bool live_output = cloning ? monitor_fallback.has_picture() : live && !cockpit_wait;
+            light_color = expired || capture_conflict ? RGB(241, 133, 116) : live_output ? RGB(75, 203, 139)
                         : paused || hidden ? RGB(156, 165, 178) : RGB(230, 179, 91);
             if (status_light)
                 InvalidateRect(status_light, nullptr, FALSE);
@@ -1231,6 +1314,13 @@ struct App {
             text += L"Another capture app is using the OpenXR connection. Pause its capture to resume SteadyXR.\r\n";
         if (paused)
             text += L"PAUSED – no new frame copies requested.\r\n";
+        else if (auto_hidden)
+            text += L"Output hidden automatically. Still listening for OpenXR.\r\n";
+        else if (cloning)
+            text += monitor_fallback.has_picture() ? L"Fallback: showing the selected desktop monitor.\r\n"
+                                                   : monitor_fallback.status() + L"\r\n";
+        else if (fallback_settings.cockpit_only && !window_mode && cockpit_pid && cockpit_game == SpeedGame::automatic)
+            text += L"Cockpit detection unavailable for this game. Using OpenXR frame availability.\r\n";
         else if (!IsWindowVisible(output) || IsIconic(output))
             text += L"Stream output hidden – no new frame copies requested.\r\n";
         else if (last_received_ms && GetTickCount64() - last_received_ms > 2000)
@@ -1321,6 +1411,7 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     switch (message) {
     case WM_CLOSE:
         app->cancel_comparison();
+        app->auto_hidden = false;
         ShowWindow(window, SW_HIDE);
         app->heartbeat();
         return 0;
@@ -1328,6 +1419,9 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         app->dirty = true;
         app->heartbeat();
         return 0;
+    case WM_DISPLAYCHANGE:
+        app->monitor_fallback.display_changed();
+        break;
     case WM_KEYDOWN:
         if (w == VK_F11) {
             app->toggle_fullscreen();
@@ -1350,7 +1444,7 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         PAINTSTRUCT ps{};
         BeginPaint(window, &ps);
         EndPaint(window, &ps);
-        if (app->waiting(GetTickCount64()))
+        if (!app->cloning && !(app->paused && app->paused_clone) && app->waiting(GetTickCount64()))
             app->renderer.draw(app->draw_options(GetTickCount64()), true, app->waiting_text());
         app->dirty = true;
         return 0;
@@ -1396,7 +1490,7 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             app->refresh_comparison(now);
             // Popup menus and window dragging run a nested message loop. End
             // the displayed comparison there as well as in the capture loop.
-            if (had_comparison && !app->compare_until && IsWindowVisible(app->output) &&
+            if (!app->cloning && had_comparison && !app->compare_until && IsWindowVisible(app->output) &&
                 !IsIconic(app->output))
                 app->renderer.draw(app->draw_options(now), true,
                                    app->waiting(now) ? app->waiting_text() : nullptr);
@@ -1436,6 +1530,19 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             return 0;
         }
         switch (LOWORD(w)) {
+        case fallback_id:
+            app->fallback_dialog.open(window, app->theme, app->fallback_settings, [](OutputFallbackSettings settings) {
+                if (!write_output_fallback_settings(app->fallback_ini, settings)) {
+                    app->setup_message = L"Could not save OpenXR fallback settings.";
+                } else {
+                    app->fallback_settings = std::move(settings);
+                    app->monitor_fallback.display_changed();
+                    app->reset_cockpit();
+                    app->dirty = true;
+                }
+                app->update_status();
+            });
+            return 0;
         case edit_still_id:
             app->framing.open();
             return 0;
@@ -1563,12 +1670,14 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             break;
         case show_id:
             app->cancel_comparison();
+            app->auto_hidden = false;
             ShowWindow(app->output, SW_RESTORE);
             app->paused = false;
             SetForegroundWindow(app->output);
             break;
         case pause_id:
             app->cancel_comparison();
+            app->paused_clone = !app->paused && app->cloning;
             app->paused = !app->paused;
             if (!app->paused)
                 app->renderer.reset();
@@ -1737,6 +1846,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.ini =
             state.directory + L"\\preview-selftest-" + std::to_wstring(GetCurrentProcessId()) + L".ini";
     state.read();
+    state.fallback_ini = self_test ? state.ini + L".output-ui"
+                                   : state.directory + L"\\SteadyXR-ui.ini";
+    state.fallback_settings = read_output_fallback_settings(state.fallback_ini);
     const auto startup_connection = state.resolve_connection();
     state.fps_start = GetTickCount64();
     INITCOMMONCONTROLSEX common{sizeof(common), ICC_BAR_CLASSES};
@@ -1854,8 +1966,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     state.status =
         add(0, L"EDIT", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 260, 440, 540, 90);
     SetPropW(state.status, L"SteadyXRMuted", reinterpret_cast<HANDLE>(1));
-    note(0, L"Use the Stream Output window as your OBS capture source.", 260, 552, 540,
-         28);
+    note(0, L"Capture Stream Output in OBS.", 260, 552, 312, 28);
+    add(0, L"BUTTON", L"OpenXR fallback…", BS_PUSHBUTTON, 612, 541, 188, 36, fallback_id);
     auto slider = [&](int page, int id, int x, int y, int width, double value, int maximum, HWND &label) {
         label = add(page, L"STATIC", L"", 0, x, y, width, 24);
         const auto h = add(page, TRACKBAR_CLASSW, L"", TBS_HORZ, x, y + 28, width, 32, id);
@@ -2574,6 +2686,43 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         okay = interactions_ok && okay;
         // A stalled source clears the output after two seconds and recovers on
         // the very next frame; a deliberate pause retains the current image.
+        {
+            const bool saved_demo = state.demo, saved_window = state.window_mode;
+            const bool visible = IsWindowVisible(state.output);
+            const auto saved_policy = state.fallback_settings;
+            state.demo = state.window_mode = state.paused = false;
+            ShowWindow(state.output, SW_SHOWNOACTIVATE);
+            state.fallback_settings.mode = FallbackMode::hide;
+            state.last_received_ms = 10000;
+            state.route_output(11999);
+            bool route_ok = !state.auto_hidden && IsWindowVisible(state.output);
+            state.route_output(12000);
+            state.heartbeat();
+            route_ok &= state.auto_hidden && !IsWindowVisible(state.output) && state.active() && state.channel.owns_consumer();
+            state.last_received_ms = 12001;
+            state.route_output(12001);
+            route_ok &= !state.auto_hidden && IsWindowVisible(state.output);
+            state.fallback_settings.mode = FallbackMode::monitor;
+            state.route_output(15000);
+            route_ok &= state.cloning;
+            // Open a real duplication session without presenting desktop pixels.
+            state.monitor_fallback.tick(state.output, L"", state.options, 60, 1, false);
+            route_ok &= state.monitor_fallback.capturing();
+            state.last_received_ms = 15001;
+            state.route_output(15001);
+            route_ok &= !state.cloning && !state.monitor_fallback.capturing();
+            SendMessageW(state.output, WM_CLOSE, 0, 0);
+            state.route_output(18000);
+            route_ok &= !state.cloning && !state.active() && !IsWindowVisible(state.output);
+            state.fallback_settings = saved_policy;
+            state.window_mode = saved_window;
+            state.demo = saved_demo;
+            state.paused = true;
+            ShowWindow(state.output, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
+            state.heartbeat();
+            trace << "fallback-timeout-hide-reacquire-clone-and-manual-close=" << route_ok << '\n';
+            okay &= route_ok;
+        }
         state.last_received_ms = 10000;
         state.paused = false;
         okay = okay && !state.waiting(11999) && state.waiting(12000);
@@ -3180,7 +3329,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 state.quit = true;
                 break;
             }
-            if (!state.framing.route(msg) && !state.shortcuts.route(msg) && !state.spectator_controls.route(msg) &&
+            if (!state.fallback_dialog.route(msg) && !state.framing.route(msg) && !state.shortcuts.route(msg) && !state.spectator_controls.route(msg) &&
                 !state.overlays.route(msg) && !state.presets.route(msg) && !state.advanced.route(msg) &&
                 !IsDialogMessageW(state.controls, &msg)) {
                 TranslateMessage(&msg);
@@ -3244,7 +3393,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                     }
                 }
             }
-            if ((received || state.dirty) && !state.waiting(now))
+            state.route_output(now);
+            if (state.cloning)
+                state.monitor_fallback.tick(state.output, state.fallback_settings.monitor_name, state.options, state.rate, now, state.dirty);
+            else if (!state.auto_hidden && (received || state.dirty) && !state.waiting(now))
                 state.renderer.draw(state.draw_options(now));
             state.dirty = false;
             if (!submitted_feed) {
@@ -3252,15 +3404,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                 // Missed ticks (for example after a pause) should not produce a burst.
                 next_frame_ms += (1. + std::floor((frame_ms - next_frame_ms) / period_ms)) * period_ms;
             }
-        } else if (state.dirty && !state.waiting(now) && IsWindowVisible(state.output) &&
-                   !IsIconic(state.output)) {
-            state.renderer.draw(state.draw_options(now));
-            state.dirty = false;
+        } else {
+            state.route_output(now);
+            if (state.dirty && !(state.paused && state.paused_clone) && !state.waiting(now) &&
+                IsWindowVisible(state.output) && !IsIconic(state.output)) {
+                state.renderer.draw(state.draw_options(now));
+                state.dirty = false;
+            }
         }
         const bool waiting = state.waiting(now);
         // Retry at a low cadence while idle: nonblocking Present may encounter
         // a full swapchain queue on the first transition away from live video.
-        if (waiting && IsWindowVisible(state.output) && !IsIconic(state.output) &&
+        if (waiting && !state.cloning && !(state.paused && state.paused_clone) &&
+            IsWindowVisible(state.output) && !IsIconic(state.output) &&
             (!was_waiting || now - last_waiting_paint >= 250)) {
             state.renderer.draw(state.draw_options(now), true, state.waiting_text());
             last_waiting_paint = now;

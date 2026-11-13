@@ -1,4 +1,4 @@
-# SteadyXR 1.0.2 streamer guide
+# SteadyXR 1.0.3 streamer guide
 
 SteadyXR turns a VR game view into a stabilized stream. It opens two windows. Set up your camera in the dashboard and send **SteadyXR – Stream Output** to your audience. The dashboard, framing guides and status messages stay on your control screen.
 
@@ -24,9 +24,19 @@ You can also open the **Tutorial** button at the top of the dashboard to follow 
 
 **OpenXR · pose and gaze** uses submitted D3D11 or D3D12 game images and matching poses. Select **Left** or **Right** under **Eye**. With supported quad-view input, SteadyXR combines the peripheral image and high-resolution focus region for that eye. **Peripheral + focus** confirms both arrived. **Single view received** can mean a stereo image or an upstream layer that already combined the views. Gaze features also require the runtime to supply valid eye-tracking data.
 
-Watch the status at the bottom of the dashboard. Pause preserves the last image. Hiding or minimizing the stream window suspends frame requests. Reopen it and resume output before going live. If the source stops sending frames, the output switches to a waiting screen after about two seconds and returns when frames arrive. **Output details** shows your configured resolution, aspect ratio and frame rate. Actual captured dimensions, frame flow and connection messages are under **Connection and capture details**.
+Watch the status at the bottom of the dashboard. Pause preserves the last image. Manually closing or minimizing Stream Output suspends frame requests. If the source stops sending frames, the default output switches to a waiting screen after about two seconds and returns when frames arrive. **Output details** shows your configured resolution, aspect ratio and frame rate. Actual captured dimensions, frame flow and connection messages are under **Connection and capture details**.
 
 The status light is green for a live feed, amber while waiting, gray when paused or hidden, and red if another consumer owns the capture. The text beside the light identifies the state. **Buy me a coffee** and **Affiliate links** open optional support pages in your browser. Purchases through the affiliate links may earn Dan a commission.
+
+### Show the menu between drives
+
+Open **Stream Output → OpenXR fallback…**. Choose **Clone a monitor**, select the display where the game shows its menu, then click **Apply**. For a dual-PC setup, choose your main display here and the capture-card display under **Settings → Output monitor**. Keep the Stream Output window entirely on the other display to prevent a video feedback loop. The clone includes everything visible on the selected desktop and preserves its proportions.
+
+Enable **Use fallback outside the car in iRacing and Le Mans Ultimate** to show the menu even while the simulator continues submitting VR images. SteadyXR uses the running simulator’s telemetry to switch back when you enter the car, including when parked in the pits. If that simulator’s telemetry is unavailable, the fallback stays active. Other OpenXR games switch on frame availability.
+
+The monitor capture runs only while the clone is needed. Windows Desktop Duplication captures the display without a yellow outline. If a selected display disconnects, Stream Output shows a message and waits for that display to return. **Hide Stream Output** is another option. It hides the window during a gap and reopens it automatically. **Show the waiting screen** is the default.
+
+![OpenXR fallback settings for showing the game menu on a second display](../docs/images/steadyxr-output-fallback.png)
 
 ## Camera
 

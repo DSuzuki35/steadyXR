@@ -6,6 +6,8 @@ namespace vrst::preview {
 
 enum class SpeedGame : unsigned { automatic = 0, iracing = 1, lmu = 2 };
 
+enum class CockpitState { unknown, outside, inside };
+
 struct SpeedReading {
     bool valid{};
     double speed_kph{};
@@ -20,6 +22,8 @@ public:
     SpeedTelemetry(const SpeedTelemetry &) = delete;
     SpeedTelemetry &operator=(const SpeedTelemetry &) = delete;
     SpeedReading sample(SpeedGame selection = SpeedGame::automatic);
+    // Match this to the OpenXR producer. An unidentified producer is unknown.
+    CockpitState cockpit(SpeedGame producer);
     void reset();
 
 private:
