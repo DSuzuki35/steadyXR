@@ -4,7 +4,7 @@
 
 SteadyXR is a standalone Windows app. It takes an OpenXR eye image or an existing game window, smooths the camera movement, and opens a clean **Stream Output** window. You choose what stays in frame.
 
-**[Download SteadyXR 1.0.3 for Windows x64](https://github.com/DSuzuki35/steadyXR/releases/download/v1.0.3/SteadyXR-1.0.3-Standalone-Windows-x64.zip)** · [Watch Dan’s tutorial](https://youtu.be/kNgVMJ82mQU) · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.0.3)
+**[Download SteadyXR 1.0.4 for Windows x64](https://github.com/DSuzuki35/steadyXR/releases/download/v1.0.4/SteadyXR-1.0.4-Standalone-Windows-x64.zip)** · [Watch Dan’s tutorial](https://youtu.be/kNgVMJ82mQU) · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.0.4)
 
 ![SteadyXR dashboard with stream source, eye selection and a framing monitor](docs/images/steadyxr-dashboard.png)
 

@@ -1,4 +1,4 @@
-# SteadyXR 1.0.3 streamer guide
+# SteadyXR 1.0.4 streamer guide
 
 SteadyXR turns a VR game view into a stabilized stream. It opens two windows. Set up your camera in the dashboard and send **SteadyXR – Stream Output** to your audience. The dashboard, framing guides and status messages stay on your control screen.
 
@@ -37,6 +37,10 @@ Enable **Use fallback outside the car in iRacing and Le Mans Ultimate** to show 
 The monitor capture runs only while the clone is needed. Windows Desktop Duplication captures the display without a yellow outline. If a selected display disconnects, Stream Output shows a message and waits for that display to return. **Hide Stream Output** is another option. It hides the window during a gap and reopens it automatically. **Show the waiting screen** is the default.
 
 ![OpenXR fallback settings for showing the game menu on a second display](../docs/images/steadyxr-output-fallback.png)
+
+If Windows interrupts the clone during a display change, SteadyXR reconnects automatically. Viewers see the last monitor frame for up to two seconds, then a waiting screen until capture resumes. **Connection and capture details** shows the Windows error during recovery.
+
+Under **Settings → Output monitor**, choose the extended display connected to the capture card. Choose the game display under **Stream Output → OpenXR fallback… → Monitor to clone**. If both point to the same display, fullscreen output can capture itself. The output monitor list refreshes when the desktop layout changes. If the selected output disconnects, its selection is kept so Stream Output can return when Windows makes that display available again.
 
 ## Camera
 

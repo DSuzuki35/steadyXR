@@ -266,13 +266,23 @@ int main(int argc, char **argv) {
     CHECK(
         SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                                     nullptr, 0, D3D11_SDK_VERSION, &warp, nullptr, nullptr)));
-    for (auto *destination : {device.Get(), warp.Get()}) {
+    std::vector<HMONITOR> displays;
+    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR display, HDC, LPRECT, LPARAM data) -> BOOL {
+        reinterpret_cast<std::vector<HMONITOR> *>(data)->push_back(display);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&displays));
+    CHECK(!displays.empty());
+    auto check_display = [&](HMONITOR display, ID3D11Device *destination) {
         WindowCapture monitor;
         CHECK(!monitor.start_monitor(destination, nullptr));
-        const auto display = MonitorFromWindow(window, MONITOR_DEFAULTTONULL);
-        MONITORINFO info{sizeof(info)};
+        MONITORINFOEXW info{};
+        info.cbSize = sizeof(info);
         CHECK(GetMonitorInfoW(display, &info));
-        CHECK(monitor.start_monitor(destination, display));
+        std::fprintf(stderr, "Testing %ls on %s\n", info.szDevice, destination == warp.Get() ? "WARP" : "hardware");
+        if (!monitor.start_monitor(destination, display)) {
+            std::fprintf(stderr, "%ls\n", monitor.error().c_str());
+            CHECK(false);
+        }
         ComPtr<ID3D11Texture2D> frame;
         std::uint64_t stamp{};
         const auto deadline = GetTickCount64() + 5000;
@@ -280,6 +290,8 @@ int main(int argc, char **argv) {
             pump();
             Sleep(5);
         }
+        if (!frame)
+            std::fprintf(stderr, "No monitor frame: %ls\n", monitor.error().c_str());
         CHECK(frame && stamp && capture.running());
         D3D11_TEXTURE2D_DESC desc{};
         frame->GetDesc(&desc);
@@ -297,7 +309,10 @@ int main(int argc, char **argv) {
         CHECK(desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
         monitor.stop();
         CHECK(!monitor.running() && !monitor.poll(frame, stamp) && !frame && stamp == 0);
-    }
+    };
+    for (auto display : displays)
+        for (auto *destination : {device.Get(), warp.Get()})
+            check_display(display, destination);
     auto listed = WindowCapture::windows();
     CHECK(std::any_of(listed.begin(), listed.end(),
                       [&](const CaptureWindow &w) { return w.handle == window; }));

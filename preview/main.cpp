@@ -606,12 +606,6 @@ struct App {
         write(L"HotkeyProfile", hotkey_profile);
         write(L"CompareMode", options.compare_mode);
         write(L"CompareEffects", options.compare_effects);
-        if (output) {
-            MONITORINFOEXW info{};
-            info.cbSize = sizeof(info);
-            if (GetMonitorInfoW(MonitorFromWindow(output, MONITOR_DEFAULTTONEAREST), &info))
-                monitor_name = info.szDevice;
-        }
         DWORD current_pid{};
         GetWindowThreadProcessId(source_window, &current_pid);
         if (source_window && source_pid && source_pid == current_pid) {
@@ -890,18 +884,43 @@ struct App {
         MONITORINFOEXW current{};
         current.cbSize = sizeof(current);
         GetMonitorInfoW(MonitorFromWindow(output, MONITOR_DEFAULTTONEAREST), &current);
-        int selected = 0;
+        int selected = -1;
         const auto wanted = monitor_name.empty() ? std::wstring(current.szDevice) : monitor_name;
         for (unsigned i = 0; i < monitors.size(); ++i) {
             const auto &m = monitors[i];
-            const auto label = std::to_wstring(i + 1) + L": " + m.szDevice + L" (" +
+            const auto label = std::wstring(m.szDevice) + L" (" +
                                std::to_wstring(m.rcMonitor.right - m.rcMonitor.left) + L" x " +
                                std::to_wstring(m.rcMonitor.bottom - m.rcMonitor.top) + L")";
             SendMessageW(monitor, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-            if (wanted == m.szDevice)
+            if (!_wcsicmp(wanted.c_str(), m.szDevice))
                 selected = int(i);
         }
+        if (selected < 0 && !monitor_name.empty()) {
+            const auto label = monitor_name + L" (disconnected)";
+            selected = int(SendMessageW(monitor, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str())));
+        }
         SendMessageW(monitor, CB_SETCURSEL, selected, 0);
+    }
+    void remember_output_location() {
+        MONITORINFOEXW current{};
+        current.cbSize = sizeof(current);
+        if (GetMonitorInfoW(MonitorFromWindow(output, MONITOR_DEFAULTTONEAREST), &current)) {
+            monitor_name = current.szDevice;
+            list_monitors();
+        }
+    }
+    void refresh_output_displays() {
+        if (!monitor || !output)
+            return;
+        list_monitors();
+        const auto row = SendMessageW(monitor, CB_GETCURSEL, 0, 0);
+        if (row < 0 || std::size_t(row) >= monitors.size())
+            return;
+        MONITORINFOEXW current{};
+        current.cbSize = sizeof(current);
+        if (GetMonitorInfoW(MonitorFromWindow(output, MONITOR_DEFAULTTONEAREST), &current) &&
+            (fullscreen || _wcsicmp(current.szDevice, monitors[std::size_t(row)].szDevice)))
+            move_to_monitor();
     }
     void move_to_monitor() {
         const auto index = SendMessageW(monitor, CB_GETCURSEL, 0, 0);
@@ -1317,8 +1336,8 @@ struct App {
         else if (auto_hidden)
             text += L"Output hidden automatically. Still listening for OpenXR.\r\n";
         else if (cloning)
-            text += monitor_fallback.has_picture() ? L"Fallback: showing the selected desktop monitor.\r\n"
-                                                   : monitor_fallback.status() + L"\r\n";
+            text += monitor_fallback.status().empty() ? L"Fallback: showing the selected desktop monitor.\r\n"
+                                                       : monitor_fallback.status() + L"\r\n";
         else if (fallback_settings.cockpit_only && !window_mode && cockpit_pid && cockpit_game == SpeedGame::automatic)
             text += L"Cockpit detection unavailable for this game. Using OpenXR frame availability.\r\n";
         else if (!IsWindowVisible(output) || IsIconic(output))
@@ -1436,6 +1455,7 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         app->toggle_fullscreen();
         return 0;
     case WM_EXITSIZEMOVE:
+        app->remember_output_location();
         app->save();
         return 0;
     case WM_ERASEBKGND:
@@ -1479,6 +1499,9 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
                                        std::end(hotkey_actions))
             SendMessageW(window, WM_COMMAND, w, 0);
         return 0;
+    case WM_DISPLAYCHANGE:
+        app->refresh_output_displays();
+        break;
     case WM_ACTIVATE:
         if (LOWORD(w) != WA_INACTIVE && app->status && app->output)
             app->refresh_editor_connection();
@@ -3126,6 +3149,61 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         RemoveDirectoryW(presets_directory.c_str());
         trace << "complete-presets=" << preset_ok << '\n';
         okay = okay && preset_ok;
+        {
+            const auto original = state.monitor_name;
+            RECT original_rect{};
+            GetWindowRect(state.output, &original_rect);
+            const std::wstring missing = L"\\\\.\\DISPLAY-disconnected";
+            state.monitor_name = missing;
+            state.list_monitors();
+            state.move_to_monitor();
+            state.save();
+            wchar_t saved[64]{};
+            GetPrivateProfileStringW(L"Preview", L"Monitor", L"", saved, 64, state.ini.c_str());
+            bool routing = missing == saved;
+            SendMessageW(state.monitor, CB_ADDSTRING, 0, LPARAM(L"stale display"));
+            SendMessageW(state.controls, WM_DISPLAYCHANGE, 32, 0);
+            routing &= SendMessageW(state.monitor, CB_GETCOUNT, 0, 0) == LRESULT(state.monitors.size() + 1);
+            routing &= state.monitor_name == missing;
+            // Use the actual extended desktop and a hidden output. Exercise each
+            // source on a different destination without displaying desktop pixels.
+            bool cross_display = true;
+            state.monitor_name = original;
+            state.list_monitors();
+            for (std::size_t i = 0; i < state.monitors.size() && state.monitors.size() > 1; ++i) {
+                const auto &source = state.monitors[i];
+                const auto destination = (i + 1) % state.monitors.size();
+                SendMessageW(state.monitor, CB_SETCURSEL, destination, 0);
+                state.move_to_monitor();
+                MONITORINFOEXW actual{};
+                actual.cbSize = sizeof(actual);
+                const bool placed = GetMonitorInfoW(MonitorFromWindow(state.output, MONITOR_DEFAULTTONULL), &actual) &&
+                                    !_wcsicmp(actual.szDevice, state.monitors[destination].szDevice);
+                auto options = state.options;
+                options.output_width = 640;
+                options.output_height = 360;
+                const auto deadline = GetTickCount64() + 3000;
+                do {
+                    state.monitor_fallback.tick(state.output, source.szDevice, options, 60, GetTickCount64(), false);
+                    if (state.monitor_fallback.has_picture()) break;
+                    Sleep(10);
+                } while (GetTickCount64() < deadline);
+                trace << "cross-display-source-index=" << i << " target-index=" << destination
+                      << " placed=" << placed << " presented=" << state.monitor_fallback.has_picture() << '\n';
+                cross_display &= placed && state.monitor_fallback.has_picture();
+                state.monitor_fallback.stop();
+                cross_display &= !state.monitor_fallback.capturing();
+            }
+            routing &= cross_display;
+            SetWindowPos(state.output, nullptr, original_rect.left, original_rect.top,
+                         original_rect.right - original_rect.left, original_rect.bottom - original_rect.top,
+                         SWP_NOACTIVATE | SWP_NOZORDER);
+            state.monitor_name = original;
+            state.list_monitors();
+            state.save();
+            trace << "output-monitor-disconnect-and-refresh=" << routing << '\n';
+            okay &= routing;
+        }
         RECT initial{}, expanded{}, restored{};
         trace << "settings=" << okay << '\n';
         GetWindowRect(state.output, &initial);

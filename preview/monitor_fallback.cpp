@@ -26,21 +26,26 @@ void MonitorFallback::close_capture() {
     renderer_.clear_monitor();
     device_ = nullptr;
     has_picture_ = pending_frame_ = false;
-    last_poll_ = next_attempt_ = last_message_ = 0;
+    hold_until_ = last_poll_ = next_attempt_ = last_message_ = 0;
+    status_.clear();
 }
 void MonitorFallback::stop() {
     close_capture();
     topology_dirty_ = true;
     monitor_ = nullptr;
-    status_.clear();
 }
 void MonitorFallback::tick(HWND output, const std::wstring &device_name,
                            const Options &options, unsigned fps, std::uint64_t now, bool repaint) {
     if (topology_dirty_ || now >= next_check_) {
         const auto selected = selected_monitor(device_name);
-        if (topology_dirty_ || selected != monitor_) {
+        if (selected != monitor_) {
             close_capture();
             monitor_ = selected;
+        } else if (topology_dirty_) {
+            capture_.stop();
+            pending_frame_ = false;
+            next_attempt_ = 0;
+            if (has_picture_ && !hold_until_) hold_until_ = now + 2000;
         }
         topology_dirty_ = false;
         next_check_ = now + 1000;
@@ -51,7 +56,7 @@ void MonitorFallback::tick(HWND output, const std::wstring &device_name,
         status_ = L"Fallback monitor disconnected";
     } else {
         if (!capture_.running() && now >= next_attempt_) {
-            next_attempt_ = now + 1000;
+            next_attempt_ = now + 250;
             if (!renderer_.device())
                 renderer_.attach(output);
             if (renderer_.device() && capture_.start_monitor(renderer_.device(), monitor_))
@@ -64,25 +69,37 @@ void MonitorFallback::tick(HWND output, const std::wstring &device_name,
             capture_.poll(texture, time);
             // A busy swapchain needs a retry even if the desktop stays static.
             // Keep the last presented picture on screen until the new one is ready.
-            pending_frame_ = pending_frame_ || texture || (repaint && has_picture_);
+            pending_frame_ = pending_frame_ || texture;
             if (capture_.running() && pending_frame_ &&
                 renderer_.draw_monitor(texture.Get(), options.output_width, options.output_height)) {
                 has_picture_ = true;
                 pending_frame_ = false;
+                hold_until_ = 0;
+                status_.clear();
+            } else if (repaint && has_picture_ && !pending_frame_) {
+                renderer_.draw_monitor(nullptr, options.output_width, options.output_height);
+            }
+            if (!capture_.running()) {
+                next_attempt_ = now + 250;
+                pending_frame_ = false;
+                if (has_picture_ && !hold_until_) hold_until_ = now + 2000;
             }
         }
-        if (has_picture_ && capture_.running())
-            return;
-        if (!capture_.running() && (has_picture_ || pending_frame_)) {
-            renderer_.clear_monitor();
-            has_picture_ = pending_frame_ = false;
+        if (!capture_.running()) {
+            const auto error = capture_.error();
+            if (!error.empty()) status_ = error;
         }
-        status_ = capture_.error();
+        if (has_picture_ && (!hold_until_ || now < hold_until_))
+            return;
+        if (has_picture_) {
+            if (!pending_frame_) renderer_.clear_monitor();
+            has_picture_ = false;
+        }
         if (status_.empty())
             status_ = L"Waiting for fallback monitor";
     }
     if (repaint || !last_message_ || now - last_message_ >= 250) {
-        renderer_.draw(options, true, status_.c_str());
+        renderer_.draw(options, true, monitor_ ? L"Waiting for fallback monitor" : L"Fallback monitor disconnected");
         last_message_ = now;
     }
 }

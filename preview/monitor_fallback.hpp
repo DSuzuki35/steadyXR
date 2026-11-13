@@ -23,6 +23,7 @@ class MonitorFallback {
     ID3D11Device *device_{}; // Identity only. The capture owns a reference while active.
     bool topology_dirty_{true}, has_picture_{}, pending_frame_{};
     std::uint64_t next_attempt_{}, next_check_{}, last_poll_{}, last_message_{};
+    std::uint64_t hold_until_{};
     std::wstring status_;
 };
 } // namespace vrst::preview
