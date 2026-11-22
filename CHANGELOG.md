@@ -2,6 +2,7 @@
 
 ## 1.1.0
 
+- A signed Windows installer is available alongside the portable ZIP, with a Start menu entry, optional desktop shortcut and uninstaller. Both downloads contain the same 1.1.0 application.
 - **Render / window resolution** now sizes the Stream Output window's client area. Choose 2560 × 1440 and the window opens at 2560 × 1440 pixels, including on ultrawide monitors. **Apply output** resizes an already open window.
 - Choose **Fullscreen**, **Windowed** or **Borderless** as the startup/output mode. Fullscreen keeps the selected aspect ratio centered with black borders. Borderless windows can be moved and resized by dragging the image and its edges.
 - Added **Direct OBS output (plugin)**: send the finished image to a **SteadyXR** OBS source without a preview window or Window Capture. Includes smoothing, framing, effects and monitor fallback.

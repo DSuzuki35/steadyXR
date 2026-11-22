@@ -14,4 +14,6 @@ Copyright 2017–2024, The Khronos Group Inc. SteadyXR uses the OpenXR SDK 1.1.4
 
 ## Alternative toolchains
 
+**Windows installer.** The optional Windows setup and uninstaller are built with [Inno Setup](https://jrsoftware.org/). Copyright © 1997–2026 Jordan Russell; portions copyright © 2000–2026 Martijn Laan. The installer retains Inno Setup's built-in notices. Its build scripts are in `installer/`; the application binaries are the unchanged, signed portable release.
+
 **LLVM-MinGW.** Alternative cross-builds can include LLVM compiler/runtime support under Apache-2.0 WITH LLVM-exception and MinGW-w64 or winpthreads runtime support. The repository retains the corresponding notices. The public standalone Windows build uses Visual Studio with the static Microsoft C++ runtime. Windows supplies its system DLLs. [LLVM-MinGW toolchain](https://github.com/mstorsjo/llvm-mingw) · [LLVM license and exceptions](licenses/LLVM-MinGW-LICENSE.txt) · [MinGW-w64 notices](licenses/COPYING.MinGW-w64-COPYING.MinGW-w64.txt) · [Winpthreads notice](licenses/Winpthreads-COPYING.txt)

@@ -2,15 +2,15 @@
 
 **Made by a streamer, for streamers.** A glance at the dash feels natural in the headset. On stream, that same movement can send the whole cockpit bouncing across the screen. I built SteadyXR so I could drive normally and give viewers a steadier shot.
 
-SteadyXR is a standalone Windows app. It takes an OpenXR eye image or an existing game window, smooths the camera movement, and opens a clean **Stream Output** window. You choose what stays in frame.
+SteadyXR is a standalone Windows app. It takes an OpenXR eye image or an existing game window, smooths the camera movement, and sends it to a clean **Stream Output** window or directly to OBS. You choose what stays in frame.
 
-**[Download SteadyXR 1.1.0 for Windows x64](https://github.com/DSuzuki35/steadyXR/releases/download/v1.1.0/SteadyXR-1.1.0-Standalone-Windows-x64.zip)** · [Watch Dan’s tutorial](https://youtu.be/kNgVMJ82mQU) · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.1.0)
+**[Windows installer · 1.1.0](https://github.com/DSuzuki35/steadyXR/releases/download/v1.1.0/SteadyXR-1.1.0-Setup-Windows-x64.exe)** · **[Portable ZIP](https://github.com/DSuzuki35/steadyXR/releases/download/v1.1.0/SteadyXR-1.1.0-Standalone-Windows-x64.zip)** · [Watch Dan’s tutorial](https://youtu.be/kNgVMJ82mQU) · [Illustrated user guide](preview/README.md) · [Release notes and checksums](https://github.com/DSuzuki35/steadyXR/releases/tag/v1.1.0)
 
 ![SteadyXR dashboard with stream source, eye selection and a framing monitor](docs/images/steadyxr-dashboard.png)
 
 ## Go live
 
-1. Extract the whole ZIP and start **SteadyXR.exe**.
+1. Run the **Windows installer** and open **SteadyXR** from the Start menu. For a portable installation, extract the whole ZIP and start **SteadyXR.exe**. [Installer and update details](docs/windows-installer.md).
 2. On **Stream Output**, choose your source. For head-pose stabilization, choose **OpenXR**. If SteadyXR offers to install or update its OpenXR connection on startup, accept, then restart the game. You can also install it later from **Settings**. To capture a game mirror, choose **Capture a game window** and select its window.
 3. Under **Choose preset…**, pick **Dan Suzuki (Motion)** for a motion rig or **Dan Suzuki (No Motion)** for a stationary rig. Both load my 4K setup. Under **Camera**, look straight ahead with your headset upright and click **Center camera**.
 4. Open the output. Use the setup that matches your stream.

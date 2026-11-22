@@ -1,0 +1,9 @@
+{
+  "version": "1.1.0",
+  "archive": "SteadyXR-1.1.0-Standalone-Windows-x64.zip",
+  "archive_sha256": "8f48b405728ddb1affa61c6c8488015ecc118f3ed12ff5c701eea92dfc2e8191",
+  "archive_url": "https://github.com/DSuzuki35/steadyXR/releases/download/v1.1.0/SteadyXR-1.1.0-Standalone-Windows-x64.zip",
+  "publisher_thumbprint": "89F7F00A4FD4BD66F5617F1202B8E7B9DD662247",
+  "inno_version": "7.1.1",
+  "inno_url": "https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe"
+}
