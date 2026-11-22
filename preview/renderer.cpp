@@ -354,7 +354,7 @@ struct Renderer::Impl {
     ComPtr<ID3D11ShaderResourceView> monitor_view;
     ComPtr<ID3D11ShaderResourceView> output_view;
     ComPtr<IDXGIKeyedMutex> output_mutex;
-    std::uint64_t output_handle{}, output_generation{};
+    std::uint64_t output_handle{}, output_generation{}, output_sequence{};
     ComPtr<ID3D11ShaderResourceView> waiting_view;
     std::wstring waiting_label;
     unsigned output_width{}, output_height{};
@@ -484,6 +484,7 @@ struct Renderer::Impl {
         output_mutex.Reset();
         output.Reset();
         output_handle = 0;
+        output_sequence = 0;
         output_width = output_height = 0;
         output_generation = ++next_output_generation;
     }
@@ -519,6 +520,7 @@ struct Renderer::Impl {
         output_target.Reset();
         output_mutex.Reset();
         output_handle = 0;
+        output_sequence = 0;
         if (output)
             output_generation = ++next_output_generation;
         waiting_view.Reset();
@@ -678,6 +680,7 @@ struct Renderer::Impl {
         output_target.Reset();
         output_mutex.Reset();
         output_handle = 0;
+        output_sequence = 0;
         output_generation = ++next_output_generation;
         output.Reset();
         D3D11_TEXTURE2D_DESC d{};
@@ -723,7 +726,11 @@ struct Renderer::Impl {
         writer.mutex = output_mutex;
         writer.context = context;
         if (writer.mutex) {
-            const HRESULT hr = writer.mutex->AcquireSync(0, 0);
+            HRESULT hr = writer.mutex->AcquireSync(0, 0);
+            // Latest-frame transport: reclaim a published but unread frame.
+            // Neither key can be acquired while a consumer owns the resource.
+            if (hr == WAIT_TIMEOUT)
+                hr = writer.mutex->AcquireSync(1, 0);
             if (hr != S_OK) {
                 if (hr == WAIT_ABANDONED)
                     discard_output();
@@ -742,6 +749,7 @@ struct Renderer::Impl {
             const HRESULT hr = writer.release(1);
             if (FAILED(hr))
                 return fail(L"Publish offscreen output", hr);
+            ++output_sequence;
             error.clear();
             return true;
         }
@@ -1175,6 +1183,15 @@ std::uint64_t Renderer::output_handle() const {
 std::uint64_t Renderer::output_generation() const {
     return impl_->output_generation;
 }
+std::uint64_t Renderer::output_sequence() const {
+    return impl_->output_sequence;
+}
+unsigned Renderer::output_width() const {
+    return impl_->output_width;
+}
+unsigned Renderer::output_height() const {
+    return impl_->output_height;
+}
 void Renderer::reset() {
     impl_->reset_director();
     impl_->stabilizer.reset();
@@ -1557,13 +1574,12 @@ bool Renderer::draw(const Options &options, bool present, const wchar_t *waiting
         status.telemetry_game = buffered ? buffered->game : static_cast<unsigned>(speed.game);
         r.director_status = status;
     };
-    const bool black = waiting_text || r.offscreen;
     auto visual = options.visual;
     visual.bypass = visual.bypass || options.spectator.bypass;
     const bool effects = visual.active() && draw_frame.view_count && !waiting_text;
     if (!effects && r.visual_active)
         r.release_visual();
-    const float clear[4] = {black ? 0.f : .005f, black ? 0.f : .009f, black ? 0.f : .016f, 1};
+    const float clear[4] = {0, 0, 0, 1};
     r.context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
     r.context->ClearRenderTargetView(r.output_target.Get(), clear);
     if (waiting_text) {

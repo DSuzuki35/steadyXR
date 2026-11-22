@@ -108,11 +108,17 @@ class Renderer {
     ~Renderer();
     bool attach(HWND window);
     bool attach_offscreen(const LUID *adapter = nullptr);
-    // Offscreen output: acquire key 1 before reading, release key 0 afterward.
+    // Offscreen output: acquire key 1 before reading. Release key 1 for multiple
+    // readers of the latest frame, or key 0 for a single consuming reader.
+    // The writer can reclaim either available key without waiting.
     // Handles remain valid only for their output generation. Opened resources
     // may be retained by the reader while a resize replaces the writer output.
     std::uint64_t output_handle() const;
     std::uint64_t output_generation() const;
+    // Completed frames in this generation, independent of source updates.
+    std::uint64_t output_sequence() const;
+    unsigned output_width() const;
+    unsigned output_height() const;
     bool consume(Channel &channel, bool require_consumer = false);
     bool source_frame(Frame &) const; // Current OpenXR metadata for the source status.
     std::uint32_t producer_pid() const;

@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory=$true)][string]$Build,
     [string]$Destination = "$env:USERPROFILE/OneDrive/Simracing/Utilities/Horizon Lock VR",
     [string]$PreviousSettings,
+    [string]$ObsPlugin = 'build-obs/package/obs-plugin',
     [string]$ValidationLog
 )
 $ErrorActionPreference = 'Stop'
@@ -68,6 +69,15 @@ try {
     foreach ($name in @('SteadyXR.exe','SteadyXR-OpenXR.dll','SteadyXR-Update.ps1')) {
         Sign-Artifact (Join-Path $payload $name)
     }
+    $pluginPayload = Join-Path $payload 'obs-plugin'
+    foreach ($relative in @('bin/64bit/steadyxr-obs.dll','Install-OBS-Integration.ps1','LICENSE','README.md','data/locale/en-US.ini')) {
+        if (!(Test-Path -LiteralPath (Join-Path $ObsPlugin $relative) -PathType Leaf)) {
+            throw "Missing built OBS integration: $relative. Run obs-plugin/Build.ps1 first."
+        }
+    }
+    Copy-Item -LiteralPath $ObsPlugin -Destination $pluginPayload -Recurse
+    Sign-Artifact (Join-Path $pluginPayload 'bin/64bit/steadyxr-obs.dll')
+    Sign-Artifact (Join-Path $pluginPayload 'Install-OBS-Integration.ps1')
     Copy-Item -LiteralPath $stampPath -Destination (Join-Path $payload 'SteadyXR-build.json')
     Copy-Item -LiteralPath $stampPath -Destination (Join-Path $payload 'SteadyXR-OpenXR-build.json')
     Copy-Item -LiteralPath (Join-Path $buildDir 'preview/XR_APILAYER_STEADYXR_preview.json') -Destination $payload
@@ -94,7 +104,7 @@ try {
     # Include current working sources used by the compiler, including new files in source directories.
     $tracked = @(git -c core.quotepath=false -C $root ls-files --cached)
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate tracked source.' }
-    $added = @(git -c core.quotepath=false -C $root ls-files --others --exclude-standard -- CMakeLists.txt cmake include preview scripts src tests third_party licenses LICENSE THIRD-PARTY-NOTICES.md README.md SUPPORT.md .github/FUNDING.yml docs/images docs/standalone-updates.md 'docs/*1.0.0*')
+    $added = @(git -c core.quotepath=false -C $root ls-files --others --exclude-standard -- CMakeLists.txt cmake include preview obs-plugin scripts src tests third_party licenses LICENSE THIRD-PARTY-NOTICES.md README.md SUPPORT.md .github/FUNDING.yml docs/images docs/standalone-updates.md 'docs/*1.0.0*')
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate new source inputs.' }
     foreach ($relative in $tracked + $added) {
         $from = Join-Path $root $relative

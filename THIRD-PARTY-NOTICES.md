@@ -4,6 +4,10 @@ The public SteadyXR standalone application and OpenXR capture layer use PolyForm
 
 Required Notice: Copyright (c) 2026 Dan Suzuki (https://github.com/DSuzuki35/steadyXR)
 
+## OBS integration
+
+The separate plugin in `obs-plugin/` links to OBS Studio's libobs and is distributed under GPL-2.0-or-later. Its source and license are included in the source archive. The standalone application communicates with it through a shared GPU texture and an MIT-licensed IPC declaration; it does not link to libobs. OBS supplies libobs and the graphics backend. See [OBS plugin license](obs-plugin/LICENSE) and [OBS Studio](https://github.com/obsproject/obs-studio).
+
 ## OpenXR SDK headers
 
 Copyright 2017–2024, The Khronos Group Inc. SteadyXR uses the OpenXR SDK 1.1.43 headers at commit `781f2eab3698d653c804ecbd11e0aed47eaad1c6`. Their SPDX license expression is `Apache-2.0 OR MIT`. The source contains the headers and upstream notices in `third_party/openxr/`. The portable package carries both license texts. The game loads the capture layer through its OpenXR loader. [Upstream headers](https://github.com/KhronosGroup/OpenXR-SDK/tree/781f2eab3698d653c804ecbd11e0aed47eaad1c6) · [Apache License 2.0](licenses/OpenXR-Apache-2.0.txt) · [MIT license](licenses/OpenXR-MIT.txt)

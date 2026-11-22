@@ -7,6 +7,7 @@
 #include "director_settings_io.hpp"
 #include "overlays.hpp"
 #include "monitor_fallback.hpp"
+#include "obs_output.hpp"
 #include "output_fallback_settings.hpp"
 #include "speed_telemetry.hpp"
 #include "presets.hpp"
@@ -52,7 +53,7 @@ constexpr int setup_id = 101, remove_id = 102, show_id = 103, pause_id = 104, re
               vertical_id = 145, horizontal_id = 146, edit_still_id = 147, coffee_id = 148,
               affiliate_id = 149, joystick_id = 150, framing_card_id = 151, status_light_id = 152, manage_presets_id = 153,
               separate_smoothing_id = 154, yaw_smoothing_id = 155, pitch_smoothing_id = 156, tutorial_id = 157,
-              fallback_id = 158;
+              fallback_id = 158, install_obs_id = 159;
 constexpr int hotkeys_default_id = 2100, hotkeys_alternate_id = 2101, hotkeys_off_id = 2102;
 constexpr int navigation_id = 1500;
 constexpr std::array<unsigned, 4> frame_rates{30, 60, 72, 90};
@@ -212,8 +213,11 @@ struct App {
     bool window_mode{true};
     std::uint64_t last_capture_start{};
     Options options;
+    ObsOutputPublisher obs_output;
+    bool direct_obs{}, renderer_offscreen{};
+    std::wstring output_action_label;
     bool paused{}, demo{}, fullscreen{}, dirty{true}, quit{}, timer_resolution{}, expired{};
-    bool start_fullscreen{true}, diagnostic{}, compatible_connection{}, any_connection{};
+    bool start_fullscreen{true}, borderless_output{}, diagnostic{}, compatible_connection{}, any_connection{};
     bool capture_conflict{};
     unsigned aspect_numerator{16}, aspect_denominator{9};
     std::wstring monitor_name;
@@ -603,6 +607,8 @@ struct App {
         write(L"AspectNumerator", aspect_numerator);
         write(L"AspectDenominator", aspect_denominator);
         write(L"AutoFullscreen", start_fullscreen);
+        write(L"BorderlessOutput", borderless_output);
+        write(L"DirectOBS", direct_obs);
         write(L"HotkeyProfile", hotkey_profile);
         write(L"CompareMode", options.compare_mode);
         write(L"CompareEffects", options.compare_effects);
@@ -661,6 +667,8 @@ struct App {
             options.aspect = 16. / 9.;
         }
         start_fullscreen = value(L"AutoFullscreen", 1, 0, 1) != 0;
+        borderless_output = value(L"BorderlessOutput", 0, 0, 1) != 0;
+        direct_obs = value(L"DirectOBS", 0, 0, 1) != 0;
         hotkey_profile = value(L"HotkeyProfile", 1, 0, 2);
         options.compare_mode = value(L"CompareMode", 0, 0, 2);
         options.compare_effects = value(L"CompareEffects", 0, 0, 1) != 0;
@@ -683,7 +691,7 @@ struct App {
             rate = 60;
     }
     bool active() const {
-        return !expired && !paused && (auto_hidden || IsWindowVisible(output)) && !IsIconic(output);
+        return !expired && !paused && (direct_obs || ((auto_hidden || IsWindowVisible(output)) && !IsIconic(output)));
     }
     void reset_cockpit() {
         cockpit_telemetry.reset();
@@ -740,7 +748,8 @@ struct App {
             return;
         if (auto_hidden != hide) {
             auto_hidden = hide;
-            ShowWindow(output, hide ? SW_HIDE : SW_SHOWNOACTIVATE);
+            if (!direct_obs)
+                ShowWindow(output, hide ? SW_HIDE : SW_SHOWNOACTIVATE);
             dirty = true;
         }
     }
@@ -803,7 +812,7 @@ struct App {
         }
         if (!renderer.device()) {
             capture.stop();
-            if (!renderer.attach(output))
+            if (!(direct_obs ? renderer.attach_offscreen() : renderer.attach(output)))
                 return false;
         }
         if (!capture.running() && source_window && now - last_capture_start > 1000) {
@@ -816,6 +825,10 @@ struct App {
         return renderer.consume_window(texture.Get(), time, options);
     }
     void heartbeat() {
+        // An OBS reader can briefly own the metadata lock during a restart.
+        // Retry at heartbeat cadence instead of leaving direct output disconnected.
+        if (direct_obs)
+            obs_output.open();
         const bool previous_conflict = capture_conflict;
         if (active() && !window_mode && !demo) {
             const bool claimed = channel.heartbeat(selected_eye, rate);
@@ -846,6 +859,8 @@ struct App {
         }
     }
     void toggle_fullscreen() {
+        if (direct_obs)
+            return;
         const auto visible = IsWindowVisible(output) ? WS_VISIBLE : 0;
         if (!fullscreen) {
             GetWindowPlacement(output, &placement);
@@ -856,7 +871,7 @@ struct App {
                          info.rcMonitor.right - info.rcMonitor.left,
                          info.rcMonitor.bottom - info.rcMonitor.top, SWP_FRAMECHANGED | SWP_NOACTIVATE);
         } else {
-            SetWindowLongPtrW(output, GWL_STYLE, WS_OVERLAPPEDWINDOW | visible);
+            SetWindowLongPtrW(output, GWL_STYLE, (borderless_output ? WS_POPUP : WS_OVERLAPPEDWINDOW) | visible);
             auto restored = placement;
             if (!visible)
                 restored.showCmd = SW_HIDE;
@@ -937,14 +952,84 @@ struct App {
                          m.rcMonitor.right - m.rcMonitor.left, m.rcMonitor.bottom - m.rcMonitor.top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
         } else {
-            SetWindowPos(output, nullptr, m.rcWork.left + 20, m.rcWork.top + 20,
-                         std::min<LONG>(before.right - before.left, m.rcWork.right - m.rcWork.left - 40),
-                         std::min<LONG>(before.bottom - before.top, m.rcWork.bottom - m.rcWork.top - 40),
-                         SWP_NOZORDER | SWP_NOACTIVATE);
+            // Move first so the frame metrics use the destination monitor's DPI.
+            SetWindowPos(output, nullptr, m.rcWork.left, m.rcWork.top, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            size_output_window();
+            GetWindowRect(output, &before);
+            const LONG width = before.right - before.left, height = before.bottom - before.top;
+            SetWindowPos(output, nullptr,
+                         m.rcWork.left + std::max<LONG>(0, (m.rcWork.right - m.rcWork.left - width) / 2),
+                         m.rcWork.top + std::max<LONG>(0, (m.rcWork.bottom - m.rcWork.top - height) / 2),
+                         0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
         dirty = true;
     }
-    bool apply_output() {
+    void size_output_window() {
+        const auto style = borderless_output ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+        RECT frame{0, 0, LONG(options.output_width), LONG(options.output_height)};
+        AdjustWindowRectExForDpi(&frame, style, FALSE, 0, GetDpiForWindow(output));
+        const LONG width = frame.right - frame.left, height = frame.bottom - frame.top;
+        if (fullscreen) {
+            // Applying a resolution in fullscreen also sizes the restored window.
+            placement.rcNormalPosition.right = placement.rcNormalPosition.left + width;
+            placement.rcNormalPosition.bottom = placement.rcNormalPosition.top + height;
+        } else {
+            const auto visible = IsWindowVisible(output) ? WS_VISIBLE : 0;
+            SetWindowLongPtrW(output, GWL_STYLE, style | visible);
+            SetWindowPos(output, nullptr, 0, 0, width, height,
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+        dirty = true;
+    }
+    void apply_output_mode() {
+        const bool change_renderer = direct_obs != renderer_offscreen;
+        if (change_renderer) {
+            capture.stop();
+            monitor_fallback.stop();
+            obs_output.close();
+        }
+        if (direct_obs) {
+            // Restore the normal placement before hiding; retain it for window output.
+            if (fullscreen) {
+                direct_obs = false;
+                toggle_fullscreen();
+                direct_obs = true;
+            }
+            ShowWindow(output, SW_HIDE);
+            if (change_renderer && (!renderer.attach_offscreen() || !obs_output.open()))
+                setup_message = L"Could not start direct OBS output. See connection and capture details.";
+        } else {
+            if (change_renderer)
+                renderer.attach(output);
+            if (!diagnostic)
+                ShowWindow(output, SW_SHOWNOACTIVATE);
+        }
+        if (fullscreen != start_fullscreen)
+            toggle_fullscreen();
+        size_output_window();
+        EnableWindow(monitor, !direct_obs);
+        renderer_offscreen = direct_obs;
+        if (change_renderer)
+            last_received_ms = 0;
+        dirty = true;
+    }
+    void install_obs() {
+        const auto script = std::filesystem::path(directory) / L"obs-plugin" / L"Install-OBS-Integration.ps1";
+        if (!std::filesystem::is_regular_file(script)) {
+            setup_message = L"OBS integration is missing. Extract the complete SteadyXR download and try again.";
+            return;
+        }
+        const auto args = L"-NoProfile -ExecutionPolicy Bypass -File \"" + script.wstring() + L"\"";
+        SHELLEXECUTEINFOW launch{sizeof(launch)};
+        launch.hwnd = controls;
+        launch.lpFile = L"powershell.exe";
+        launch.lpParameters = args.c_str();
+        launch.nShow = SW_HIDE;
+        if (!ShellExecuteExW(&launch))
+            setup_message = L"Could not open the OBS integration installer.";
+    }
+    bool apply_output(bool resize_window = false) {
         BOOL width_ok{}, height_ok{};
         const auto width = GetDlgItemInt(controls, width_id, &width_ok, FALSE);
         const auto height = GetDlgItemInt(controls, height_id, &height_ok, FALSE);
@@ -964,6 +1049,8 @@ struct App {
         options.aspect = ratio;
         aspect_numerator = numerator;
         aspect_denominator = denominator;
+        if (resize_window)
+            size_output_window();
         setup_message.clear();
         dirty = true;
         return true;
@@ -1102,10 +1189,12 @@ struct App {
         SetWindowTextW(output_height, std::to_wstring(options.output_height).c_str());
         SetWindowTextW(
             aspect, (std::to_wstring(aspect_numerator) + L":" + std::to_wstring(aspect_denominator)).c_str());
-        SendMessageW(auto_fullscreen, BM_SETCHECK, start_fullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessageW(auto_fullscreen, CB_SETCURSEL, direct_obs ? 3 : start_fullscreen ? 0 : borderless_output ? 2 : 1, 0);
         list_monitors();
-        if (!diagnostic)
+        if (!diagnostic) {
+            apply_output_mode();
             move_to_monitor();
+        }
         source_window = nullptr;
         source_pid = 0;
         refresh_sources();
@@ -1198,6 +1287,12 @@ struct App {
         EnableWindow(mirror_softness, options.mirror);
     }
     void update_status() {
+        const std::wstring action = direct_obs ? L"Resume OBS output" : L"Open stream output";
+        if (output_action_label != action) {
+            output_action_label = action;
+            SetDlgItemTextW(controls, show_id, action.c_str());
+        }
+        EnableWindow(monitor, !direct_obs);
         const auto now = GetTickCount64();
         if (card_revision != framing.still_revision() || card_source_aspect != renderer.source_aspect())
             refresh_card();
@@ -1210,7 +1305,7 @@ struct App {
         const bool stale = last_received_ms && now >= last_received_ms && now - last_received_ms >= 2000;
         const auto fps_value = !active() || stale || capture_conflict ? 0 : int(measured_fps + .5);
         const wchar_t *feed = demo ? L"Demo" : window_mode ? L"Window" : L"OpenXR";
-        const bool hidden = !IsWindowVisible(output) || IsIconic(output);
+        const bool hidden = !direct_obs && (!IsWindowVisible(output) || IsIconic(output));
         const bool live = !expired && !capture_conflict && !paused && !hidden && renderer.has_frame() && !stale;
         const auto headline = expired ? std::wstring(L"Build expired")
             : capture_conflict ? std::wstring(feed) + L" in use"
@@ -1340,7 +1435,7 @@ struct App {
                                                        : monitor_fallback.status() + L"\r\n";
         else if (fallback_settings.cockpit_only && !window_mode && cockpit_pid && cockpit_game == SpeedGame::automatic)
             text += L"Cockpit detection unavailable for this game. Using OpenXR frame availability.\r\n";
-        else if (!IsWindowVisible(output) || IsIconic(output))
+        else if (!direct_obs && (!IsWindowVisible(output) || IsIconic(output)))
             text += L"Stream output hidden – no new frame copies requested.\r\n";
         else if (last_received_ms && GetTickCount64() - last_received_ms > 2000)
             text += L"No new frame for more than 2 seconds.\r\n";
@@ -1354,6 +1449,11 @@ struct App {
             text += L"Image analysis\r\n";
         if (!renderer.error().empty())
             text += renderer.error() + L"\r\n";
+        if (direct_obs) {
+            text += L"Direct OBS output: add a SteadyXR source in OBS. No output window is needed.\r\n";
+            if (!obs_output.error().empty())
+                text += obs_output.error() + L"\r\n";
+        }
         text += L"Render: " + std::to_wstring(options.output_width) + L" x " +
                 std::to_wstring(options.output_height) + L" | Aspect: " + std::to_wstring(aspect_numerator) +
                 L":" + std::to_wstring(aspect_denominator) +
@@ -1438,6 +1538,33 @@ LRESULT CALLBACK output_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         app->dirty = true;
         app->heartbeat();
         return 0;
+    case WM_GETMINMAXINFO: {
+        // A render-sized client area can be larger than the desktop work area.
+        // Do not silently clamp 1440p output to make room for the title bar.
+        auto &limits = *reinterpret_cast<MINMAXINFO *>(l);
+        limits.ptMaxTrackSize.x = std::max<LONG>(limits.ptMaxTrackSize.x, 8000);
+        limits.ptMaxTrackSize.y = std::max<LONG>(limits.ptMaxTrackSize.y, 4600);
+        return 0;
+    }
+    case WM_NCHITTEST:
+        if (app->borderless_output && !app->fullscreen) {
+            RECT rect{};
+            GetWindowRect(window, &rect);
+            const int x = short(LOWORD(l)), y = short(HIWORD(l));
+            const int edge = MulDiv(8, GetDpiForWindow(window), 96);
+            const bool left = x < rect.left + edge, right = x >= rect.right - edge;
+            const bool top = y < rect.top + edge, bottom = y >= rect.bottom - edge;
+            if (top) return left ? HTTOPLEFT : right ? HTTOPRIGHT : HTTOP;
+            if (bottom) return left ? HTBOTTOMLEFT : right ? HTBOTTOMRIGHT : HTBOTTOM;
+            return left ? HTLEFT : right ? HTRIGHT : HTCAPTION;
+        }
+        break;
+    case WM_NCLBUTTONDBLCLK:
+        if (app->borderless_output && w == HTCAPTION) {
+            app->toggle_fullscreen();
+            return 0;
+        }
+        break;
     case WM_DISPLAYCHANGE:
         app->monitor_fallback.display_changed();
         break;
@@ -1646,7 +1773,7 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             app->open_layer_editor();
             return 0;
         case apply_id:
-            app->apply_output();
+            app->apply_output(true);
             break;
         case aspect_id:
         case width_id:
@@ -1654,7 +1781,15 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             // Partial edits are applied together by the Apply button.
             return 0;
         case auto_fullscreen_id:
-            app->start_fullscreen = SendMessageW(app->auto_fullscreen, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            if (HIWORD(w) != CBN_SELCHANGE)
+                return 0;
+            app->start_fullscreen = SendMessageW(app->auto_fullscreen, CB_GETCURSEL, 0, 0) == 0;
+            app->borderless_output = SendMessageW(app->auto_fullscreen, CB_GETCURSEL, 0, 0) == 2;
+            app->direct_obs = SendMessageW(app->auto_fullscreen, CB_GETCURSEL, 0, 0) == 3;
+            app->apply_output_mode();
+            break;
+        case install_obs_id:
+            app->install_obs();
             break;
         case monitor_id:
             if (HIWORD(w) != CBN_SELCHANGE)
@@ -1694,9 +1829,11 @@ LRESULT CALLBACK controls_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         case show_id:
             app->cancel_comparison();
             app->auto_hidden = false;
-            ShowWindow(app->output, SW_RESTORE);
+            if (!app->direct_obs)
+                ShowWindow(app->output, SW_RESTORE);
             app->paused = false;
-            SetForegroundWindow(app->output);
+            if (!app->direct_obs)
+                SetForegroundWindow(app->output);
             break;
         case pause_id:
             app->cancel_comparison();
@@ -1869,6 +2006,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.ini =
             state.directory + L"\\preview-selftest-" + std::to_wstring(GetCurrentProcessId()) + L".ini";
     state.read();
+    if (!self_test && std::wstring(command).find(L"--obs-output") != std::wstring::npos) {
+        state.direct_obs = true;
+        state.start_fullscreen = false;
+    }
     state.fallback_ini = self_test ? state.ini + L".output-ui"
                                    : state.directory + L"\\SteadyXR-ui.ini";
     state.fallback_settings = read_output_fallback_settings(state.fallback_ini);
@@ -2042,7 +2183,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     SetWindowTextW(
         state.aspect,
         (std::to_wstring(state.aspect_numerator) + L":" + std::to_wstring(state.aspect_denominator)).c_str());
-    add(3, L"STATIC", L"Render resolution", 0, 398, 251, 219, 24);
+    add(3, L"STATIC", L"Render / window resolution", 0, 398, 251, 402, 24);
     state.output_width = add(3, L"EDIT", std::to_wstring(state.options.output_width).c_str(),
                              WS_BORDER | ES_NUMBER, 398, 281, 84, 29, width_id);
     add(3, L"STATIC", L"×", 0, 492, 283, 18, 24);
@@ -2051,10 +2192,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
     add(3, L"BUTTON", L"Apply output", BS_PUSHBUTTON, 623, 279, 177, 36, apply_id);
     add(3, L"STATIC", L"Output monitor", 0, 260, 332, 294, 24);
     state.monitor = add(3, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 260, 362, 266, 150, monitor_id);
-    state.auto_fullscreen = add(3, L"BUTTON", L"Start output in fullscreen", BS_AUTOCHECKBOX, 546, 362, 254,
-                                28, auto_fullscreen_id);
-    SendMessageW(state.auto_fullscreen, BM_SETCHECK, state.start_fullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
-    add(3, L"STATIC", L"Advanced · OpenXR connection", 0, 260, 414, 540, 26);
+    add(3, L"STATIC", L"Startup / output mode", 0, 546, 332, 254, 24);
+    state.auto_fullscreen = add(3, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL,
+                                546, 362, 254, 180, auto_fullscreen_id);
+    for (auto text : {L"Fullscreen", L"Windowed", L"Borderless", L"Direct OBS output (plugin)"})
+        SendMessageW(state.auto_fullscreen, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
+    SendMessageW(state.auto_fullscreen, CB_SETCURSEL,
+                 state.direct_obs ? 3 : state.start_fullscreen ? 0 : state.borderless_output ? 2 : 1, 0);
+    add(3, L"STATIC", L"Advanced · integrations", 0, 260, 414, 280, 26);
+    add(3, L"BUTTON", L"Install OBS integration…", BS_PUSHBUTTON, 546, 406, 254, 36, install_obs_id);
     add(3, L"BUTTON", L"Install connection", BS_PUSHBUTTON, 260, 452, 170, 36, setup_id);
     add(3, L"BUTTON", L"Remove connection", BS_PUSHBUTTON, 442, 452, 170, 36, remove_id);
     add(3, L"BUTTON", L"Layer order…", BS_PUSHBUTTON, 624, 452, 176, 36, layers_id);
@@ -2147,7 +2293,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         state.move_to_monitor();
     state.refresh_sources();
     state.labels();
-    state.renderer.attach(state.output);
+    if (state.direct_obs && !self_test) {
+        state.renderer.attach_offscreen();
+        state.obs_output.open();
+        state.renderer_offscreen = true;
+    } else
+        state.renderer.attach(state.output);
     state.register_hotkeys();
     if (verify_window) {
         // Explicit diagnostic mode: capture only the auto-selected iRacing
@@ -2314,7 +2465,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         const bool display_controls =
             GetDlgItemInt(state.controls, 122, nullptr, FALSE) == 3840 &&
             GetDlgItemInt(state.controls, 123, nullptr, FALSE) == 2160 &&
-            SendDlgItemMessageW(state.controls, 125, BM_GETCHECK, 0, 0) == BST_CHECKED &&
+            SendDlgItemMessageW(state.controls, auto_fullscreen_id, CB_GETCURSEL, 0, 0) == 0 &&
             SendDlgItemMessageW(state.controls, adaptive_horizon_id, BM_GETCHECK, 0, 0) == BST_CHECKED;
         state.source_window = state.output;
         state.source_pid = GetCurrentProcessId() + 1;
@@ -3359,6 +3510,68 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
                              state.framing.still_description().find(L"Peripheral + focus") != std::wstring::npos;
         trace << "full-eye-rail=" << rail_ok << '\n';
         okay = rail_ok && okay;
+        {
+            // Regression: selected render pixels must be the client pixels,
+            // including when title bars extend past a 1440p monitor's work area.
+            bool sizing = true;
+            state.direct_obs = state.start_fullscreen = state.borderless_output = false;
+            if (state.fullscreen)
+                state.toggle_fullscreen();
+            SetWindowTextW(state.output_width, L"2560");
+            SetWindowTextW(state.output_height, L"1440");
+            SetWindowTextW(state.aspect, L"16:9");
+            sizing &= state.apply_output(true);
+            RECT client{};
+            GetClientRect(state.output, &client);
+            sizing &= client.right == 2560 && client.bottom == 1440;
+            state.list_monitors();
+            state.move_to_monitor();
+            GetClientRect(state.output, &client);
+            sizing &= client.right == 2560 && client.bottom == 1440;
+            state.borderless_output = true;
+            state.size_output_window();
+            GetClientRect(state.output, &client);
+            sizing &= client.right == 2560 && client.bottom == 1440 &&
+                      !(GetWindowLongPtrW(state.output, GWL_STYLE) & WS_CAPTION);
+            state.toggle_fullscreen();
+            SetWindowTextW(state.output_width, L"1920");
+            SetWindowTextW(state.output_height, L"1080");
+            sizing &= state.apply_output(true);
+            state.toggle_fullscreen();
+            GetClientRect(state.output, &client);
+            sizing &= client.right == 1920 && client.bottom == 1080;
+            state.save();
+            App reloaded;
+            reloaded.ini = state.ini;
+            reloaded.read();
+            sizing &= reloaded.borderless_output && !reloaded.start_fullscreen &&
+                      reloaded.options.output_width == 1920 && reloaded.options.output_height == 1080;
+            trace << "render-sized-window-borderless-fullscreen-restore=" << sizing << '\n';
+            okay &= sizing;
+            state.direct_obs = true;
+            state.expired = state.paused = false;
+            state.demo = true;
+            state.apply_output_mode();
+            bool obs_ok = !IsWindowVisible(state.output) && state.active() &&
+                          state.renderer.demo(0., true) && state.renderer.draw(state.options, false) &&
+                          state.obs_output.publish(state.renderer, 1920, 1080);
+            state.obs_output.close();
+            state.heartbeat();
+            obs_ok &= state.obs_output.publish(state.renderer, 1920, 1080);
+            SendMessageW(state.auto_fullscreen, CB_SETCURSEL, 3, 0);
+            state.show_page(3);
+            state.labels();
+            state.update_status();
+            obs_ok &= save_controls(state.controls, state.directory + L"\\preview-obs-output-test.bmp");
+            state.save();
+            reloaded.read();
+            obs_ok &= reloaded.direct_obs;
+            state.direct_obs = false;
+            state.apply_output_mode();
+            obs_ok &= !state.renderer.output_handle();
+            trace << "direct-obs-hidden-window-and-mode-restore=" << obs_ok << '\n';
+            okay &= obs_ok;
+        }
         DestroyWindow(state.output);
         DestroyWindow(state.controls);
         DeleteFileW(state.ini.c_str());
@@ -3379,7 +3592,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         SendMessageW(state.controls, WM_COMMAND, command_id, 0);
     });
     ShowWindow(state.controls, show);
-    ShowWindow(state.output, SW_SHOW);
+    if (!state.direct_obs)
+        ShowWindow(state.output, SW_SHOW);
     if (state.start_fullscreen && !state.fullscreen)
         state.toggle_fullscreen();
     if (!state.demo && !state.diagnostic) {
@@ -3473,7 +3687,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             }
             state.route_output(now);
             if (state.cloning)
-                state.monitor_fallback.tick(state.output, state.fallback_settings.monitor_name, state.options, state.rate, now, state.dirty);
+                state.monitor_fallback.tick(state.output, state.fallback_settings.monitor_name, state.options, state.rate, now, state.dirty, state.direct_obs);
             else if (!state.auto_hidden && (received || state.dirty) && !state.waiting(now))
                 state.renderer.draw(state.draw_options(now));
             state.dirty = false;
@@ -3485,7 +3699,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         } else {
             state.route_output(now);
             if (state.dirty && !(state.paused && state.paused_clone) && !state.waiting(now) &&
-                IsWindowVisible(state.output) && !IsIconic(state.output)) {
+                (state.direct_obs || (IsWindowVisible(state.output) && !IsIconic(state.output)))) {
                 state.renderer.draw(state.draw_options(now));
                 state.dirty = false;
             }
@@ -3494,7 +3708,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
         // Retry at a low cadence while idle: nonblocking Present may encounter
         // a full swapchain queue on the first transition away from live video.
         if (waiting && !state.cloning && !(state.paused && state.paused_clone) &&
-            IsWindowVisible(state.output) && !IsIconic(state.output) &&
+            (state.direct_obs || (IsWindowVisible(state.output) && !IsIconic(state.output))) &&
             (!was_waiting || now - last_waiting_paint >= 250)) {
             state.renderer.draw(state.draw_options(now), true, state.waiting_text());
             last_waiting_paint = now;
@@ -3503,6 +3717,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command, int show) {
             InvalidateRect(state.output, nullptr, FALSE);
             was_waiting = waiting;
         }
+        if (state.direct_obs)
+            state.obs_output.publish(state.renderer, state.options.output_width, state.options.output_height,
+                                     !state.auto_hidden);
         const DWORD delay = !state.active()        ? 50
                             : submitted_feed
                                 ? 1

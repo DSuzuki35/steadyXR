@@ -1,5 +1,12 @@
 # SteadyXR changelog
 
+## 1.1.0
+
+- **Render / window resolution** now sizes the Stream Output window's client area. Choose 2560 × 1440 and the window opens at 2560 × 1440 pixels, including on ultrawide monitors. **Apply output** resizes an already open window.
+- Choose **Fullscreen**, **Windowed** or **Borderless** as the startup/output mode. Fullscreen keeps the selected aspect ratio centered with black borders. Borderless windows can be moved and resized by dragging the image and its edges.
+- Added **Direct OBS output (plugin)**: send the finished image to a **SteadyXR** OBS source without a preview window or Window Capture. Includes smoothing, framing, effects and monitor fallback.
+- **Install OBS integration…** offers an OBS folder picker with the standard installation path. The OBS source can optionally start SteadyXR and close the instance it started when the last source using that option is removed or OBS closes.
+
 ## 1.0.4
 
 - Refresh the output monitor list when displays connect or disconnect. Remember the selected output when it is unavailable and return to it when it reconnects.

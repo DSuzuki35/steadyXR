@@ -4,6 +4,10 @@ Original SteadyXR source, assets and documentation for the standalone
 application and OpenXR capture layer in this public distribution are
 offered under the PolyForm Noncommercial License 1.0.0 printed below.
 
+The separate OBS plugin in `obs-plugin/` is GPL-2.0-or-later, as stated in
+`obs-plugin/LICENSE`. Its shared IPC declaration `preview/obs_output_protocol.hpp`
+is MIT-licensed. These exceptions do not change the standalone application's license.
+
 Third-party materials retain their own terms. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 Earlier distributions remain available to their recipients under the terms
 originally granted, including [GPL-2.0-or-later](licenses/GPL-2.0.txt).

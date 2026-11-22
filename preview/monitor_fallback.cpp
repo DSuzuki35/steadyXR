@@ -35,7 +35,7 @@ void MonitorFallback::stop() {
     monitor_ = nullptr;
 }
 void MonitorFallback::tick(HWND output, const std::wstring &device_name,
-                           const Options &options, unsigned fps, std::uint64_t now, bool repaint) {
+                           const Options &options, unsigned fps, std::uint64_t now, bool repaint, bool direct_obs) {
     if (topology_dirty_ || now >= next_check_) {
         const auto selected = selected_monitor(device_name);
         if (selected != monitor_) {
@@ -57,8 +57,12 @@ void MonitorFallback::tick(HWND output, const std::wstring &device_name,
     } else {
         if (!capture_.running() && now >= next_attempt_) {
             next_attempt_ = now + 250;
-            if (!renderer_.device())
-                renderer_.attach(output);
+            if (!renderer_.device()) {
+                if (direct_obs)
+                    renderer_.attach_offscreen();
+                else
+                    renderer_.attach(output);
+            }
             if (renderer_.device() && capture_.start_monitor(renderer_.device(), monitor_))
                 device_ = renderer_.device();
         }

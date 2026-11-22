@@ -7,7 +7,7 @@ using namespace vrst::preview;
 namespace {
 ComPtr<ID3D11Device> device;
 ComPtr<ID3D11Texture2D> frame;
-bool active{}, lose{}, give_frame{}, retained{};
+bool active{}, lose{}, give_frame{}, retained{}, device_missing{}, recovered_offscreen{};
 unsigned starts{}, pictures{}, slates{};
 std::wstring slate, diagnostic;
 void check(bool ok, const char *message) {
@@ -44,8 +44,9 @@ bool WindowCapture::poll(ComPtr<ID3D11Texture2D> &texture, std::uint64_t &) {
 struct Renderer::Impl {};
 Renderer::Renderer() = default;
 Renderer::~Renderer() = default;
-ID3D11Device *Renderer::device() const { return ::device.Get(); }
-bool Renderer::attach(HWND) { return true; }
+ID3D11Device *Renderer::device() const { return device_missing ? nullptr : ::device.Get(); }
+bool Renderer::attach(HWND) { device_missing = false; recovered_offscreen = false; return true; }
+bool Renderer::attach_offscreen(const LUID *) { device_missing = false; recovered_offscreen = true; return true; }
 void Renderer::clear_monitor() { retained = false; }
 bool Renderer::draw_monitor(ID3D11Texture2D *texture, unsigned, unsigned, bool) {
     if (texture) retained = true;
@@ -94,5 +95,15 @@ int main() {
     tick(4500);
     check(!clone.has_picture() && slate.find(L"0x") == std::wstring::npos,
           "first frame failure never broadcasts HRESULT");
+    clone.stop();
+    device_missing = true;
+    lose = false;
+    give_frame = true;
+    clone.tick(nullptr, L"", {}, 60, 5000, false, true);
+    check(recovered_offscreen && clone.has_picture(), "direct OBS stays offscreen after device loss");
+    clone.stop();
+    device_missing = true;
+    clone.tick(nullptr, L"", {}, 60, 6000, false);
+    check(!recovered_offscreen && clone.has_picture(), "window output recovers its windowed device");
     return 0;
 }

@@ -1,4 +1,6 @@
 #include "renderer.hpp"
+#include "obs_output.hpp"
+#include "obs_output_protocol.hpp"
 #include "source_status.hpp"
 #include "window_capture.hpp"
 #include <algorithm>
@@ -89,6 +91,145 @@ void abandon_output(OutputReader &reader, std::uint64_t handle) {
     require(abandoned == WAIT_ABANDONED, "destroyed owner must abandon the native output mutex");
 }
 
+void obs_publisher_tests() {
+    namespace ipc = steadyxr::obs_output;
+    Renderer renderer;
+    ObsOutputPublisher publisher;
+    require(renderer.attach_offscreen() && publisher.open(), "open direct OBS producer session");
+    struct Observer {
+        HANDLE mutex{OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, ipc::mutex_name)};
+        HANDLE mapping{OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, ipc::mapping_name)};
+        ipc::Metadata *metadata{
+            mapping ? static_cast<ipc::Metadata *>(
+                          MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ipc::Metadata)))
+                    : nullptr};
+        ~Observer() {
+            if (metadata)
+                UnmapViewOfFile(metadata);
+            if (mapping)
+                CloseHandle(mapping);
+            if (mutex)
+                CloseHandle(mutex);
+        }
+        ipc::Metadata read() {
+            require(mutex && metadata && WaitForSingleObject(mutex, 0) == WAIT_OBJECT_0,
+                    "observe OBS metadata under its named lock");
+            const auto copy = *metadata;
+            ReleaseMutex(mutex);
+            return copy;
+        }
+    } observer;
+    require(!ipc::valid(observer.read(), GetTickCount64()), "new session is inactive until output exists");
+    Options options;
+    options.output_width = 640;
+    options.output_height = 360;
+    require(renderer.demo(0) && renderer.draw(options) && publisher.publish(renderer, 640, 360),
+            "publish completed direct OBS output");
+    auto record = observer.read();
+    const auto epoch = record.epoch;
+    require(ipc::valid(record, GetTickCount64()) && record.producer_pid == GetCurrentProcessId() &&
+                record.shared_handle == renderer.output_handle() &&
+                record.generation == renderer.output_generation() &&
+                record.frame_sequence == renderer.output_sequence() && record.width == 640 &&
+                record.height == 360,
+            "metadata identifies the actual completed output");
+    ComPtr<IDXGIDevice> device;
+    ComPtr<IDXGIAdapter> adapter;
+    DXGI_ADAPTER_DESC description{};
+    require(SUCCEEDED(renderer.device()->QueryInterface(IID_PPV_ARGS(&device))) &&
+                SUCCEEDED(device->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&description)) &&
+                record.adapter_luid_low == description.AdapterLuid.LowPart &&
+                record.adapter_luid_high == description.AdapterLuid.HighPart,
+            "metadata identifies the producer GPU");
+    {
+        ObsOutputPublisher competing;
+        require(!competing.open() && observer.read().epoch == epoch,
+                "another producer cannot steal an active output channel");
+    }
+    const auto heartbeat = record.heartbeat_ms;
+    const auto sequence = record.frame_sequence;
+    // GetTickCount64 can advance in ~16 ms ticks without a multimedia timer.
+    while (GetTickCount64() <= heartbeat)
+        Sleep(1);
+    require(publisher.publish(renderer, 1280, 720), "paused output still publishes heartbeat");
+    record = observer.read();
+    require(record.heartbeat_ms > heartbeat && record.frame_sequence == sequence && record.width == 640 &&
+                record.height == 360,
+            "heartbeat preserves frame count and actual dimensions before requested resize completes");
+    HANDLE locked = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    require(locked && release, "metadata contention events");
+    std::thread holder([&] {
+        if (WaitForSingleObject(observer.mutex, 1000) == WAIT_OBJECT_0) {
+            SetEvent(locked);
+            WaitForSingleObject(release, 1000);
+            ReleaseMutex(observer.mutex);
+        }
+    });
+    const bool holder_ready = WaitForSingleObject(locked, 1000) == WAIT_OBJECT_0;
+    const auto start = std::chrono::steady_clock::now();
+    const bool skipped = !publisher.publish(renderer, 640, 360);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    SetEvent(release);
+    holder.join();
+    CloseHandle(locked);
+    CloseHandle(release);
+    require(holder_ready && skipped && elapsed < std::chrono::milliseconds(100),
+            "metadata contention drops an update without waiting");
+    std::thread abandoned([&] {
+        if (WaitForSingleObject(observer.mutex, 1000) == WAIT_OBJECT_0) {
+            observer.metadata->signature = 0;
+            observer.metadata->version = 999;
+            // Exit owning the Windows mutex, simulating a dead metadata reader.
+        }
+    });
+    abandoned.join();
+    require(publisher.publish(renderer, 640, 360) && ipc::valid(observer.read(), GetTickCount64()),
+            "abandoned metadata mutex is repaired with a complete record");
+    require(publisher.publish(renderer, 640, 360, false) &&
+                !ipc::valid(observer.read(), GetTickCount64()) &&
+                publisher.publish(renderer, 640, 360) && observer.read().epoch == epoch,
+            "hide and show retain the producer session and GPU output");
+    options.output_width = 800;
+    options.output_height = 450;
+    require(renderer.draw(options) && publisher.publish(renderer, 800, 450), "publish resized GPU output");
+    const auto resized = observer.read();
+    require(resized.generation != record.generation && resized.width == 800 && resized.height == 450 &&
+                ipc::valid(resized, GetTickCount64()),
+            "metadata resize atomically changes dimensions and resource generation");
+    require(renderer.attach_offscreen(&description.AdapterLuid) && renderer.draw(options) &&
+                publisher.publish(renderer, 800, 450),
+            "publisher refreshes adapter cache after renderer device replacement");
+    const auto replaced = observer.read();
+    require(ipc::valid(replaced, GetTickCount64()) && replaced.generation != resized.generation &&
+                replaced.shared_handle == renderer.output_handle() &&
+                replaced.adapter_luid_low == description.AdapterLuid.LowPart &&
+                replaced.adapter_luid_high == description.AdapterLuid.HighPart,
+            "replacement device publishes its current GPU identity and texture");
+    publisher.close();
+    require(!ipc::valid(observer.read(), GetTickCount64()), "stopped output immediately invalidates metadata");
+    locked = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::thread startup_reader([&] {
+        if (WaitForSingleObject(observer.mutex, 1000) == WAIT_OBJECT_0) {
+            SetEvent(locked);
+            WaitForSingleObject(release, 1000);
+            ReleaseMutex(observer.mutex);
+        }
+    });
+    const bool startup_locked = WaitForSingleObject(locked, 1000) == WAIT_OBJECT_0;
+    const bool startup_busy = !publisher.open();
+    SetEvent(release);
+    startup_reader.join();
+    CloseHandle(locked);
+    CloseHandle(release);
+    require(startup_locked && startup_busy, "startup lock contention is nonblocking");
+    require(publisher.open() && publisher.publish(renderer, 800, 450), "restart producer while OBS stays open");
+    require(observer.read().epoch != epoch && ipc::valid(observer.read(), GetTickCount64()),
+            "restart publishes a distinct session epoch into the retained mapping");
+    publisher.close();
+}
+
 void monitor_clone_tests() {
     Renderer renderer;
     require(renderer.attach_offscreen() && renderer.demo(0), "monitor clone XR fixture");
@@ -113,7 +254,7 @@ void monitor_clone_tests() {
     require(SUCCEEDED(renderer.device()->CreateTexture2D(&desc, &data, &frame)), "synthetic monitor image");
     require(!renderer.draw_monitor(nullptr, 480, 240), "missing clone cannot draw an XR frame");
     require(renderer.draw_monitor(frame.Get(), 480, 240), "first monitor draw");
-    require(!renderer.draw_monitor(nullptr, 480, 240), "clone respects offscreen reader ownership");
+    require(renderer.draw_monitor(nullptr, 480, 240), "clone replaces unread output without a consumer");
     require(renderer.readback(pixels, width, height), "monitor clone readback");
     const auto at = [&](unsigned x, unsigned y) { return pixels[y * width + x]; };
     require(at(119, 120) == 0xff000000 && at(360, 120) == 0xff000000 && at(120, 0) == 0xff563412 &&
@@ -183,12 +324,19 @@ template <class T> void offscreen_tests() {
         reader.open(renderer.output_handle());
         const auto first_generation = renderer.output_generation();
         require(first_generation != 0, "published output has a generation");
+        const auto first_sequence = renderer.output_sequence();
+        for (unsigned i = 0; i < 8; ++i)
+            require(renderer.draw(options), "output advances before OBS has connected");
+        require(renderer.output_sequence() == first_sequence + 8,
+                "each completed output advances the published sequence");
         require(reader.mutex->AcquireSync(1, 0) == S_OK, "waiting frame published on reader key");
         const auto waiting = reader.pixels(640, 360);
         require(std::all_of(waiting.begin(), waiting.end(), [](auto p) { return p == 0xff000000u; }),
                 "offscreen waiting image is opaque black");
         const auto begin = std::chrono::steady_clock::now();
+        const auto busy_sequence = renderer.output_sequence();
         require(!renderer.draw(options), "reader ownership prevents overwriting output");
+        require(renderer.output_sequence() == busy_sequence, "busy draw does not count a new frame");
         require(std::chrono::steady_clock::now() - begin < std::chrono::milliseconds(100),
                 "busy output draw must never wait for the reader");
         require(reader.pixels(640, 360) == waiting, "busy draw preserves the held image");
@@ -214,8 +362,31 @@ template <class T> void offscreen_tests() {
         require(reader.pixels(800, 450)[225 * 800 + 400] == center, "resized output correct colors");
         require(SUCCEEDED(reader.mutex->ReleaseSync(0)), "release resized output");
 
+        OutputReader another_reader(renderer.device());
+        another_reader.open(renderer.output_handle());
+        require(renderer.draw(options) && another_reader.mutex->AcquireSync(1, 0) == S_OK,
+                "a second source independently opens the latest shared output");
+        require(reader.mutex->AcquireSync(1, 0) == WAIT_TIMEOUT && !renderer.draw(options),
+                "multiple readers and writer cannot access another reader's held texture");
+        require(another_reader.pixels(800, 450)[225 * 800 + 400] == center &&
+                    SUCCEEDED(another_reader.mutex->ReleaseSync(1)) &&
+                    reader.mutex->AcquireSync(1, 0) == S_OK,
+                "broadcast reader key lets another OBS source read even while producer is paused");
+        require(SUCCEEDED(reader.mutex->ReleaseSync(0)), "release original source after second source");
+
+        options.aspect = 1;
+        std::vector<std::uint32_t> fitted;
+        unsigned fitted_width{}, fitted_height{};
+        require(renderer.draw(options) && renderer.readback(fitted, fitted_width, fitted_height) &&
+                    fitted[225 * 800] == 0xff000000u && fitted[225 * 800 + 799] == 0xff000000u &&
+                    fitted[225 * 800 + 400] == center,
+                "selected square aspect retains black borders on a widescreen output canvas");
+        options.aspect = 16. / 9.;
+
         require(renderer.demo(-2), "create invalid display-time fixture");
+        const auto failed_sequence = renderer.output_sequence();
         require(!renderer.draw(options), "invalid composition fails after writer acquires output");
+        require(renderer.output_sequence() == failed_sequence, "failed draw does not publish a sequence");
         require(reader.mutex->AcquireSync(1, 0) == WAIT_TIMEOUT,
                 "failed draw never publishes a partial frame");
         require(renderer.demo(.1) && renderer.draw(options), "failed draw returns writer key for retry");
@@ -803,15 +974,27 @@ void quad_source_tests() {
     draw();
     require(pixels[256 * width + 128] == 0xff0000ffu, "single-view transition never retains stale focus");
 }
+LRESULT CALLBACK render_test_window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_GETMINMAXINFO) {
+        // Exercise an ultrawide client even on a smaller physical test monitor.
+        auto *limits = reinterpret_cast<MINMAXINFO *>(lparam);
+        limits->ptMaxTrackSize = {8192, 4608};
+        limits->ptMaxSize = limits->ptMaxTrackSize;
+        return 0;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
 int main(int argc, char **argv) {
     try {
         quad_source_tests();
         visual_host_tests();
         overlay_tests();
         monitor_clone_tests();
+        obs_publisher_tests();
         offscreen_tests<Renderer>();
         WNDCLASSW wc{};
-        wc.lpfnWndProc = DefWindowProcW;
+        wc.lpfnWndProc = render_test_window_proc;
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpszClassName = L"HorizonLockRenderTest";
         RegisterClassW(&wc);
@@ -938,6 +1121,40 @@ int main(int argc, char **argv) {
                 char color[3] = {char(pixel), char(pixel >> 8), char(pixel >> 16)};
                 out.write(color, 3);
             }
+        }
+        {
+            RECT original{}, client{};
+            require(GetWindowRect(window, &original) &&
+                        SetWindowPos(window, nullptr, 0, 0, 3440, 1440, SWP_NOMOVE | SWP_NOZORDER) &&
+                        GetClientRect(window, &client) && client.right == 3440 && client.bottom == 1440,
+                    "simulate an exact 3440x1440 fullscreen client independent of test monitor size");
+            auto fitted_options = options;
+            fitted_options.output_width = 2560;
+            fitted_options.output_height = 1440;
+            fitted_options.aspect = 16. / 9.;
+            require(renderer.draw(fitted_options, false), "present a 16:9 canvas on an ultrawide client");
+            ComPtr<ID3D11DeviceContext> presentation_context;
+            renderer.device()->GetImmediateContext(&presentation_context);
+            UINT viewport_count = 1;
+            D3D11_VIEWPORT viewport{};
+            presentation_context->RSGetViewports(&viewport_count, &viewport);
+            require(viewport_count == 1 && std::abs(viewport.TopLeftX - 440.f) < .01f &&
+                        std::abs(viewport.TopLeftY) < .01f && std::abs(viewport.Width - 2560.f) < .01f &&
+                        std::abs(viewport.Height - 1440.f) < .01f,
+                    "fullscreen centers the selected 16:9 image with 440-pixel side borders, without stretch");
+            fitted_options.output_width = 1080;
+            fitted_options.output_height = 1920;
+            fitted_options.aspect = 9. / 16.;
+            require(renderer.draw(fitted_options, false), "present a portrait canvas on an ultrawide client");
+            viewport_count = 1;
+            presentation_context->RSGetViewports(&viewport_count, &viewport);
+            require(viewport_count == 1 && std::abs(viewport.TopLeftX - 1315.f) < .01f &&
+                        std::abs(viewport.TopLeftY) < .01f && std::abs(viewport.Width - 810.f) < .01f &&
+                        std::abs(viewport.Height - 1440.f) < .01f,
+                    "fullscreen preserves portrait aspect and centers its uniformly scaled canvas");
+            require(SetWindowPos(window, nullptr, original.left, original.top, original.right - original.left,
+                                 original.bottom - original.top, SWP_NOZORDER) && renderer.draw(options, false),
+                    "restore original window and render dimensions after fullscreen fit regression");
         }
         SetWindowPos(window, nullptr, 0, 0, 1280, 800, SWP_NOMOVE | SWP_NOZORDER);
         require(renderer.draw(options, false) && renderer.readback(pixels, w, h), "resize and letterbox");

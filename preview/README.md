@@ -1,6 +1,6 @@
-# SteadyXR 1.0.4 streamer guide
+# SteadyXR 1.1.0 streamer guide
 
-SteadyXR turns a VR game view into a stabilized stream. It opens two windows. Set up your camera in the dashboard and send **SteadyXR – Stream Output** to your audience. The dashboard, framing guides and status messages stay on your control screen.
+SteadyXR turns a VR game view into a stabilized stream. Set up your camera in the dashboard and send **SteadyXR – Stream Output** to your audience, or use the direct OBS source without an output window. The dashboard, framing guides and status messages stay on your control screen.
 
 ![SteadyXR Stream Output dashboard showing source controls, framing monitor and output details](../docs/images/steadyxr-dashboard.png)
 
@@ -14,9 +14,9 @@ You can also open the **Tutorial** button at the top of the dashboard to follow 
 4. Choose **30 FPS**, **60 FPS**, **72 FPS** or **90 FPS**. For a 72 Hz headset, use **72 FPS** to match your source. Click **Open stream output** and check that the image follows the game. **Frame rate** caps the available OpenXR source frames. With an ideal steady 72 Hz source, a 60 FPS cap delivers about 60 frames and skips about 12 per second. A 90 FPS cap can also show all 72 but cannot add frames the game did not supply. **Connection and capture details** shows what SteadyXR is receiving.
 5. Pick a starting look from **Choose preset…** at the top right of the dashboard. Choose **Dan Suzuki (Motion)** for a motion rig or **Dan Suzuki (No Motion)** for a stationary rig. Both include Dan’s framing and 4K output settings. After loading it, check your source, eye and output monitor. In OpenXR mode, sit in your normal driving position, look straight ahead with the headset upright and press **Camera → Center camera**.
 
-**One PC.** In OBS, add a **Window Capture** source and select **SteadyXR – Stream Output**. Keep the output visible. If your scene shows the dashboard, select the other SteadyXR window. Set up game and microphone audio separately.
+**One PC.** Use the [direct OBS integration](#direct-obs-output) for a SteadyXR source without Window Capture. Alternatively, add a **Window Capture** source in OBS and select **SteadyXR – Stream Output**. Keep that output visible. Set up game and microphone audio separately.
 
-**Gaming PC and capture card.** In Windows, extend the gaming PC desktop onto the display connected to the capture card. In **Settings → Output monitor**, select that display. Click **Open stream output**, then press **F11** in the output window to fill it. Enable **Start output in fullscreen** for future sessions. On the streaming PC, add the capture card as the video input. Windows display settings determine the HDMI resolution and refresh rate.
+**Gaming PC and capture card.** In Windows, extend the gaming PC desktop onto the display connected to the capture card. In **Settings → Output monitor**, select that display, then select **Fullscreen** under **Startup / output mode**. On the streaming PC, add the capture card as the video input. Windows display settings determine the HDMI resolution and refresh rate.
 
 ## Stream Output and capture status
 
@@ -111,9 +111,31 @@ Extra area uses game GPU time. Test a busy scene and judge headset frame timing 
 
 ![Settings page with output dimensions, display selection and OpenXR tools](../docs/images/steadyxr-settings.png)
 
-Choose an **Aspect ratio** from the list or enter one such as `239:100`. Enter width and height under **Render resolution** and click **Apply output**. The supported range is 320–7680 pixels wide and 180–4320 high. A 1920 × 1080 canvas requires less GPU work than 3840 × 2160. If the canvas or window differs from the chosen aspect ratio, expect letterboxing.
+Choose an **Aspect ratio** from the list or enter one such as `239:100`. Enter width and height under **Render / window resolution** and click **Apply output**. The supported range is 320–7680 pixels wide and 180–4320 high. A 1920 × 1080 canvas requires less GPU work than 3840 × 2160. If the canvas or window differs from the chosen aspect ratio, the image stays centered with black borders.
 
-**Output monitor** chooses the fullscreen destination. **Start output in fullscreen** remembers your preference. With the stream window focused, **F11** or a double-click toggles fullscreen. **Esc** exits fullscreen. Use **Alt+Tab** to return to the dashboard.
+**Output monitor** chooses the destination. **Startup / output mode** takes effect immediately and is remembered for the next launch:
+
+- **Fullscreen** fills the display while preserving the selected aspect ratio. For example, 2560 × 1440 at 16:9 on a 3440 × 1440 monitor has 440-pixel black borders on either side.
+- **Windowed** uses the chosen resolution for its client area. The title bar and borders are additional pixels. Choosing 2560 × 1440 opens that size every time; **Apply output** resizes an existing window to it. Manual resizing changes its display size temporarily, leaving the render resolution unchanged. A full-height window may extend past the desktop work area; choose Borderless if you need all 1440 pixels without a title bar.
+- **Borderless** uses the same pixel dimensions without the title bar. Drag the image to move it, or drag an edge/corner to resize it temporarily.
+- **Direct OBS output (plugin)** sends the render-sized image to OBS without creating a visible Stream Output window.
+
+In window modes, **F11** or a double-click toggles fullscreen temporarily. **Esc** exits fullscreen. Use **Alt+Tab** to return to the dashboard.
+
+### Direct OBS output
+
+![Settings with Direct OBS output selected and the OBS integration installer](../docs/images/steadyxr-obs-output.png)
+
+Requires Windows x64 and OBS Studio 32.2 or newer on the same PC and GPU as SteadyXR.
+
+1. Close OBS, then choose **Settings → Install OBS integration…**. Select your OBS installation folder (the folder containing `bin` and `data`, not your OBS settings folder). The installer proposes the standard `C:\Program Files\obs-studio` folder. Approve Windows elevation if that folder requires it.
+2. Select **Direct OBS output (plugin)** under **Startup / output mode**. Choose your render resolution and click **Apply output**.
+3. Open OBS, add a source, and choose **SteadyXR**. Smoothing, horizon lock, framing, effects and monitor fallback still come from the SteadyXR dashboard. No Window Capture source or visible preview window is needed. Audio remains separate.
+4. Optionally enable **Automatically start and close SteadyXR** in the OBS source properties. Check the path to **SteadyXR.exe**, especially after moving or updating your portable installation. OBS starts it in direct output mode when needed. The last source using this option closes the instance OBS started when removed/disabled, or when OBS shuts down. It never closes a SteadyXR instance you started yourself. Changing scenes does not repeatedly restart the app.
+
+**Pause output** keeps the last image. The **Hide output** OpenXR fallback makes the OBS source transparent until frames return; **Clone a monitor** shows your chosen monitor instead. If SteadyXR exits or stops responding, the source becomes transparent. Both apps should run under the same Windows user; select the same graphics adapter on multi-GPU systems. The plugin does not send video over the network; dual-PC setups still use a capture card.
+
+The OBS plugin is separately GPL-licensed. SteadyXR's standalone app and capture layer retain their noncommercial license. The plugin's source and build instructions are included in the source archive.
 
 ### Connection, layers and overlays
 

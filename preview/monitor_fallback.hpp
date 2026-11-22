@@ -8,7 +8,7 @@ class MonitorFallback {
   public:
     void stop();
     void tick(HWND output, const std::wstring &device_name,
-              const Options &options, unsigned fps, std::uint64_t now, bool repaint);
+              const Options &options, unsigned fps, std::uint64_t now, bool repaint, bool direct_obs = false);
     void display_changed() { topology_dirty_ = true; }
     bool has_picture() const { return has_picture_; }
     bool capturing() const { return capture_.running(); }
